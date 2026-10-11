@@ -189,12 +189,12 @@ func TestDevinSignInUnseen(t *testing.T) {
 
 func waitPast(t *testing.T, id, state string) SignInState {
 	t.Helper()
-	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+	for end := time.Now().Add(signInDeadline); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
 		if st, _ := SignInStatus(id); st.State != state {
 			return st
 		}
 	}
-	t.Fatalf("still %s", state)
+	t.Fatalf("still %s after %s", state, signInDeadline)
 	return SignInState{}
 }
 
