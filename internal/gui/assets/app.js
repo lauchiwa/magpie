@@ -19154,6 +19154,7 @@ const SET_TABS = ["general", "usage", "network", "models", "privacy", "otel", "s
 let setTab = "general";
 try { const k = localStorage.getItem("magpie.settingsTab"); if (SET_TABS.includes(k)) setTab = k; } catch {}
 let setShown = setTab; // the part shown: the one picked, or the first there
+let setQuery = ""; // the words in Settings' search, lower case: none, the tabs
 // A part has a tab while a row of it shows: one not hidden itself nor within
 // it (a service's card under the warm-ups' tabs counts, picked or not). A
 // part not drawn yet, with no rows at all, keeps its tab.
@@ -19181,7 +19182,9 @@ function setSetTab(tab, remember) {
   }
   setShown = tab;
   $("#setTabs").setAttribute("aria-label", t("Settings"));
+  $("#setQ").setAttribute("aria-label", t("Find a setting"));
   if (view === "settings") syncURL();
+  if (setQuery) findSettings();
 }
 {
   const tabs = $("#setTabs");
@@ -19196,6 +19199,91 @@ function setSetTab(tab, remember) {
     try { localStorage.setItem("magpie.settingsTab", setTab); } catch {}
   }
   setSetTab(setTab);
+}
+
+// Settings' search (sgfvdsg86265 on X: "配置界面太多了，找不到了"): the
+// words typed show every part's rows that say them, in the language shown
+// or in English, each part under its name, and the tabs step aside. A row
+// matches on its own text, its section's heading and its part's name, so
+// "GitHub" or "隐私" brings the whole section or part. The warm-ups' cards
+// all show while searching, each one that matches. Cleared, or Escape, the
+// part picked comes back as it was. Rows a part draws later are looked
+// at as they come.
+const setText = (n) => [n.textContent, ...[...n.querySelectorAll("[data-en]")].map((e) => e.dataset.en)].join(" ").toLowerCase();
+function findSettings() {
+  const v = $("#view-settings");
+  v.classList.add("set-searching");
+  const words = setQuery.split(/\s+/);
+  let any = false;
+  for (const id of SET_TABS) {
+    const page = $("#setPage-" + id), tab = $("#setTab-" + id);
+    const part = setText(tab) + " " + id;
+    let hits = 0, head = "";
+    const lit = new Set();
+    for (const n of page.querySelectorAll(".row-head, .row")) {
+      if (n.matches(".row-head")) {
+        head = n.matches(".warm-head") ? "" : setText(n);
+        continue;
+      }
+      if (n.parentElement.closest(".row")) continue; // a row in a row goes with it
+      let pane = n.closest('.warm-panes > [role="tabpanel"]'), says = part + " " + head + " " + setText(n);
+      if (pane) {
+        pane.dataset.agent = $('[aria-controls="' + pane.id + '"]').textContent;
+        says += " " + setText($('[aria-controls="' + pane.id + '"]'));
+      }
+      const hit = words.every((w) => says.includes(w));
+      n.classList.toggle("set-miss", !hit);
+      let shows = hit;
+      for (let a = n; shows && a && a !== page; a = a.parentElement) if (a.hidden && a !== pane) shows = false;
+      if (shows && pane && $('[aria-controls="' + pane.id + '"]').hidden) shows = false;
+      if (!shows) continue;
+      hits++;
+      lit.add(n.closest(".list") || n.parentElement);
+      if (pane) lit.add(pane);
+    }
+    // a section's heading and list go when nothing in them is left
+    for (const box of page.querySelectorAll(".list, .warm-panes > [role=\"tabpanel\"]")) {
+      if (box.parentElement.closest(".row")) continue; // inside a row: it goes with the row
+      box.classList.toggle("set-miss", ![...lit].some((l) => box.contains(l)));
+    }
+    for (const h of page.querySelectorAll(":scope > .row-head")) {
+      const next = h.nextElementSibling;
+      h.classList.toggle("set-miss", h.matches(".warm-head") || !next || next.classList.contains("set-miss") || (next.matches(".warm-panes") && ![...lit].some((l) => next.contains(l))));
+    }
+    page.dataset.part = tab.textContent;
+    page.hidden = !hits;
+    if (hits) thumbsUnderPicks(page);
+    any ||= hits > 0;
+  }
+  const none = $("#setNone");
+  none.hidden = any;
+  none.textContent = t("No setting matches “{q}”", { q: $("#setQ").value.trim() });
+}
+function searchSettings(q) {
+  setQuery = q.trim().toLowerCase();
+  if (setQuery) return findSettings();
+  const v = $("#view-settings");
+  v.classList.remove("set-searching");
+  for (const n of v.querySelectorAll(".set-miss")) n.classList.remove("set-miss");
+  $("#setNone").hidden = true;
+  setSetTab(setTab);
+}
+{
+  const q = $("#setQ");
+  q.oninput = () => searchSettings(q.value);
+  q.onkeydown = (e) => {
+    if (e.key === "Escape" && q.value) {
+      e.preventDefault();
+      e.stopPropagation();
+      q.value = "";
+      searchSettings("");
+    }
+  };
+  let again = 0;
+  new MutationObserver(() => {
+    if (!setQuery || again) return;
+    again = requestAnimationFrame(() => { again = 0; if (setQuery) findSettings(); });
+  }).observe($("#view-settings"), { childList: true, subtree: true });
 }
 
 // Settings' Command line (PAMI on Discord): whether `magpie` in a terminal

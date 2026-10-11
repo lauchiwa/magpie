@@ -2665,6 +2665,20 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .set-tabs button { flex: none; white-space: nowrap; }
 .set-page { flex: none; }
 .set-page[hidden] { display: none; }
+/* Settings' search: the box at the end of the tabs, on a line of its own
+   when they fill it; while it holds words, each part's rows that say them
+   under the part's name, and the tabs set aside */
+#view-settings .set-head { flex-wrap: wrap; gap: 6px; }
+.set-q { flex: 0 1 180px; margin-left: auto; min-width: 120px; }
+.set-searching .set-tabs { display: none; }
+.set-searching .set-q { flex: 1 1 100%; width: 100%; margin-left: 0; }
+.set-searching .set-miss { display: none !important; }
+.set-searching .warm-panes > [role="tabpanel"]:not(.set-miss)[hidden] { display: block !important; }
+.set-searching .warm-panes { margin-bottom: 0; }
+.set-searching .warm-panes > [role="tabpanel"] { margin-bottom: 8px; }
+.set-searching .warm-panes > [role="tabpanel"]::before { content: attr(data-agent); display: block; padding: 6px 11px 0; font-size: 11px; font-weight: 600; color: var(--muted); }
+.set-searching .set-page::before { content: attr(data-part); display: block; margin: 4px 2px 6px; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.set-none { margin: 18px 2px; font-size: 13px; color: var(--muted); text-align: center; }
 .set-page > .list:not(:last-child) { margin-bottom: 8px; }
 .row.pref { min-height: 50px; padding: 8px 12px 8px 14px; gap: 14px; }
 .row.pref .who { flex: 1 1 auto; }
