@@ -1,13 +1,17 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/identity"
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -55,6 +59,7 @@ func identityList() error {
 	if err != nil {
 		return err
 	}
+	defer identityArmedNote()
 	if len(ps) == 0 {
 		fmt.Println("no identity profiles. Import one from a request a client sent:")
 		fmt.Println("  magpie identity import codex_cli <headers-file>")
@@ -82,6 +87,30 @@ func identityList() error {
 		}
 	}
 	return nil
+}
+
+// identityArmedNote says which providers have a live capture window on
+// the running gateway. A window is memory-only and otherwise invisible,
+// so without this an operator cannot tell an arm from a no-op. A gateway
+// that isn't running has none, and says nothing.
+func identityArmedNote() {
+	if !gateway.Running() {
+		return
+	}
+	res, err := (&http.Client{Timeout: 10 * time.Second}).Get(gateway.URL() + gateway.IdentityArmedPath)
+	if err != nil {
+		return
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return
+	}
+	var got struct{ Data []string }
+	b, _ := io.ReadAll(io.LimitReader(res.Body, 8192))
+	if json.Unmarshal(b, &got) != nil || len(got.Data) == 0 {
+		return
+	}
+	fmt.Printf("capture armed on the gateway for: %s\n", strings.Join(got.Data, ", "))
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -163,6 +192,12 @@ func parseHeaderFile(s string) (http.Header, error) {
 	return h, nil
 }
 
+// A capture window lives in the memory of the process that forwards the
+// requests, which is the gateway's, not this command's. Arming here would
+// arm a window nothing consults and that dies when the command returns, so
+// arm and disarm ask the running gateway over its local control paths
+// (internal/gateway/identity.go). With no gateway running there is nothing
+// to arm, and that is said rather than reported as armed.
 func identityArm(args []string) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: magpie identity arm <provider> <codex_cli|claude_code>")
@@ -175,11 +210,55 @@ func identityArm(args []string) error {
 		return fmt.Errorf("%s: %s", p.Name, why)
 	}
 	client := identity.Client(args[1])
-	if err := identity.Arm(p.ID, client, time.Now().UTC()); err != nil {
+	if !client.Valid() {
+		return fmt.Errorf("no such client %q: codex_cli or claude_code", args[1])
+	}
+	q := url.Values{"provider": {p.ID}, "client": {string(client)}}
+	if err := askGateway(http.MethodPost, gateway.IdentityArmPath, q); err != nil {
 		return err
 	}
-	fmt.Printf("armed a one-shot %s capture for %s; it expires in %s and creates an unconfirmed candidate\n", client, p.Name, identity.CaptureWindow)
+	fmt.Printf("armed a one-shot %s capture for %s on the gateway; it expires in %s and creates an unconfirmed candidate\n", client, p.Name, identity.CaptureWindow)
+	fmt.Printf("send one request through %s with %s now, then: magpie identity ls\n", p.Name, client)
 	return nil
+}
+
+// askGateway calls one of the gateway's local identity paths. A window is
+// the running gateway's to hold, so a missing gateway is an error with
+// what to do about it, never a silent no-op.
+func askGateway(method, path string, q url.Values) error {
+	if !gateway.Running() {
+		return fmt.Errorf("no gateway runs here, and a capture window belongs to the gateway that forwards the requests: start one (the app, magpie web or magpie serve), then arm it")
+	}
+	u := gateway.URL() + path
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	req, err := http.NewRequest(method, u, nil)
+	if err != nil {
+		return err
+	}
+	res, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Errorf("ask the gateway at %s: %w", gateway.URL(), err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(res.Body, 8192))
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("the gateway answered %s: %s", res.Status, gatewaySaid(b))
+	}
+	return nil
+}
+
+// gatewaySaid is the message out of a gateway error body, which is the
+// same shape an agent is answered with.
+func gatewaySaid(b []byte) string {
+	var e struct {
+		Error struct{ Message string } `json:"error"`
+	}
+	if json.Unmarshal(b, &e) == nil && e.Error.Message != "" {
+		return e.Error.Message
+	}
+	return strings.TrimSpace(string(b))
 }
 
 func identityDisarm(args []string) error {
@@ -190,7 +269,9 @@ func identityDisarm(args []string) error {
 	if err != nil {
 		return err
 	}
-	identity.Disarm(p.ID)
+	if err := askGateway(http.MethodPost, gateway.IdentityDisarmPath, url.Values{"provider": {p.ID}}); err != nil {
+		return err
+	}
 	fmt.Printf("disarmed identity capture for %s\n", p.Name)
 	return nil
 }

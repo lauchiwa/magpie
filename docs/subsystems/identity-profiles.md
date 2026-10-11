@@ -20,6 +20,17 @@ local policy and must not be merged into the provider schema.
 - `internal/gateway/gateway.go` only observes headers when the gateway already
   recognized a Codex or Claude Code request. Observation is a one-shot,
   explicitly armed operation; the raw request is not stored.
+- `internal/gateway/identity.go` arms, disarms and reports those windows for
+  the gateway holding them. A window lives in the memory of the process that
+  forwards the requests, so the CLI cannot hold one: `magpie identity arm`
+  asks the running gateway over these paths. They answer this machine alone,
+  with or without a gateway key, because arming is consent to keep the next
+  matching request's identity fields and is granted where magpie runs, not by
+  an agent holding a shared gateway's key.
+- `internal/provider/identity_capture.go` maps the client ids this package
+  recognizes a request by (`codex`, `claude-code`) to `identity.Client`
+  (`codex_cli`, `claude_code`). The two vocabularies differ, so the mapping is
+  explicit and an unknown client observes nothing.
 - Signed-in accounts and plugin providers are excluded. Their own signers own
   the outbound identity, and a magpie-side binding would otherwise appear to
   succeed while never being sent.
@@ -44,16 +55,21 @@ an error (fail-closed), not a silent fallback to magpie's own User-Agent.
 ## Lifecycle
 
 1. `magpie identity arm <provider> <codex_cli|claude_code>` arms a five-minute,
-   memory-only, one-shot capture. The first matching request creates an
-   unconfirmed candidate in `identities.json`.
-2. `magpie identity ls` shows the candidate and its projected fields. The
-   operator checks it, then runs `magpie identity confirm <profile-id>`.
+   memory-only, one-shot capture on the running gateway
+   (`IdentityArmPath`). The first matching request it forwards creates an
+   unconfirmed candidate in `identities.json`. With no gateway running there is
+   nothing to arm, and the command says so rather than reporting success.
+2. `magpie identity ls` shows the candidate and its projected fields, and the
+   windows armed on the gateway (`IdentityArmedPath`), which are otherwise
+   invisible. The operator checks it, then runs
+   `magpie identity confirm <profile-id>`.
 3. `magpie identity bind <provider> <profile-id>` binds the confirmed snapshot.
    Forwarding, probes and model lists for that plain key+URL provider present
    it. The profile is sent on fallback attempts as each selected provider is
    signed.
-4. `magpie identity unbind <provider>` stops presentation. `disarm` cancels an
-   armed window. `rm` removes the profile and every binding to it.
+4. `magpie identity unbind <provider>` stops presentation. `disarm`
+   (`IdentityDisarmPath`) cancels an armed window. `rm` removes the profile and
+   every binding to it.
 
 A file import is available when the operator already has a request header dump:
 `magpie identity import <client> <headers-file>`. It is always stored as an
@@ -76,6 +92,11 @@ anchors rather than a long-lived fork of provider or gateway structures.
 
 - `internal/identity` tests cover the closed projection, consistency checks,
   candidate lifecycle, fail-closed store, copy isolation and one-shot capture.
+- `internal/gateway/identity_test.go` asserts that a capture armed over the
+  control path is held by the gateway and projects the request it then
+  forwards, that disarm revokes it, that another machine is refused with and
+  without a gateway key while `/v1/magpie/concurrency` still answers that key,
+  and that a provider no profile applies to and an unknown client are refused.
 - `internal/provider/identity_test.go` asserts the actual headers received by
   an `httptest` upstream for signing, model lists and endpoint tests; it also
   covers user-header precedence, broken bindings, accounts and unbound
