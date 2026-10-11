@@ -1197,6 +1197,15 @@ func (r *subscriptionRun) ended(req *Request, said, stop string, ok bool) {
 func (b *subscriptionBridge) keepIdle(r *subscriptionRun, key, conv string) {
 	var drop []*subscriptionRun
 	b.mu.Lock()
+	// a run waits at one point of its conversation: kept again (a reply
+	// that ends after its turn was taken back, letGo), it leaves the key it
+	// waited at, unless another run waits there now. Left there, the same
+	// run under two keys was the oldest again after each pass below, which
+	// let go of one key only, so the loop never ended and drop grew with
+	// b.mu held (X, Sma1lboy: magpie at 158 GB after two days).
+	if r.idleKey != "" && r.idleKey != key && b.idle[r.idleKey] == r {
+		delete(b.idle, r.idleKey)
+	}
 	if old := b.idle[key]; old != nil && old != r {
 		drop = append(drop, old)
 	}
@@ -1206,16 +1215,22 @@ func (b *subscriptionBridge) keepIdle(r *subscriptionRun, key, conv string) {
 		r.convKey = conv
 	}
 	for len(b.idle) > idleMost {
+		var oldKey string
 		var oldest *subscriptionRun
-		for _, run := range b.idle {
+		for k, run := range b.idle {
 			if oldest == nil || run.idleAt.Before(oldest.idleAt) {
-				oldest = run
+				oldKey, oldest = k, run
 			}
 		}
 		b.shelve(oldest)
-		delete(b.idle, oldest.idleKey)
-		oldest.idleKey = ""
-		drop = append(drop, oldest)
+		// the key found, not the run's own: each pass takes one entry out
+		delete(b.idle, oldKey)
+		if oldest.idleKey == oldKey {
+			oldest.idleKey = ""
+		}
+		if !slices.Contains(drop, oldest) {
+			drop = append(drop, oldest)
+		}
 	}
 	b.mu.Unlock()
 	for _, run := range drop {

@@ -115,6 +115,20 @@ local mock of Anthropic). A run started anew for the turn has nothing to
 rewind to and is still ended; so is one with a call still in the client's
 hands (`pending`).
 
+### One key per waiting run
+
+A run waits under one key (`keepIdle`). The reply to a turn the client
+gave up on can still end after `letGo` kept the run at `backKey`, and
+`ended` then keeps it at the turn after; kept again, a run leaves the key
+it waited at, unless another run now waits there. Past `idleMost`, the
+eviction loop takes out the key it found as oldest, not the run's own.
+Before (X, Sma1lboy: magpie at 158 GB after two days of omp agents), one
+run under two keys was the oldest on every pass, the pass took out only
+its newer key, and the loop never ended: it held `b.mu`, stopping every
+Claude subscription request, and grew its list of runs to let go without
+bound. `claude_idle_test.go` (`TestClaudeIdleEvictionEnds` runs the loop
+in a child process, so the old code fails by timing out there).
+
 ## Finding the run: keys
 
 - `nextTurn` splits a request at its last reply that calls no tool: the
@@ -254,7 +268,7 @@ carries none.
 
 ```sh
 go test -tags nogui ./internal/claudecode/ -count=1
-go test -tags nogui ./internal/gateway/ -run 'ClaudeSubscriptionRunsTheDownloaded|ClaudeSubscriptionWithoutClaudeCode|ClaudeRewritten|LostMedia|ImagesTakenOut|RunLetGoWhenTheClientRewrote|ClaudeSessionTempFiles|ClaudeLetGo|ClaudeSessionFiles|ClaudeOldSessions|ClaudeSubscriptionReplySaysTheAllowance|ClaudeAllowanceHeaders|ClaudeForksAnsweringTheLeadsCalls|ClaudeTurnGivenUpOn|ClaudeToolResultsGivenUpOn|ClaudePromptMarksEarlierTurns|ClaudeUnloadableSession|ClaudeEndedRunSaysWhy' -count=1
+go test -tags nogui ./internal/gateway/ -run 'ClaudeSubscriptionRunsTheDownloaded|ClaudeSubscriptionWithoutClaudeCode|ClaudeRewritten|LostMedia|ImagesTakenOut|RunLetGoWhenTheClientRewrote|ClaudeSessionTempFiles|ClaudeLetGo|ClaudeSessionFiles|ClaudeOldSessions|ClaudeSubscriptionReplySaysTheAllowance|ClaudeAllowanceHeaders|ClaudeForksAnsweringTheLeadsCalls|ClaudeTurnGivenUpOn|ClaudeToolResultsGivenUpOn|ClaudePromptMarksEarlierTurns|ClaudeUnloadableSession|ClaudeEndedRunSaysWhy|ClaudeIdle' -count=1
 ```
 
 `claude_rewritten_test.go` has a case for each relaxation and one for each
