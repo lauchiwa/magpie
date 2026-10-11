@@ -3060,6 +3060,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 				}
 			}
 			provider.SawClient(provider.ClientClaudeCode, seen)
+			provider.ObserveIdentity(p.ID, provider.ClientClaudeCode, seen)
 		}
 		if len(betas) > 0 {
 			req.Header.Set("anthropic-beta", strings.Join(betas, ","))
@@ -3082,6 +3083,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 			}
 		}
 		provider.SawClient(provider.ClientCodex, seen)
+		provider.ObserveIdentity(p.ID, provider.ClientCodex, seen)
 	}
 	if p.IsOpenCode() {
 		// as OpenCode itself sends it, which Zen's free tier asks for

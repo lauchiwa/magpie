@@ -220,10 +220,16 @@ func (p Provider) Sign(ctx context.Context, req *http.Request, proto Protocol, b
 		}
 		catalog.PutUserHeader(req.Header, k, v)
 	}
+	// A confirmed identity profile owns its closed fingerprint fields. It is
+	// applied after the user's open Headers so a manually typed User-Agent
+	// cannot silently split the frozen profile into a mixed fingerprint.
+	if err := p.putIdentity(req); err != nil {
+		return err
+	}
 	return nil
 }
 
-// ListHeader is a header whose value is a comma-separated list the request
+// ListHeader is a header
 // has its own of, which a provider's header of the same name adds to:
 // anthropic-beta, the betas an agent asks on each request.
 func ListHeader(name string) bool { return strings.EqualFold(name, "anthropic-beta") }

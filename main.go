@@ -89,6 +89,17 @@ const usage = `magpie — one place to pick every agent's model
   magpie accounts checkin         WorkBuddy's daily check-in (签到) for each WorkBuddy account, now (Settings can do it daily)
   magpie accounts project <gemini|antigravity> <email> <project>   the Google Cloud project a Google account's requests go to
   magpie accounts alias <agent> <email> [<name>|--clear]   a name of your own for an account, shown on its card, in the menu bar and in magpie quota
+  magpie identity [ls]             list frozen outbound client identity profiles
+  magpie identity import <client> <headers-file>
+                                  import a request's closed client fingerprint as an unconfirmed candidate
+  magpie identity arm <provider> <client>
+                                  arm a one-shot, five-minute live capture (memory only)
+  magpie identity confirm <profile-id>
+                                  confirm a candidate so it may be presented
+  magpie identity bind <provider> <profile-id>
+                                  present the confirmed profile on that provider's requests
+  magpie identity unbind <provider> | disarm <provider> | rm <profile-id>
+                                  stop presenting, cancel capture, or remove a profile
   magpie claude-code [install [--yes]|remove]   the Claude Code a Claude subscription runs; install downloads Anthropic's own build, checked against its manifest, for a server or container without one
   magpie plugin [add <package>|rm|update|on|off|login <provider>|logout <provider>]
                                   OpenCode provider plugins and pi packages: subscriptions signed in to, and served, through a plugin
@@ -325,6 +336,8 @@ func run(args []string) error {
 		return gatewayKeys(args)
 	case "accounts", "account":
 		return accountsCmd(args)
+	case "identity", "identities":
+		return identityCmd(args)
 	case "usage":
 		return usageCmd(args)
 	case "sessions":

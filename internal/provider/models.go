@@ -424,10 +424,15 @@ func FetchNew(timeout time.Duration) {
 
 // fetchOne asks the first endpoint that answers, with p's key.
 func (p Provider) fetchOne(ctx context.Context) ([]catalog.Model, string, error) {
+	// the user's headers, with a bound identity profile under them (identity.go)
+	listHeaders, err := p.identityListHeaders()
+	if err != nil {
+		return nil, "", err
+	}
 	if u := strings.TrimSpace(p.ModelsURL); u != "" {
 		// asked where the user said, and nowhere else: the base URLs
 		// list nothing, or the wrong thing
-		ms, err := catalog.FetchURL(ctx, u, p.Key, p.Chat == "" && p.Responses == "", p.listHeaders())
+		ms, err := catalog.FetchURL(ctx, u, p.Key, p.Chat == "" && p.Responses == "", listHeaders)
 		if err != nil {
 			return nil, u, err
 		}
@@ -445,7 +450,7 @@ func (p Provider) fetchOne(ctx context.Context) ([]catalog.Model, string, error)
 				continue // Factory's, whose list is its sign-in's
 			}
 			// listed as the Gemini API lists them, the key in its header
-			ms, _, err := catalog.FetchGemini(ctx, base, p.Key, p.listHeaders())
+			ms, _, err := catalog.FetchGemini(ctx, base, p.Key, listHeaders)
 			if err == nil {
 				return p.planModels(ms), base, nil
 			}
@@ -454,7 +459,7 @@ func (p Provider) fetchOne(ctx context.Context) ([]catalog.Model, string, error)
 			}
 			continue
 		}
-		ms, at, err := catalog.FetchAt(ctx, base, p.Key, proto == Anthropic, p.listHeaders())
+		ms, at, err := catalog.FetchAt(ctx, base, p.Key, proto == Anthropic, listHeaders)
 		if err == nil {
 			if proto != Anthropic {
 				base = p.fixV1(base, at)

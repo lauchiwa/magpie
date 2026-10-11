@@ -11,6 +11,7 @@ These pages describe current responsibilities, runtime paths, state, and contrac
 | Gateway Session Aggregation | [Gateway Session Aggregation](gateway-sessions.md) |
 | Connecting an agent's config to the gateway, drift, disconnect, WSL twins | [Agent wiring](agent-wiring.md) |
 | Providers, keys, subscription accounts, refresh and allowance | [Providers and accounts](providers-accounts.md) |
+| Outbound client identity profiles | [Outbound identity profiles](identity-profiles.md) |
 | Instructions, MCP servers, skills and RTK written into agents | [Library](library.md) |
 | Tray, panel, window, `magpie web` and the page's JSON API | [GUI app shell](gui-shell.md) |
 
