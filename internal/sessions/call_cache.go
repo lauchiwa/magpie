@@ -34,7 +34,7 @@ import (
 // What each version names is what a cache of the one before it cannot serve:
 // the version is part of the directory's name, so a cache written by an older
 // one is never read (pruneCalls).
-const callCacheVersion = "calls-v10"
+const callCacheVersion = "calls-v11"
 const maxKeptCalls = 131072
 const maxKeptFiles = 64
 

@@ -116,9 +116,13 @@ func readLogSnapshot() *logSnapshot {
 		return next
 	}
 	var tail *rowChunk
+	routes := routeRows{}
 	if n := len(next.blocks); n > 0 && next.blocks[n-1].Count < logBlockRows {
 		tail = next.blocks[n-1].writable()
 		next.blocks = next.blocks[:n-1]
+		for i := range tail.Rows {
+			routes.seen(tail, i)
+		}
 	}
 	rd := bufio.NewReaderSize(io.LimitReader(f, info.Size()-next.off), 64<<10)
 	for next.off < info.Size() {
@@ -135,7 +139,9 @@ func readLogSnapshot() *logSnapshot {
 		if tail == nil {
 			tail = &rowChunk{}
 		}
+		routes.handedOn(tail, &r)
 		tail.add(Row{Record: r}, "", next.off, false)
+		routes.seen(tail, len(tail.Rows)-1)
 		if !r.IsRejected() && (next.first.IsZero() || r.Time.Before(next.first)) {
 			next.first = r.Time
 		}
@@ -145,6 +151,7 @@ func readLogSnapshot() *logSnapshot {
 		if len(tail.Rows) == logBlockRows {
 			next.blocks = append(next.blocks, tail.freeze())
 			tail = nil
+			clear(routes)
 		}
 	}
 	if tail != nil {
@@ -169,6 +176,37 @@ func readLogSnapshot() *logSnapshot {
 	}
 	logIndex.snapshot = next
 	return next
+}
+
+// routeRows are the rows of the block being written, by their route: where
+// each route's last row is.
+type routeRows map[int64]int
+
+func (o routeRows) seen(c *rowChunk, i int) {
+	if id := c.Rows[i].RouteID; id != 0 {
+		o[id] = i
+	}
+}
+
+// handedOn tells, of a log written before Record.HandedOn was, the row of
+// a try that failed and handed its request on: a failed row of r's route
+// before r, whose outcome r is. r then ends a request with a try before
+// it. Only rows in the same block are told, which is where the gateway's
+// rows of one request land but for one in 512 at a block's edge.
+func (o routeRows) handedOn(c *rowChunk, r *Record) {
+	if r.RouteID == 0 {
+		return
+	}
+	j, ok := o[r.RouteID]
+	if !ok {
+		return
+	}
+	p := &c.Rows[j]
+	if p.Flags&rowHandedOn != 0 || p.Flags&4 != 0 || !(p.Status >= 400 || p.Text[rowError] != 0) {
+		return
+	}
+	p.Flags |= rowHandedOn
+	r.Tries = max(r.Tries, 2)
 }
 
 func (s *logSnapshot) visit(since time.Time, fn func(Record)) {

@@ -135,6 +135,15 @@ func geminiIn(at place) *Agent {
 			}
 			return fmt.Errorf("pick a model via magpie instead; that routes Gemini CLI through the gateway")
 		}
+		// an auth it doesn't know is refused before magpie is taken out:
+		// `magpie gemini <a model it has no option for>` comes here, and
+		// unrouted Gemini CLI first, as `magpie snow --help` took magpie
+		// out of Snow (#1457)
+		switch id {
+		case "", "custom", "google", "vertex", "api-key":
+		default:
+			return fmt.Errorf("%q is neither one of Gemini CLI's models nor an auth (google, api-key, vertex): nothing was changed", id)
+		}
 		if err := unroute(); err != nil {
 			return err
 		}

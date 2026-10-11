@@ -14,6 +14,9 @@ const (
 	KindVendor Kind = "vendor" // the model's own maker
 	KindRelay  Kind = "relay"  // an aggregator / API relay reselling many vendors
 	KindLocal  Kind = "local"  // something running on this machine
+	// KindRemote is another computer's magpie: not a relay, so the add
+	// lists give it a heading of its own, after this machine's
+	KindRemote Kind = "remote"
 )
 
 // PresetDef describes one preset.
@@ -249,6 +252,11 @@ var presets = []PresetDef{
 	// messages at /v1/messages, with its list at /v1/models. It serves Hy
 	// and other makers' models (DeepSeek, GLM, Kimi, MiniMax, Qwen …):
 	// Hosts, and models.dev's tencent-tokenhub for their names and prices.
+	//
+	// Token Plan 企业版 (#1574): a team's monthly plan, its 专业套餐 counted
+	// in credits and its 轻享套餐 in tokens, on TokenHub's hosts under /plan
+	// (chat completions and Responses at /plan/v3, Anthropic messages at
+	// /plan/anthropic; product/1823/130659 and 131173), a key of the team's.
 	{ID: "tencent-cloud", Name: "Tencent Cloud", Icon: "tencentcloud-color", Kind: KindVendor, Hosts: true,
 		Chat: "https://api.lkeap.cloud.tencent.com/plan/v3", Anthropic: "https://api.lkeap.cloud.tencent.com/plan/anthropic",
 		Note:    "Token Plan · pay as you go",
@@ -262,6 +270,16 @@ var presets = []PresetDef{
 				Website: "https://cloud.tencent.com/document/product/1823/130078", KeysURL: "https://console.cloud.tencent.com/tokenhub/apikey", Catalog: "tencent-tokenhub"},
 			{ID: "intl", Name: "Pay as you go · Global", Chat: "https://tokenhub-intl.tencentmaas.com/v1", Responses: "https://tokenhub-intl.tencentmaas.com/v1", Anthropic: "https://tokenhub-intl.tencentmaas.com",
 				Website: "https://www.tencentcloud.com/document/product/1300/78939", KeysURL: "https://console.tencentcloud.com/tokenhub/apikey", Catalog: "tencent-tokenhub"},
+			{ID: "enterprise", Name: "Enterprise plan · China", Chat: "https://tokenhub.tencentmaas.com/plan/v3", Responses: "https://tokenhub.tencentmaas.com/plan/v3", Anthropic: "https://tokenhub.tencentmaas.com/plan/anthropic",
+				Website: "https://cloud.tencent.com/document/product/1823/130659", KeysURL: "https://console.cloud.tencent.com/tokenhub/tokenplan",
+				Models: []string{"auto", "hy4-preview", "glm-5.3", "glm-5.3-flash", "glm-5.2", "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6",
+					"minimax-m3", "minimax-m2.7", "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-pro-0813", "deepseek-v4-flash-0731",
+					"deepseek-v4-pro-202606", "deepseek-v4-flash-202605", "mimo-v2.6-pro", "mimo-v2.6-flash"}},
+			{ID: "enterprise-intl", Name: "Enterprise plan · Global", Chat: "https://tokenhub-intl.tencentmaas.com/plan/v3", Responses: "https://tokenhub-intl.tencentmaas.com/plan/v3", Anthropic: "https://tokenhub-intl.tencentmaas.com/plan/anthropic",
+				Website: "https://cloud.tencent.com/document/product/1823/130659", KeysURL: "https://console.tencentcloud.com/tokenhub/tokenplan",
+				Models: []string{"auto", "hy4-preview", "glm-5.3", "glm-5.3-flash", "glm-5.2", "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed",
+					"minimax-m3", "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-pro-0813", "deepseek-v4-flash-0731",
+					"deepseek-v4-pro-202606", "deepseek-v4-flash-202605", "mimo-v2.6-pro", "mimo-v2.6-flash"}},
 		}},
 	// Huawei Cloud MaaS's Token Plan: personal accounts in 西南-贵阳一, its
 	// quota spent only at the plan's own endpoints under /plan (v2 for chat
@@ -475,15 +493,6 @@ var presets = []PresetDef{
 			{ID: "cn", Name: "China Mainland", Chat: "https://cn.yylx.io/v1", Anthropic: "https://cn.yylx.io"},
 		}},
 
-	// another computer's magpie, shared on its network (remote_magpie.go):
-	// its providers, routing groups and usage stay there, each request
-	// goes on in the API the agent spoke
-	{ID: RemoteMagpiePreset, Name: "Remote magpie", Icon: "magpie", Kind: KindRelay,
-		Note:           "another computer's magpie, shared on its network",
-		Endpoint:       "http://192.168.1.20:3425",
-		EndpointHint:   "The address and API key the other computer's magpie shows in Settings, under Share on local network. Its models and routing groups are listed here; each request goes on in the API the agent spoke.",
-		EndpointNeeded: "The other magpie's address is needed"},
-
 	// Jev answers no conversation: it decides which of a routing group's
 	// models takes a turn, and how hard it thinks
 	{ID: "typesafe", Name: "TypeSafe Jev", Icon: "typesafe", Kind: KindVendor,
@@ -533,6 +542,15 @@ var presets = []PresetDef{
 	{ID: "mlx-serve", Name: "MLX-Serve", Icon: "mlx-serve", Kind: KindLocal, NoKey: true,
 		Chat: "http://localhost:11234/v1", Responses: "http://localhost:11234/v1", Anthropic: "http://localhost:11234",
 		Note: "local server on :11234", Website: "https://github.com/ddalcu/mlx-serve"},
+
+	// another computer's magpie, shared on its network (remote_magpie.go):
+	// its providers, routing groups and usage stay there, each request
+	// goes on in the API the agent spoke
+	{ID: RemoteMagpiePreset, Name: "Remote magpie", Icon: "magpie", Kind: KindRemote,
+		Note:           "another computer's magpie, shared on its network",
+		Endpoint:       "http://192.168.1.20:3425",
+		EndpointHint:   "The address and API key the other computer's magpie shows in Settings, under Share on local network. Its models and routing groups are listed here; each request goes on in the API the agent spoke.",
+		EndpointNeeded: "The other magpie's address is needed"},
 }
 
 func bedrockChat(region string) string {

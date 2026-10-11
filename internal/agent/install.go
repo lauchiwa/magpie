@@ -160,14 +160,15 @@ func nodeHere() bool {
 	return npmIn(dirs, runtime.GOOS)
 }
 
-// npmIn says whether one of dirs has npm in it.
+// npmIn says whether one of dirs has npm in it: on Windows Node.js's
+// npm.cmd, or mise's shim npm.exe (its default shim mode) or npm.cmd.
 func npmIn(dirs []string, goos string) bool {
-	name := "npm"
+	names := []string{"npm"}
 	if goos == "windows" {
-		name = "npm.cmd"
+		names = []string{"npm.cmd", "npm.exe"}
 	}
 	return slices.ContainsFunc(dirs, func(d string) bool {
-		return d != "" && isFile(filepath.Join(d, name))
+		return d != "" && slices.ContainsFunc(names, func(n string) bool { return isFile(filepath.Join(d, n)) })
 	})
 }
 

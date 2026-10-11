@@ -108,9 +108,11 @@ func (l *Library) syncMCP(t *Target, b *backups, res *Result) {
 	a := l.applied(id)
 	// an agent given no server, with none of magpie's in it, isn't read:
 	// a file of its that can't be read is nothing the library did
-	if len(a.MCP) == 0 && !slices.ContainsFunc(l.MCP, func(s *Server) bool { return slices.Contains(s.Agents, id) }) {
+	if len(a.MCP) == 0 && len(a.ToolRules) == 0 && !slices.ContainsFunc(l.MCP, func(s *Server) bool { return slices.Contains(s.Agents, id) }) {
 		return
 	}
+	how := toolsOffOf(t)
+	toolsOff := map[string][]string{} // what magpie's in each entry's list now
 	entries, err := t.MCP.entries()
 	if err != nil {
 		res.fail(id, "mcp", err)
@@ -137,6 +139,7 @@ func (l *Library) syncMCP(t *Target, b *backups, res *Result) {
 		}
 		if _, ok := entries[name]; (ok || t.MCP.holds(name)) && !write("mcp:"+name, func() error { return t.MCP.del(name) }) {
 			mine = append(mine, name)
+			toolsOff[name] = a.ToolsOff[name]
 		}
 	}
 	base := gatewayOf(t)
@@ -155,17 +158,44 @@ func (l *Library) syncMCP(t *Target, b *backups, res *Result) {
 			res.fail(id, "mcp:"+s.Name, err)
 			continue
 		}
-		if old != nil {
+		// the tools turned off, in the list its entry has of them
+		var off *toolsEdit
+		prev := a.ToolsOff[s.Name]
+		offMine := prev
+		if how == toolsInEntry {
+			e, m, err := entryToolsEdit(t.MCP, old, prev, s.DisabledTools)
+			if err != nil {
+				res.fail(id, "mcp:"+s.Name, err)
+			}
+			off, offMine = e, m
+		}
+		if old != nil && off == nil {
 			if cur, ok := t.MCP.current(s.Name, old, s); ok && cur.same(s) && t.MCP.has(s) && !t.MCP.behind(s, old) {
 				mine = append(mine, s.Name)
+				toolsOff[s.Name] = offMine
 				continue
 			}
 		}
-		if write("mcp:"+s.Name, func() error { return t.MCP.put(s, old) }) {
+		if write("mcp:"+s.Name, func() error { return t.MCP.putEntry(s, off.apply(t.MCP.merged(s, old))) }) {
 			mine = append(mine, s.Name)
+			toolsOff[s.Name] = offMine
+		} else if old != nil {
+			toolsOff[s.Name] = prev // the entry is as it was
 		}
 	}
 	a.MCP = mine
+	for k, v := range toolsOff {
+		if len(v) == 0 {
+			delete(toolsOff, k)
+		}
+	}
+	a.ToolsOff = toolsOff
+	if len(a.ToolsOff) == 0 {
+		a.ToolsOff = nil
+	}
+	if how == toolsClaudeDeny || how == toolsOpenCode {
+		l.syncToolRules(t, how, mine, b, res)
+	}
 }
 
 // ---- the page -------------------------------------------------------------
@@ -190,8 +220,11 @@ type AgentView struct {
 	NoRemote     bool     `json:"noRemote,omitempty"`
 	// NoEnvRefs: it reads no ${NAME} from its MCP config, so a server
 	// whose headers or environment have one isn't given to it (envref.go)
-	NoEnvRefs bool   `json:"noEnvRefs,omitempty"`
-	MCPVia    string `json:"mcpVia,omitempty"`
+	NoEnvRefs bool `json:"noEnvRefs,omitempty"`
+	// ToolsOff: it can be told to leave out single tools of a server
+	// (mcp_tools_off.go); the page names those that can't
+	ToolsOff bool   `json:"toolsOff,omitempty"`
+	MCPVia   string `json:"mcpVia,omitempty"`
 	// How is the way it is given its skills, link or copy, and HowOwn its
 	// own over the library's; MustCopy is one that can only take copies
 	// (in WSL)
@@ -306,6 +339,7 @@ func readView(problems []Problem, glance bool) (*View, error) {
 			av.NoSSE = t.MCP.supports(&Server{Transport: "sse"}) != nil
 			av.NoRemote = t.MCP.supports(&Server{Transport: "http"}) != nil
 			av.NoEnvRefs = t.MCP.refsOf() == envSyntax{}
+			av.ToolsOff = toolsOffOf(t) != toolsNone
 		}
 		v.Agents = append(v.Agents, av)
 	}
@@ -428,6 +462,10 @@ func SaveServer(old string, s Server) (*Result, error) {
 				if err := mcpauth.Rename(old, s.Name); err != nil {
 					return err
 				}
+			}
+			// the tools turned off stay, the editor not sending them
+			if s.DisabledTools == nil {
+				s.DisabledTools = l.MCP[i].DisabledTools
 			}
 			l.MCP = slices.Delete(l.MCP, i, i+1)
 			if old != s.Name {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -654,5 +655,55 @@ func TestSnowThinking(t *testing.T) {
 	}
 	if readFile(filepath.Join(dir, "profiles", "default.json")) != prof {
 		t.Fatal("the user's profile was rewritten")
+	}
+}
+
+// snowFiles is every file under dir, by its path there.
+func snowFiles(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			rel, _ := filepath.Rel(dir, p)
+			out[rel] = readFile(p)
+		}
+		return nil
+	})
+	return out
+}
+
+// A model Snow has no profile on, set while on magpie's, is refused and
+// changes nothing: `magpie snow --help` took magpie out of Snow (deleted
+// profiles/magpie.json, put back the active profile) and wrote "--help"
+// as the model of the profile it went back to (#1457, blackrion). An
+// unknown model through magpie is refused the same way, on and off it.
+func TestSnowUnknownModelChangesNothing(t *testing.T) {
+	_, dir := snowHome(t)
+	snowUser(t, dir)
+	a, _ := Find("snow")
+	if err := a.Field("model").Set("magpie/nope/x"); err == nil {
+		t.Error("an unknown model through magpie taken off magpie")
+	}
+	if err := a.Apply("model", "magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	before := snowFiles(t, dir)
+	for _, v := range []string{"--help", "-h", "nonsense-model", "magpie/nope/x"} {
+		if err := a.Field("model").Set(v); err == nil {
+			t.Errorf("%q taken", v)
+		}
+		if got := snowFiles(t, dir); !reflect.DeepEqual(got, before) {
+			t.Fatalf("%q changed Snow's files:\nbefore %v\nafter  %v", v, before, got)
+		}
+	}
+	if got := a.Values()["model"]; got != "magpie/deepseek/pro" {
+		t.Fatalf("model %q", got)
+	}
+	// a model of a profile of theirs still takes Snow there
+	if err := a.Apply("model", "kimi-k3"); err != nil {
+		t.Fatal(err)
+	}
+	if got := snowActive(dir); got != "work" {
+		t.Fatalf("active %q, want work", got)
 	}
 }

@@ -157,6 +157,9 @@ type updater struct {
 	prefix string
 	// latest is the newest its own updater would install (cliSpec.latest)
 	latest func() string
+	// reshim is run after the update: the version manager whose shim the
+	// CLI was found as making shims for what it installed
+	reshim []string
 }
 
 // shown is the update as a person would type it.
@@ -657,10 +660,10 @@ func (a *Agent) CLI() (c CLI, ok bool) {
 	if bin == "" {
 		return c, c.App != ""
 	}
-	c.Version = installedVersion(bin)
+	real, u := installedAt(spec, bin)
+	c.Version = installedVersion(real)
 	c.Path = bin
 	c.OffPath = a.Bin != "" && offPath(bin, loginPath())
-	u := howInstalled(spec, bin)
 	if u == nil {
 		return c, true
 	}
@@ -678,7 +681,8 @@ func (a *Agent) InstalledVersion() string {
 	if bin == "" {
 		return ""
 	}
-	return installedVersion(bin)
+	real, _ := throughShim(bin)
+	return installedVersion(real)
 }
 
 // CLIs is every detected agent's CLI, as far as it is known within wait;
@@ -802,7 +806,7 @@ func (a *Agent) UpdateCLI() (CLI, error) {
 	if bin == "" {
 		return CLI{}, fmt.Errorf("magpie can't find %s's CLI", a.Name)
 	}
-	u := howInstalled(spec, bin)
+	real, u := installedAt(spec, bin)
 	if u == nil {
 		return CLI{}, fmt.Errorf("magpie can't tell how %s was installed at %s — update it the way you installed it", a.Name, bin)
 	}
@@ -810,7 +814,7 @@ func (a *Agent) UpdateCLI() (CLI, error) {
 		return CLI{}, fmt.Errorf("%s is already being updated", a.Name)
 	}
 	defer updating.Delete(a.ID)
-	before := installedVersion(bin)
+	before := installedVersion(real)
 	ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
 	defer cancel()
 	run := runUpdate
@@ -822,7 +826,12 @@ func (a *Agent) UpdateCLI() (CLI, error) {
 		// the prompt declined, or none shown: npm never ran
 		return CLI{}, &AdminError{Agent: a.Name, Prefix: u.prefix, Command: u.shown(), Via: "npm", Canceled: errors.Is(err, update.ErrCanceled), Err: err}
 	}
-	versions.forget(bin)
+	if err == nil && u.reshim != nil {
+		// what it installed is kept even when no shim is made for it
+		runUpdate(ctx, &updater{via: "reshim", cmd: u.reshim})
+	}
+	versions.forget(real)
+	shimTargets.forget(bin)
 	// brew upgrade updates Homebrew first, which may know a newer one
 	latests.forget("brew:" + u.pkg)
 	c, _ := a.CLI()

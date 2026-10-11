@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -329,6 +330,11 @@ type settingsJSON struct {
 	Version string `json:"version"`
 	Dir     string `json:"dir"`     // where magpie keeps its files, as shown
 	Gateway string `json:"gateway"` // the local endpoint
+	// PublicURL is MAGPIE_PUBLIC_URL while other machines are let in
+	// (shared, or MAGPIE_ADDR on the network): where they reach the
+	// gateway, shown beside the local address agents here are pointed at
+	// (#1551)
+	PublicURL string `json:"publicURL,omitempty"`
 	// MAGPIE_ADDR, when it sets the gateway's address over Settings' port
 	AddrEnv string `json:"addrEnv,omitempty"`
 	// Dir is the data folder beside a portable magpie (#508)
@@ -457,6 +463,8 @@ type searchVendorJSON struct {
 	Name    string `json:"name"`
 	KeysURL string `json:"keysURL,omitempty"`
 	NeedURL bool   `json:"needURL,omitempty"` // one the user runs
+	// its own address, the one used while no base URL is set (#1580)
+	Base string `json:"base,omitempty"`
 }
 
 func searchState(s *settingsJSON) {
@@ -473,7 +481,7 @@ func searchState(s *settingsJSON) {
 		s.SearchAPIs = append(s.SearchAPIs, j)
 	}
 	for _, v := range provider.SearchVendors {
-		s.SearchVendors = append(s.SearchVendors, searchVendorJSON{ID: v.ID, Name: v.Name, KeysURL: v.KeysURL, NeedURL: v.Base == ""})
+		s.SearchVendors = append(s.SearchVendors, searchVendorJSON{ID: v.ID, Name: v.Name, KeysURL: v.KeysURL, NeedURL: v.Base == "", Base: v.Base})
 	}
 	s.SearchProvider = gateway.Searcher()
 	s.SearchAuto, s.SearchUnused = gateway.AutoSearcher(), gateway.SearcherUnused()
@@ -500,6 +508,9 @@ func searchState(s *settingsJSON) {
 func settingsState() settingsJSON {
 	s := settingsJSON{Settings: settings.Load(), Version: Version, Dir: tilde(settings.Dir()), Portable: settings.Portable() != "", Gateway: gateway.URL()}
 	s.AddrEnv = os.Getenv("MAGPIE_ADDR")
+	if s.LAN || gateway.OnNetwork() {
+		s.PublicURL = gateway.PublicURL()
+	}
 	s.WSL = runtime.GOOS == "windows"
 	s.Web = webPage.Load()
 	s.GatewayOn, s.GatewayWhy = gatewayMode(s.Web)
@@ -1646,6 +1657,32 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
+	// one masking rule changed in place (nf1qaz2w on Discord): the rule at
+	// At, which must still be Was, becomes Rule, checked as an added one is.
+	// A rule that can't be used is said and every rule is kept as it was.
+	mux.HandleFunc("POST /api/settings/redact-rule", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			At   int         `json:"at"`
+			Was  redact.Rule `json:"was"`
+			Rule redact.Rule `json:"rule"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		s := settings.Load()
+		next, err := editRedactRule(s.RedactRules, in.At, in.Was, in.Rule)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		s.RedactRules = next
+		if err := settings.Save(s); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
 	// the GitHub token the library's requests to GitHub carry: set, or
 	// taken away with ""
 	mux.HandleFunc("POST /api/settings/github-token", func(rw http.ResponseWriter, r *http.Request) {
@@ -1876,6 +1913,13 @@ func fail(rw http.ResponseWriter, err error) {
 	if errors.As(err, &signedIn) {
 		out["code"], out["agent"], out["user"] = "signed_in", signedIn.Agent, signedIn.User
 	}
+	// a text that isn't a group to import (laincatx on X), said in the
+	// reader's language
+	var share *provider.ShareError
+	if errors.As(err, &share) {
+		out["code"], out["share"] = "share", share.Why
+		out["format"], out["models"] = strconv.Itoa(share.Format), strings.Join(share.Models, ", ")
+	}
 	// an agent's npm update, or RTK's winget, that needed an administrator
 	// and didn't get one, said in the reader's language
 	var admin *agent.AdminError
@@ -1906,4 +1950,30 @@ func codexUsers() []string {
 		}
 	}
 	return out
+}
+
+// editRedactRule is rules with the one at at, which must still be was,
+// changed to to: tidied and checked as an added rule is, in the same place.
+// It is refused when that rule is no longer there (changed or removed
+// meanwhile), when to has neither a prefix nor a pattern (taking a rule
+// away is Remove), and when to is another rule already listed.
+func editRedactRule(rules []redact.Rule, at int, was, to redact.Rule) ([]redact.Rule, error) {
+	if at < 0 || at >= len(rules) || rules[at] != was {
+		return nil, fmt.Errorf("that masking rule is no longer there: it was changed or removed meanwhile")
+	}
+	tidy, err := redact.CheckRules([]redact.Rule{to})
+	if err != nil {
+		return nil, err
+	}
+	if len(tidy) == 0 {
+		return nil, fmt.Errorf("a masking rule needs a prefix or a regular expression")
+	}
+	for i, o := range rules {
+		if i != at && o == tidy[0] {
+			return nil, fmt.Errorf("the masking rule %s is there already", o.Kind)
+		}
+	}
+	next := slices.Clone(rules)
+	next[at] = tidy[0]
+	return next, nil
 }

@@ -22,6 +22,9 @@ import (
 // a loop of such opens sees each read the moment it starts: whoever opened
 // it is handed "{}" and an end of file, and the path is noted. A plain
 // file would be read with nothing to show for it.
+//
+// The func returned waits for a whole loop that began after the call, so
+// an open the loop found before then is in what it returns.
 func openWatch(t *testing.T, paths []string) func() []string {
 	t.Helper()
 	for _, p := range paths {
@@ -35,6 +38,7 @@ func openWatch(t *testing.T, paths []string) func() []string {
 	var (
 		mu     sync.Mutex
 		opened []string
+		loops  int
 	)
 	stop := make(chan struct{})
 	done := make(chan struct{})
@@ -57,6 +61,9 @@ func openWatch(t *testing.T, paths []string) func() []string {
 				_, _ = syscall.Write(fd, []byte("{}"))
 				_ = syscall.Close(fd)
 			}
+			mu.Lock()
+			loops++
+			mu.Unlock()
 			time.Sleep(200 * time.Microsecond)
 		}
 	}()
@@ -71,6 +78,13 @@ func openWatch(t *testing.T, paths []string) func() []string {
 	})
 	return func() []string {
 		mu.Lock()
+		// the loop under way may have opened a FIFO and not noted it yet;
+		// the one after it begins after this call
+		for until := loops + 2; loops < until; {
+			mu.Unlock()
+			time.Sleep(100 * time.Microsecond)
+			mu.Lock()
+		}
 		defer mu.Unlock()
 		return slices.Clone(opened)
 	}
@@ -132,13 +146,16 @@ func TestAccountDiscoveryOffReadsNoSignIn(t *testing.T) {
 	files = slices.Compact(files)
 	opened := openWatch(t, files)
 
-	// the watch sees a read: this test's own
-	if b, err := os.ReadFile(codexAuthPath()); err != nil || string(b) != "{}" {
+	// the watch sees a read: this test's own. A reader slow to reach the
+	// end is handed "{}" again by the next loop's write, and noted again,
+	// so under load it reads "{}{}"
+	if b, err := os.ReadFile(codexAuthPath()); err != nil || len(b) == 0 || strings.ReplaceAll(string(b), "{}", "") != "" {
 		t.Fatalf("the watch didn't answer a read: %q %v", b, err)
 	}
-	if got := opened(); len(got) != 1 {
+	if got := opened(); len(got) == 0 || slices.ContainsFunc(got, func(p string) bool { return p != codexAuthPath() }) {
 		t.Fatalf("the watch saw %v, want the test's own read", got)
 	}
+	checked := len(opened())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -203,9 +220,9 @@ func TestAccountDiscoveryOffReadsNoSignIn(t *testing.T) {
 
 	// anything started in the background has its moment
 	time.Sleep(300 * time.Millisecond)
-	if got := opened(); len(got) != 1 {
-		read := slices.Compact(slices.Sorted(slices.Values(got[1:])))
-		t.Errorf("with discovery off, %d reads of sign-ins: %s", len(got)-1, strings.Join(read, " "))
+	if got := opened()[checked:]; len(got) != 0 {
+		read := slices.Compact(slices.Sorted(slices.Values(got)))
+		t.Errorf("with discovery off, %d reads of sign-ins: %s", len(got), strings.Join(read, " "))
 	}
 	if s := ran(); s != "" {
 		t.Errorf("with discovery off, these ran:\n%s", s)

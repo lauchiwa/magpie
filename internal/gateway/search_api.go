@@ -225,7 +225,21 @@ func (s *Server) askSearchAPI(ctx context.Context, a provider.SearchAPI, query s
 			r.Header.Set("Authorization", "Bearer "+a.Key)
 		}
 	}
-	res, err := s.client.Do(r)
+	// the key goes to the address the API is set at (#1580) and nowhere
+	// else: Go drops only Authorization on a redirect to another host,
+	// never Brave's or Exa's own key headers, so such a redirect isn't
+	// followed, and its answer is said as the error it is
+	c := *s.client
+	c.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		if next.URL.Scheme != via[0].URL.Scheme || next.URL.Host != via[0].URL.Host {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}
+	res, err := c.Do(r)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, errors.New("no answer in time")
@@ -234,6 +248,9 @@ func (s *Server) askSearchAPI(ctx context.Context, a provider.SearchAPI, query s
 	}
 	defer res.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if res.StatusCode >= 300 && res.StatusCode < 400 && res.Header.Get("Location") != "" {
+		return nil, fmt.Errorf("%s: it sends the search on to %s, which isn't given its key; set that address instead", res.Status, res.Header.Get("Location"))
+	}
 	if res.StatusCode >= 300 {
 		if keyRefusal(res.StatusCode) {
 			return nil, searchRefused{res.StatusCode, provider.APIError(b, res.Status)}

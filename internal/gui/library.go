@@ -394,6 +394,9 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.SaveServer(in.Old, in.Server)
 		case "servers/agents":
 			res, err = library.ServerAgents(in.Name, in.Agents)
+		case "servers/tools":
+			// the tools its agents leave out (nf1qaz2w on Discord)
+			res, err = library.ServerTools(in.Name, in.Names)
 		case "servers/agents-all":
 			res, err = library.EveryServerAgents(in.Agents, in.On)
 		case "servers/agents-some":

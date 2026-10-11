@@ -2,11 +2,12 @@ package provider
 
 // A plan bought with an API key — Zhipu's GLM Coding Plan (and Z.ai's),
 // Kimi Code, OpenCode Go, a Command Code plan, MiniMax's Coding (Token)
-// Plan, StepFun's Step Plan and Volcengine Ark's Coding and Agent Plans —
-// has windows of allowance like a subscription's, which the vendor tells
-// to the key (StepFun only to a sign-in, stepfun_plan.go; Volcengine only
-// to the account's access key, volcengine_usage.go): the Usage page shows
-// them beside the subscriptions'.
+// Plan, StepFun's Step Plan, Volcengine Ark's Coding and Agent Plans and
+// Tencent Cloud's Token Plan 企业版 — has windows of allowance like a
+// subscription's, which the vendor tells to the key (StepFun only to a
+// sign-in, stepfun_plan.go; Volcengine and Tencent Cloud only to the
+// account's access key, volcengine_usage.go and tencent_usage.go): the
+// Usage page shows them beside the subscriptions'.
 
 import (
 	"context"
@@ -560,7 +561,7 @@ var planQuotaCache struct {
 }
 
 // ForgetPlanQuotas has the next PlanQuotas ask again, after what a plan's
-// windows are read with changed (a Volcengine access key).
+// windows are read with changed (a Volcengine or Tencent Cloud access key).
 func ForgetPlanQuotas() { forgetPlanQuotas() }
 
 // PlanQuotas is the windows of every plan magpie has a key for, each key
@@ -659,6 +660,8 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 	go func() { stepfun <- stepPlanQuotas(ctx) }()
 	volc := make(chan []SubscriptionQuota, 1)
 	go func() { volc <- volcPlanQuotas(ctx) }()
+	tencent := make(chan []SubscriptionQuota, 1)
+	go func() { tencent <- tencentPlanQuotas(ctx) }()
 	wg.Wait()
 	out := []SubscriptionQuota{}
 	for i, q := range got {
@@ -670,6 +673,7 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 	}
 	out = append(out, <-stepfun...)
 	out = append(out, <-volc...)
+	out = append(out, <-tencent...)
 	if ctx.Err() == nil {
 		noteQuotaHistory(out, time.Now())
 		c.Lock()

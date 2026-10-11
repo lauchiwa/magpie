@@ -54,8 +54,10 @@ type Provider struct {
 
 	// AccessKeyID and SecretAccessKey are a Volcengine account's access
 	// key (TakesVolcAccessKey), what Ark tells its Coding or Agent Plan's
-	// windows to (volcengine_usage.go); not the plan's inference key in
-	// Key. They are kept, backed up and synced as the keys are: the Secret
+	// windows to (volcengine_usage.go), or a Tencent Cloud account's API
+	// key, its SecretId and SecretKey (TakesTencentAccessKey), what TokenHub
+	// tells Token Plan 企业版's usage to (tencent_usage.go); not the plan's
+	// inference key in Key. They are kept, backed up and synced as the keys are: the Secret
 	// is never sent to the GUI, and a backup without keys has neither.
 	AccessKeyID     string `json:"accessKeyID,omitempty"`
 	SecretAccessKey string `json:"secretAccessKey,omitempty"`
@@ -1214,8 +1216,13 @@ func (p Provider) Speaks() []Protocol {
 func (p Provider) FactoryGemini() bool { return p.ID == "factory" && p.Account != nil }
 
 // ResponsesFirst: an OpenAI model on OpenAI's API, Copilot's, PipeLLM's or Bedrock's,
-// which is best asked on the Responses API though Chat serves it too.
+// which is best asked on the Responses API though Chat serves it too; and
+// every model where only the Responses API tells what the vendor's cache
+// answered (ResponsesTellsCache).
 func (p Provider) ResponsesFirst(model string) bool {
+	if p.ResponsesTellsCache() {
+		return true
+	}
 	if p.Responses != "" && p.IsBedrock() {
 		return bedrockGPT(model)
 	}
@@ -1225,6 +1232,24 @@ func (p Provider) ResponsesFirst(model string) bool {
 		return false
 	}
 	return openAIModel(model)
+}
+
+// ResponsesTellsCache is a provider whose Responses API says how much of
+// the prompt its cache answered (input_tokens_details.cached_tokens) and
+// what the model reasoned, while its Chat API, served by the same cache,
+// says neither: ModelScope's API-Inference, by its preset or its host
+// (#1578, sparrowbits: Claude Desktop, translated to Chat, read 0 of 34.9M
+// tokens from cache; Codex on Responses, 94%). A translated request goes
+// there on Responses, and an agent that asks each model on one API is
+// wired to it. Other vendors with both URLs keep Chat: their Chat reports
+// its cache (Groq, Volcengine Ark), their Claude-format requests go to
+// their Anthropic URL as they are, or nothing is known of their Responses
+// API (a relay the user added).
+func (p Provider) ResponsesTellsCache() bool {
+	if p.Responses == "" || p.Chat == "" {
+		return false
+	}
+	return p.Preset == "modelscope" || HostOf(p.Responses) == "api-inference.modelscope.cn"
 }
 
 // MessagesFirst: a Claude model where the provider has Anthropic's Messages

@@ -5,10 +5,10 @@
 // no speed at all, and each said "Not streamed", though the replies were
 // streamed. A long one now tells the least it wrote at, its tokens over that
 // whole time ("≥98 tok/s"); a short one says the file has no first token; a
-// call magpie timed keeps its own speed. Only Claude Code's and Claude
-// Desktop's files tell one: a Codex call in a turn of several is timed from
-// a tool output Codex can write before that call's own token count, so it tells
-// none. A narrow window shows it as a wide one does. The rows are real ledger rows read
+// call magpie timed keeps its own speed. Claude Code's, Claude Desktop's
+// and Codex's files tell one: a Codex call in a turn of several is timed
+// from what asked for it, before its first output item, to its last
+// (Fallmonkey on Discord). A narrow window shows it as a wide one does. The rows are real ledger rows read
 // from Claude Code's session files of claude-opus-5-5 replies; the first,
 // 2,558 tokens in 25,987 ms, measured 100.6 tok/s on Claude Code's own stream
 // (--include-partial-messages) from its first thinking event to its end.
@@ -49,9 +49,9 @@ const ROWS = [
   { ...LOG, t: at(5), out: 1500, ms: 9000, err_type: "overloaded_error", err: "Overloaded" },
   // 6: a long reply in under a second (lines written together) tells none
   { ...LOG, t: at(6), out: 5000, ms: 300 },
-  // 7: a Codex call in a turn of several: timed from the tool output before
-  // it, which Codex can write before that call's own token count, so none is told
-  { ...LOG, agent: "codex", agentName: "Codex", icon: "codex-color", model: "gpt-6-astra", t: at(7), out: 1500, ms: 3000 },
+  // 7: a Codex call in a turn of several, timed from what asked for it: at
+  // least 1500 tokens in 60 s
+  { ...LOG, agent: "codex", agentName: "Codex", icon: "codex-color", model: "gpt-6-astra", t: at(7), out: 1500, ms: 60000 },
   // 8: Claude Desktop's Code tab writes Claude Code's file: at least 1500 / 12 s
   { ...LOG, agent: "claude-desktop", agentName: "Claude Desktop", icon: "claude-color", t: at(8), out: 1500, ms: 12000 },
 ];
@@ -98,12 +98,12 @@ function server(lang) {
 
 const L = {
   en: {
-    speed: "Speed", floor: "≥98 tok/s", desktop: "≥125 tok/s", timed: "75 tok/s", codex: "150 tok/s",
+    speed: "Speed", floor: "≥98 tok/s", desktop: "≥125 tok/s", codexFloor: "≥25 tok/s", timed: "75 tok/s", codex: "150 tok/s",
     floorTip: "At least: 2,558 output tokens in 26 s, from the line that asked for it to its last. The session file has no first token, so the wait for it is counted too",
     noFirst: "The session file has no first token to time a speed from", notStreamed: "Not streamed: no first token to time a speed from",
   },
   zh: {
-    speed: "速度", floor: "≥98 token/秒", desktop: "≥125 token/秒", timed: "75 token/秒", codex: "150 token/秒",
+    speed: "速度", floor: "≥98 token/秒", desktop: "≥125 token/秒", codexFloor: "≥25 token/秒", timed: "75 token/秒", codex: "150 token/秒",
     floorTip: "下限：从发出请求的那一行到最后一行，26 秒 输出 2,558 个 token。会话文件没有首字时间，等首字的时间也算在里面",
     noFirst: "会话文件没有首字时间，算不出速度", notStreamed: "非流式：没有首字时间，算不出速度",
   },
@@ -151,9 +151,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // a failed call, and a reply in under a second, tell none
         assert.equal(await text(5), "—");
         assert.equal(await text(6), "—");
-        // a Codex call timed from inside a turn tells none, and isn't called unstreamed
-        assert.equal(await text(7), "—");
-        assert.equal(await tip(7), w.noFirst);
+        // a Codex call in a turn of several tells its floor too
+        assert.equal(await text(7), w.codexFloor);
         // Claude Desktop's file is Claude Code's
         assert.equal(await text(8), w.desktop);
         // the floor is read whole, at either width

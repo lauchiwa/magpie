@@ -296,6 +296,7 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 			contents = append(contents, map[string]any{"role": role, "parts": ps})
 		}
 	}
+	contents = pairFunctionTurns(contents, ag, ag && claude)
 	if len(contents) > 0 && contents[0]["role"] == "model" {
 		// Gemini turns away a history that opens with the model's turn
 		// (what an agent's compaction can leave): "function call turn comes
@@ -394,6 +395,85 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 	}
 	b, _ := json.Marshal(map[string]any{"model": sent, "request": req})
 	return b
+}
+
+// interruptedToolNote is the result a call left unanswered is answered
+// with, the words the chat build gives such a call (pairToolMessages).
+const interruptedToolNote = "[The result of this tool call is unavailable: the turn was interrupted.]"
+
+// pairFunctionTurns answers a model turn's function calls in the turn
+// right after it, as Google's API reads its histories ("Please ensure
+// that the number of function response parts is equal to the number of
+// function call parts of the function call turn"): a call the client
+// answers nowhere — an interrupted turn leaves its call pending, and
+// Google turns every later turn of the conversation away with 400 over
+// the one — is answered with the synthetic result the chat build gives
+// such a call (pairToolMessages, #1275). The answer goes in the turn that
+// follows the calls when that turn already holds answers, and otherwise
+// in a turn of its own before it: a user turn mixing a functionResponse
+// with text is turned away too (#1533). A Claude model on Antigravity
+// (agClaude) keeps the answer and what the user said in one turn, the
+// tool_result turn Anthropic reads them as. A call with no id counts as
+// answered by a response of its name with no id.
+func pairFunctionTurns(contents []map[string]any, ag, agClaude bool) []map[string]any {
+	if len(contents) == 0 {
+		return contents
+	}
+	partsOf := func(c map[string]any) []map[string]any {
+		ps, _ := c["parts"].([]map[string]any)
+		return ps
+	}
+	answered := map[string]bool{}
+	answeredName := map[string]bool{}
+	for _, c := range contents {
+		for _, p := range partsOf(c) {
+			if fr, ok := p["functionResponse"].(map[string]any); ok {
+				if id, _ := fr["id"].(string); id != "" {
+					answered[id] = true
+				} else {
+					name, _ := fr["name"].(string)
+					answeredName[name] = true
+				}
+			}
+		}
+	}
+	key := "output"
+	if ag {
+		key = "result"
+	}
+	out := make([]map[string]any, 0, len(contents)+1)
+	for i, c := range contents {
+		out = append(out, c)
+		if c["role"] != "model" {
+			continue
+		}
+		var synth []map[string]any
+		for _, p := range partsOf(c) {
+			fc, ok := p["functionCall"].(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := fc["id"].(string)
+			name, _ := fc["name"].(string)
+			if id != "" && answered[id] || id == "" && answeredName[name] {
+				continue
+			}
+			res := map[string]any{"name": name, "response": map[string]any{key: interruptedToolNote}}
+			if id != "" {
+				res["id"] = id
+			}
+			synth = append(synth, map[string]any{"functionResponse": res})
+		}
+		if len(synth) == 0 {
+			continue
+		}
+		if i+1 < len(contents) && contents[i+1]["role"] == "user" && (agClaude || hasResponse(partsOf(contents[i+1]))) {
+			contents[i+1]["parts"] = append(synth, partsOf(contents[i+1])...)
+			continue
+		}
+		out = append(out, map[string]any{"role": "user", "parts": synth})
+	}
+	return out
 }
 
 // thinkingConfig says how hard the model should think: a level for

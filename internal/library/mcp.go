@@ -34,6 +34,10 @@ type Server struct {
 	URL       string            `json:"url,omitempty"`
 	Headers   map[string]string `json:"headers,omitempty"`
 	Agents    []string          `json:"agents"`
+	// DisabledTools are the server's tools its agents leave out, by the
+	// names the server gives them, written in each agent's own way where
+	// it has one (mcp_tools_off.go)
+	DisabledTools []string `json:"disabledTools,omitempty"`
 }
 
 // Remote reports whether the server is reached by URL.
@@ -1025,7 +1029,11 @@ func (f *mcpFile) merged(s *Server, old map[string]any) ordered {
 
 // put writes the server into the file, in place of one by its name.
 func (f *mcpFile) put(s *Server, old map[string]any) error {
-	o := f.merged(s, old)
+	return f.putEntry(s, f.merged(s, old))
+}
+
+// putEntry writes the entry o for the server into the file.
+func (f *mcpFile) putEntry(s *Server, o ordered) error {
 	switch f.Format {
 	case fmtCodex, fmtGrok:
 		return putCodex(f.Path, s.Name, o)

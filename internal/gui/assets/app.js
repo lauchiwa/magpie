@@ -114,6 +114,16 @@ async function api(path, body, heads, signal) {
       err.code = data.code;
       err.message = t("{agent} is signed in to {user} now: sign it in to another of its accounts first (Use on that account), then remove this one", { agent: { codex: "Codex", claude: "Claude Code" }[data.agent] || data.agent, user: data.user });
     }
+    // a text Import can't add as a routing group (laincatx on X)
+    if (data?.code === "share") {
+      err.code = data.code;
+      err.message = {
+        newer: t("This group was shared from a newer magpie (format {n}): update magpie to import it", { n: data.format }),
+        no_format: t("This shared group says no format it is in: copy it again with Copy to share"),
+        unreadable: t("This shared group can't be read: copy it again with Copy to share"),
+        none_here: t("None of the group's models is in your magpie: {models}", { models: data.models }),
+      }[data.share] || t("This is not a routing group shared from magpie: copy one with Copy to share in a group's menu");
+    }
     // an agent's npm update whose global folder (Program Files) needs an
     // administrator, or RTK's winget for every user, the prompt declined or
     // not to be had (新v学员 on Discord): what to do, in the reader's language
@@ -1190,10 +1200,14 @@ function sheet(box, open, done) {
   run.oncancel = run.onfinish;
 }
 
-// startField: the field an agent's model is picked in, magpie's among
-// its options (Gemini CLI's model, not how it signs in)
+// startField: the field an agent's model is picked in (Gemini CLI's model,
+// not how it signs in). Its model is that field whatever the providers
+// on: one switched off changes only what it lists, so Codex's model with
+// none of magpie's left isn't traded for its subagent model, which still
+// has a ChatGPT account's (#1582). A model with nothing to list (Ante's,
+// magpie's only) leaves the field it connects through.
 function startField(a) {
-  return a.fields.find((f) => f.key === "model" && f.options.some((o) => o.ref)) || connectField(a);
+  return a.fields.find((f) => f.key === "model" && f.options.length) || connectField(a);
 }
 
 // startButton picks the model an agent starts on, from the row. It says
@@ -2853,13 +2867,13 @@ async function openAgentModels(a, anchor, ev) {
 
   document.body.append(box);
   // under the line, or over it where there's no room; the list scrolls
-  const r = anchor.getBoundingClientRect(), pad = 8;
+  const r = anchor.getBoundingClientRect(), pad = 8, top = popTop(pad);
   const w = Math.min(railed ? 580 : 380, innerWidth - pad * 2);
   box.style.width = w + "px";
   const x = Math.max(pad, Math.min(r.left - 10, innerWidth - w - pad));
   box.style.left = x + "px";
   box.style.setProperty("--ox", Math.max(18, Math.min(w - 18, r.left + Math.min(r.width, 60) / 2 - x)) + "px");
-  const below = innerHeight - r.bottom - 8 - pad, above = r.top - 8 - pad;
+  const below = innerHeight - r.bottom - 8 - pad, above = r.top - 8 - top;
   const want = Math.min(560, box.scrollHeight);
   if (want > below && above > below) {
     box.classList.add("up");
@@ -2878,7 +2892,7 @@ async function openAgentModels(a, anchor, ev) {
     closeAgentModels();
     me.anchor.focus({ preventScroll: true });
   };
-  me.scrolled = (e) => { if (!box.contains(e.target)) closeAgentModels(); };
+  me.scrolled = (e) => { if (scrollCloses(box, e)) closeAgentModels(); };
   document.addEventListener("mousedown", me.outside, true);
   document.addEventListener("keydown", me.keys, true);
   document.addEventListener("scroll", me.scrolled, true);
@@ -2948,7 +2962,7 @@ function openRowMenu(anchor, acts) {
   anchor.classList.add("open");
   const outside = (e) => { if (!box.contains(e.target) && !anchor.contains(e.target)) closeAgentMenu(); };
   // a long menu scrolls inside itself; only a scroll outside it closes it
-  const scroll = (e) => { if (!box.contains(e.target)) closeAgentMenu(); };
+  const scroll = (e) => { if (scrollCloses(box, e)) closeAgentMenu(); };
   const keys = (e) => {
     const k = items.indexOf(document.activeElement);
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeAgentMenu(); anchor.focus({ preventScroll: true }); }
@@ -3729,11 +3743,29 @@ function score(q, o) {
   return 0;
 }
 
+// popTop is the highest a popover's top edge may go, pad under the window's
+// own chrome: on a Mac window the traffic lights are drawn over the page's
+// header.top, so a list that opens upward in a short window stops under it
+// rather than over them (#1573, lyston11). Elsewhere the header is the
+// page's own row and the edge is pad, as it always was. The header's
+// measured bottom already counts the text size (--zoom).
+function popTop(pad) {
+  const b = document.body.classList;
+  if (!b.contains("window") || !b.contains("mac")) return pad;
+  const head = document.querySelector("header.top");
+  return Math.max(0, head ? head.getBoundingClientRect().bottom : 0) + pad;
+}
+
 function placePop(anchor, w, h) {
   const pop = $("#pop");
-  const r = anchor.getBoundingClientRect(), pad = 8;
+  const r = anchor.getBoundingClientRect(), pad = 8, top = popTop(pad);
   w = Math.min(w, innerWidth - pad * 2);
-  h = Math.min(h, innerHeight - pad * 2);
+  // a window too short for it holds it to the room between the chrome and
+  // the foot, and its list scrolls, rather than running off the bottom
+  const most = innerHeight - pad - top;
+  pop.style.maxHeight = "";
+  if (!(parseFloat(getComputedStyle(pop).maxHeight) <= most)) pop.style.maxHeight = most + "px";
+  h = Math.min(h, most);
   pop.style.width = w + "px";
   let x = Math.max(pad, Math.min(r.left, innerWidth - w - pad));
   let y = r.bottom + 5;
@@ -3743,13 +3775,13 @@ function placePop(anchor, w, h) {
   pop.style.setProperty("--ox", Math.max(16, Math.min(w - 16, r.left + r.width / 2 - x)) + "px");
   // h is the most it can be: opened upward, its bottom edge is held to the
   // button, so a short list sits on the button rather than h above it
-  if (y + h > innerHeight - pad && r.top - 5 - h >= pad) {
+  if (y + h > innerHeight - pad && r.top - 5 - h >= top) {
     pop.classList.add("up");
     pop.style.top = "auto";
     pop.style.bottom = innerHeight - r.top + 5 + "px";
     return;
   }
-  if (y + h > innerHeight - pad) y = Math.max(pad, innerHeight - pad - h);
+  if (y + h > innerHeight - pad) y = Math.max(top, innerHeight - pad - h);
   pop.style.bottom = "auto";
   pop.style.top = y + "px";
 }
@@ -5590,10 +5622,14 @@ function renderGateway() {
   const fix = gatewayFixButton(g, older);
   if (fix) who.append(fix);
   if (gatewayFix.err && gatewayFix.when === gatewayFixWhen(g)) who.append(el("div", "sub old err", gatewayFix.err));
+  // served to other machines' browsers (magpie web), the address shown is
+  // the one they reach, MAGPIE_PUBLIC_URL's, not this computer's loopback
+  // (#1551)
+  const shown = web && g.publicURL || g.url;
   const url = el("button", "url");
-  url.append(el("code", "", g.url));
+  url.append(el("code", "", shown));
   url.title = t("Copy the gateway URL");
-  url.onclick = () => copy(g.url, t("Gateway URL"));
+  url.onclick = () => copy(shown, t("Gateway URL"));
   box.append(dot, who, url);
 }
 
@@ -5745,8 +5781,10 @@ const decideEntry = (m) => !m.group && !!m.provider?.id && decidesModel(m.provid
 // every exposed model, as the ids agents use
 function gatewayModels() {
   // the routing groups first, as the agents' pickers list them
-  const out = (providers.gateway.groups || []).map((g) => ({ id: g.id, name: g.name, icons: g.icons, group: true,
-    provider: { name: [t("routing group"), g.providers.join(", ")].filter(Boolean).join(" · ") },
+  // a group's lists may come as null (#1585): one such group mustn't take
+  // every model off the list
+  const out = (providers.gateway.groups || []).filter((g) => g && typeof g.id === "string").map((g) => ({ id: g.id, name: g.name || g.id, icons: g.icons || [], group: true,
+    provider: { name: [t("routing group"), (g.providers || []).join(", ")].filter(Boolean).join(" · ") },
     efforts: g.efforts || [], images: !!g.images, context: g.context, output: g.output, members: g.members || [] }));
   // a provider switched off is skipped: the gateway refuses its models, so
   // they are not ids an agent can use, and listing them here would show a
@@ -5895,8 +5933,10 @@ function renderConnect() {
   const urls = [g.url, ...(g.lanURLs || [])];
   // the address picked is kept (coeo91): an address not offered right now
   // (the network not up yet after a start) shows this computer's, and the
-  // pick comes back with it
-  connectURL = urls.includes(connectWant) ? connectWant : g.url;
+  // pick comes back with it. With none picked, MAGPIE_PUBLIC_URL is where
+  // it starts: it says the address other machines use (#1551)
+  const first = g.publicURL && urls.includes(g.publicURL) ? g.publicURL : g.url;
+  connectURL = urls.includes(connectWant) ? connectWant : first;
   // a gateway MAGPIE_ADDR puts on the network (a Docker image's, whose
   // host is another machine to it) is shown with a gateway key everywhere
   const remote = connectURL !== g.url || !!g.onNetwork;
@@ -5928,7 +5968,7 @@ function renderConnect() {
 
   const b = el("div", "val");
   if (urls.length > 1) b.append(connectPick("connectAddress", "Address", base,
-    urls.map((u) => ({ v: u, name: f.base(u), note: t(u === g.url ? "This computer" : "Local network") })), connectURL,
+    urls.map((u) => ({ v: u, name: f.base(u), note: t(u === g.url ? "This computer" : u === g.publicURL ? "Public address" : "Local network") })), connectURL,
     (u) => { connectWant = u; keepPick("magpie.connectAddress", u); renderConnect(); }));
   else b.append(el("code", "", base));
   b.append(copyBtn(base, "Base URL"));
@@ -6783,7 +6823,8 @@ function renderAdd() {
   const drawTiles = () => {
     tiles.replaceChildren();
     const f = presetQuery.trim().toLowerCase();
-    const hit = (pr) => !f || pr.name.toLowerCase().includes(f) || pr.id.includes(f) || hostOf(pr.chat || pr.responses || pr.anthropic).includes(f) || (pr.note || "").toLowerCase().includes(f);
+    // the note is found in the words it is shown in, too (远程 for Remote magpie)
+    const hit = (pr) => !f || pr.name.toLowerCase().includes(f) || pr.id.includes(f) || hostOf(pr.chat || pr.responses || pr.anthropic).includes(f) || (pr.note || "").toLowerCase().includes(f) || (pr.note ? t(pr.note).toLowerCase().includes(f) : false);
     // a section: its name, what it is in a word, and its rows, three to a line
     const section = (title, hint) => {
       const k = el("div", "kind");
@@ -6861,7 +6902,9 @@ function renderAdd() {
         grid.append(r);
       }
     }
-    for (const [kind, title, hint] of [["vendor", "Vendors", "the makers' own APIs"], ["relay", "Relays", "one key, many vendors"], ["local", "On this machine", ""]]) {
+    // another computer's magpie is no relay: a heading of its own, after
+    // this machine's (Avalon on Discord didn't find it among the relays)
+    for (const [kind, title, hint] of [["vendor", "Vendors", "the makers' own APIs"], ["relay", "Relays", "one key, many vendors"], ["local", "On this machine", ""], ["remote", "Another computer's magpie", "shared on its network"]]) {
       // a vendor's China endpoint is a preset of its own: one row with the global one
       const rows = providers.presets.filter((p) => p.kind === kind && !globalOf(p))
         .map((p) => [p, chinaOf(p)]).filter(([p, cn]) => hit(p) || (cn && hit(cn)));
@@ -8530,16 +8573,21 @@ function drawEditor(p, presetID) {
   }
 
   // Volcengine Ark tells a Coding or Agent Plan's windows only to the
-  // account's access key, never to the plan's key (#1427); the saved
-  // Secret is never sent back here, only that one is saved
-  const access = p ? p.accessKey : pr?.accessKey ? { id: "", secretSet: false } : null;
+  // account's access key, never to the plan's key (#1427), and Tencent
+  // Cloud a Token Plan 企业版's only to its SecretId and SecretKey (#1574),
+  // asked only at the regions that are that plan; the saved Secret is
+  // never sent back here, only that one is saved
+  const access = p ? p.accessKey : pr?.accessKey ? { vendor: pr.accessKeyVendor || "volcengine", id: "", secretSet: false } : null;
+  let accessAt = () => {}, accessShown = () => !!access;
   if (access) {
+    const tc = access.vendor === "tencent";
+    const idName = tc ? t("SecretId") : t("AccessKey ID"), secretName = tc ? t("SecretKey") : t("Secret Access Key");
     if (draft.accessKeyID === undefined) draft.accessKeyID = access.id || "";
-    const ak = input(draft.accessKeyID, t("AccessKey ID"));
+    const ak = input(draft.accessKeyID, idName);
     ak.classList.add("volc-ak");
     ak.oninput = () => { draft.accessKeyID = ak.value.trim(); };
     const saved = access.secretSet && !draft.clearAccessKey;
-    const sk = input(draft.secretAccessKey || "", saved ? t("saved · paste a new one to replace it") : t("Secret Access Key"), "password");
+    const sk = input(draft.secretAccessKey || "", saved ? t("saved · paste a new one to replace it") : secretName, "password");
     sk.classList.add("volc-sk");
     sk.oninput = () => { draft.secretAccessKey = sk.value.trim(); };
     sk.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Escape") cancelEdit(); };
@@ -8548,12 +8596,28 @@ function drawEditor(p, presetID) {
     if (saved) {
       const side = el("div", "side");
       const drop = el("button", "text", t("Remove"));
-      drop.onclick = () => { draft.clearAccessKey = true; draft.accessKeyID = ""; draft.secretAccessKey = ""; ak.value = ""; sk.value = ""; sk.placeholder = t("Secret Access Key"); drop.remove(); };
+      drop.onclick = () => { draft.clearAccessKey = true; draft.accessKeyID = ""; draft.secretAccessKey = ""; ak.value = ""; sk.value = ""; sk.placeholder = secretName; drop.remove(); };
       side.append(drop);
       pair.append(side);
     }
-    ed.append(...field(t("AccessKey ID"), ak, ""));
-    ed.append(...field(t("Secret Access Key"), pair, t("The plan's 5-hour, weekly and monthly windows are told only to the account's access key (Volcengine console → API Access Keys), not to the plan's API key. Give it here for the Usage page to show them; it is used for nothing else.")));
+    const rows = [
+      ...field(idName, ak, ""),
+      ...field(secretName, pair, tc
+        ? t("Token Plan Enterprise's usage is told only to the Tencent Cloud account's API key (console → Access management → API keys), not to the plan's API key. Give its SecretId and SecretKey here for the Usage page to show it; a sub-user's key that may read TokenHub is enough. It is used for nothing else.")
+        : t("The plan's 5-hour, weekly and monthly windows are told only to the account's access key (Volcengine console → API Access Keys), not to the plan's API key. Give it here for the Usage page to show them; it is used for nothing else.")),
+    ];
+    ed.append(...rows);
+    // a preset with the plan at some of its regions only (Tencent Cloud's
+    // 企业版 beside its personal plan) asks for it at those, and at an
+    // endpoint none of its regions has, which may be one of them
+    const at = pr?.accessKeyRegions;
+    if (at?.length) {
+      accessAt = (r) => {
+        const on = !r || at.includes(r.id) || !regionAt(pr, draft);
+        for (const x of rows) x.hidden = !on;
+      };
+      accessShown = () => !rows[0].hidden;
+    }
   }
 
   // a relay that offers several regional endpoints, or a vendor whose plans
@@ -8574,12 +8638,14 @@ function drawEditor(p, presetID) {
           site.textContent = hostOf(site.dataset.url) + " ↗";
         }
         onRegion(r);
+        accessAt(r);
         for (const x of seg.querySelectorAll(".opt")) x.classList.toggle("on", x === b);
         slide(seg, "regions");
         refreshEndpoints();
       };
       seg.append(b);
     }
+    accessAt(cur);
     queueMicrotask(() => {
       slide(seg, "regions");
       // the region in use in view, where they scroll
@@ -8807,7 +8873,7 @@ function drawEditor(p, presetID) {
       body.accessKeyID = draft.accessKeyID || "";
       if (draft.secretAccessKey) body.secretAccessKey = draft.secretAccessKey;
       else if (draft.clearAccessKey) body.clearAccessKey = true;
-      if (body.accessKeyID && !body.secretAccessKey && !(access.secretSet && !draft.clearAccessKey)) { ed.querySelector(".volc-sk")?.focus({ preventScroll: true }); return editorError(t("Give the access key's Secret too"), "warn"); }
+      if (accessShown() && body.accessKeyID && !body.secretAccessKey && !(access.secretSet && !draft.clearAccessKey)) { ed.querySelector(".volc-sk")?.focus({ preventScroll: true }); return editorError(t("Give the access key's Secret too"), "warn"); }
     }
     if (vertex) body.vertex = vertexOfDraft();
     if (isNew && custom && !body.name) { name.focus(); return editorError(t("Give it a name"), "warn"); }
@@ -12901,6 +12967,19 @@ function closeProtoMenu() {
   protoMenu = null;
   done?.();
 }
+// scrollCloses says whether a scroll closes the app menu in box: one of the
+// reader's outside it does. A view scrolled by anything else (code, the
+// browser bringing what was clicked into sight, a scroll whose event comes
+// in the frame after the click) is put back by the click guard, which holds
+// the menu's anchor where it was, so the menu stays beside it. So is the
+// guard's own scroll that brings the clicked anchor back into sight before
+// the menu opens (guardUntil). At phone width a menu low on a page opened
+// shut again at once: the Gateway page's Connect address in magpie web,
+// whose header takes two rows.
+function scrollCloses(box, e) {
+  if (box.contains(e.target)) return false;
+  return !e.target.classList?.contains("view") || performance.now() < purposeUntil && purposeUntil !== guardUntil;
+}
 // openProtoMenu picks one of opts, or several when value is a list: each
 // ticked or unticked in turn with the menu kept open, choose given the
 // ticked ones, in the menu's order, once it closes (and only if they
@@ -12912,19 +12991,19 @@ function closeProtoMenu() {
 // itself, so its last item can be reached in a short window (#1437). align
 // "right" lines its right edge up with the anchor's; dx nudges it sideways.
 function placeMenu(box, anchor, align = "left", dx = 0) {
-  const r = anchor.getBoundingClientRect(), h = box.offsetHeight, pad = 8;
+  const r = anchor.getBoundingClientRect(), h = box.offsetHeight, pad = 8, top = popTop(pad);
   let y = r.bottom + 5;
-  const below = innerHeight - pad - y, above = r.top - 5 - pad;
+  const below = innerHeight - pad - y, above = r.top - 5 - top;
   if (h > below && above >= h) { y = r.top - 5 - h; box.classList.add("up"); }
   else if (h > below && above > below) {
     box.style.maxHeight = above + "px";
-    y = pad;
+    y = top;
     box.classList.add("up");
   } else if (h > below) box.style.maxHeight = Math.max(below, 0) + "px";
   const w = box.offsetWidth;
   const left = (align === "right" ? r.right - w : r.left) + dx;
   box.style.left = Math.max(pad, Math.min(left, innerWidth - w - pad)) + "px";
-  box.style.top = Math.max(pad, y) + "px";
+  box.style.top = Math.max(top, y) + "px";
 }
 function openProtoMenu(anchor, opts, value, choose, head = "Protocol this key speaks", cls = "", align = "left", live = false, search = "") {
   closeProtoMenu();
@@ -12986,7 +13065,7 @@ function openProtoMenu(anchor, opts, value, choose, head = "Protocol this key sp
   // Only the reader's scroll dismisses it; the click guard holds its anchor.
   const scroll = (e) => {
     if (box.contains(e.target) || live && performance.now() >= purposeUntil) return;
-    closeProtoMenu();
+    if (scrollCloses(box, e)) closeProtoMenu();
   };
   const keys = (e) => {
     const shown = filter ? items.filter((b) => !b.hidden) : items;
@@ -13589,7 +13668,7 @@ function openRangeMenu(anchor, current, choose) {
   anchor.classList.add("open");
   anchor.setAttribute("aria-expanded", "true");
   const outside = (e) => { if (!box.contains(e.target) && !anchor.contains(e.target)) closeProtoMenu(); };
-  const scroll = (e) => { if (!box.contains(e.target)) closeProtoMenu(); };
+  const scroll = (e) => { if (scrollCloses(box, e)) closeProtoMenu(); };
   // Escape closes; arrows walk the days, a week up or down
   const keys = (e) => {
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeProtoMenu(); anchor.focus({ preventScroll: true }); return; }
@@ -14827,7 +14906,7 @@ function renderPanelUse() {
     // the total counts the cache's tokens too, so they're named beside in and out
     const cached = l.cache_read + l.cache_write;
     blk("Tokens", fmtN(allTokens(l)), t("{a} in · {b} out", { a: fmtN(l.input), b: fmtN(l.output) }) + (cached ? " · " + t("{n} cached", { n: fmtN(cached) }) : ""));
-    blk("Requests", ledNum(l.calls), l.errors ? t("{n} failed", { n: ledNum(l.errors) }) : t("none failed"), "", l.errors ? "bad" : "");
+    blk("Requests", ledNum(l.calls), [l.errors ? t("{n} failed", { n: ledNum(l.errors) }) : t("none failed"), l.retried ? t("{n} answered on a retry", { n: ledNum(l.retried) }) : ""].filter(Boolean).join(" · "), "", l.errors ? "bad" : "");
     const c = fmtCost(l);
     blk("Cost", c ? "≈" + c : "—", l.unpriced ? t("{n} unpriced", { n: l.unpriced }) : t("effective prices"), c ? "cost" : "");
     blk("Cache hit rate", prompt ? Math.round((100 * l.cache_read) / prompt) + "%" : "—", t("of the prompt"));
@@ -15941,7 +16020,7 @@ function renderUsage() {
   const hit = u.cache_read && promptTokens ? t("hit rate {p}", { p: Math.round(100 * u.cache_read / promptTokens) + "%" }) : "";
   tile(fmtN(u.cache_read), t("cache read"), hit, u.cache_write ? t("{n} written", { n: fmtN(u.cache_write) }) + cacheTTLs(u, fmtN) : "");
   tile(fmtN(u.reasoning), t("reasoning"), t("inside output"));
-  tile(String(u.calls), t(u.calls === 1 ? "call" : "calls"), u.errors ? t("{n} failed", { n: u.errors }) : "");
+  tile(String(u.calls), t(u.calls === 1 ? "call" : "calls"), [u.errors ? t("{n} failed", { n: u.errors }) : "", u.retried ? t("{n} answered on a retry", { n: u.retried }) : ""].filter(Boolean).join(" · "));
 
   // the timeline: one bar per hour, day or week; output sits on top of input
   const chart = $("#chart");
@@ -15981,6 +16060,7 @@ function renderUsage() {
       if (g.sub) sub.push(g.sub);
       sub.push(t(g.calls === 1 ? "{n} call" : "{n} calls", { n: g.calls }));
       if (g.errors) sub.push(t("{n} failed", { n: g.errors }));
+      if (g.retried) sub.push(t("{n} answered on a retry", { n: g.retried }));
       // how long the streamed replies took to begin, and how fast they
       // wrote after (#196)
       if (g.timed) {
@@ -16023,7 +16103,7 @@ function renderUsage() {
 // server pages it (/api/usage/requests) and saves it whole as CSV.
 
 let ledger = null; // the page shown: { rows, offset, total, agents, …totals }
-let ledOffset = 0, ledPurpose = "", ledAgent = "", ledProvider = "", ledAccount = "", ledCallerKey = "", ledFailed = false, ledQuery = "", ledModel = "", ledRoute = 0, ledComputer = "", ledDay = "", ledVia = "";
+let ledOffset = 0, ledPurpose = "", ledAgent = "", ledProvider = "", ledAccount = "", ledCallerKey = "", ledFailed = false, ledRetried = false, ledQuery = "", ledModel = "", ledRoute = 0, ledComputer = "", ledDay = "", ledVia = "";
 
 // computerOpts are the Computer filter's choices: this computer, the others
 // together, and each other one, as sync shares their usage (#542); none
@@ -16045,10 +16125,10 @@ try {
 
 let ledRouteInfo = null, ledBeforeRoute = null;
 window.openUsageRoute = (route) => {
-  if (!ledBeforeRoute) ledBeforeRoute = { period, ledOffset, ledPurpose, ledAgent, ledProvider, ledAccount, ledCallerKey, ledFailed, ledQuery, ledModel, ledComputer, ledDay, ledVia };
+  if (!ledBeforeRoute) ledBeforeRoute = { period, ledOffset, ledPurpose, ledAgent, ledProvider, ledAccount, ledCallerKey, ledFailed, ledRetried, ledQuery, ledModel, ledComputer, ledDay, ledVia };
   ledRoute = route.id;
   ledRouteInfo = route;
-  ledOffset = 0; ledPurpose = ""; ledAgent = ""; ledProvider = ""; ledAccount = ""; ledCallerKey = ""; ledFailed = false; ledQuery = ""; ledModel = ""; ledComputer = ""; ledVia = "";
+  ledOffset = 0; ledPurpose = ""; ledAgent = ""; ledProvider = ""; ledAccount = ""; ledCallerKey = ""; ledFailed = false; ledRetried = false; ledQuery = ""; ledModel = ""; ledComputer = ""; ledVia = "";
   ledDay = "";
   $("#ledQ").value = "";
   period = "all";
@@ -16069,6 +16149,7 @@ function ledParams(extra) {
   if (ledVia) q.set("via", ledVia);
   if (ledRoute) q.set("route", ledRoute);
   if (ledFailed) q.set("failed", "1");
+  if (ledRetried) q.set("retried", "1");
   if (ledModel) q.set("model", ledModel);
   else if (ledQuery.trim()) q.set("q", ledQuery.trim());
   if (extra) for (const k in extra) q.set(k, extra[k]);
@@ -16409,18 +16490,22 @@ const ledFloor = (x) => x?.floor_ms > 0 ? (1000 * x.floor_out) / x.floor_ms : 0;
 // a group's speed as every ranking and the Output speed card say it, by one
 // rule (Fallmonkey on Discord): with replies whose speed was measured, their
 // speed and how many they are, "125 tok/s (1)", not beside "260 requests"
-// alone; with none, but replies read from a session file that tell the
-// least they wrote at, that floor and how many, "≥100 tok/s (30)"; else
-// nothing. The Requests tab says the same of each row: "125 tok/s" or
-// "≥100 tok/s". v is the figure a speed ranking orders by and bars.
+// alone; with replies read from a session file that tell the least they
+// wrote at, that floor and how many, "≥100 tok/s (30)"; with both, both,
+// the measured first, "62 tok/s (2) · ≥71 tok/s (54)", as two replies are
+// too few to stand for 56 and a floor is no measure; else nothing. The
+// Requests tab says the same of each row: "125 tok/s" or "≥100 tok/s". v is
+// the figure a speed ranking orders by and bars: the measured speed when
+// there is one, else the floor. main is the first part, floor the second.
 function ledGroupSpeed(x) {
-  const v = ledSpeed(x), f = v ? 0 : ledFloor(x), k = v ? x.decode_n || 0 : x?.floor_n || 0;
+  const v = ledSpeed(x), f = ledFloor(x), kv = x?.decode_n || 0, kf = x?.floor_n || 0;
   if (!v && !f) return null;
-  const n = ledNum(Math.round(v || f));
-  const text = (f ? "≥" : "") + (k ? t("{n} tok/s ({k})", { n, k: ledNum(k) }) : t("{n} tok/s", { n }));
-  const title = !k ? "" : v ? t(k === 1 ? "Measured on {k} reply, from its first token to its end; the others tell no speed" : "Measured on {k} replies, from their first token to their end; the others tell no speed", { k: ledNum(k) })
-    : t(k === 1 ? "At least: {k} reply read from a session file, which has no first token, so the wait for it is counted too" : "At least: {k} replies read from session files, which have no first token, so the wait for it is counted too", { k: ledNum(k) });
-  return { v: v || f, text, title };
+  const say = (s, k) => k ? t("{n} tok/s ({k})", { n: ledNum(Math.round(s)), k: ledNum(k) }) : t("{n} tok/s", { n: ledNum(Math.round(s)) });
+  const measured = v ? say(v, kv) : "", floor = f ? "≥" + say(f, kf) : "";
+  const vTitle = !v || !kv ? "" : f ? t(kv === 1 ? "Measured on {k} reply, from its first token to its end" : "Measured on {k} replies, from their first token to their end", { k: ledNum(kv) })
+    : t(kv === 1 ? "Measured on {k} reply, from its first token to its end; the others tell no speed" : "Measured on {k} replies, from their first token to their end; the others tell no speed", { k: ledNum(kv) });
+  const fTitle = !f || !kf ? "" : t(kf === 1 ? "At least: {k} reply read from a session file, which doesn't say when its answer began, so time before that is counted too" : "At least: {k} replies read from session files, which don't say when their answers began, so time before that is counted too", { k: ledNum(kf) });
+  return { v: v || f, text: [measured, floor].filter(Boolean).join(" · "), main: measured || floor, floor: measured ? floor : "", title: [vTitle, fTitle].filter(Boolean).join("\n") };
 }
 // their mean wait for the first token, 0 for none
 const ledTTFT = (x) => x?.timed > 0 ? x.ttft_ms / x.timed : 0;
@@ -16743,6 +16828,16 @@ function ledRail(rail, box) {
   };
 }
 
+// the request list's status filter: "" for all, "failed" or "retried"
+const ledStatusOf = () => ledFailed ? "failed" : ledRetried ? "retried" : "";
+function ledShowStatus(to) {
+  if (to === ledStatusOf()) return;
+  ledFailed = to === "failed";
+  ledRetried = to === "retried";
+  ledOffset = 0;
+  loadLedger().catch((e) => status(e.message, "err"));
+}
+
 function renderLedgerDash(l) {
   const dash = $("#ledDash");
   dash.hidden = !l.total && !l.day;
@@ -16761,8 +16856,25 @@ function renderLedgerDash(l) {
     return b;
   };
   const line = (...parts) => { const s = el("span", "sub"); s.append(...parts); return s; };
+  // a line holding a count's button wraps rather than cut the button off
+  // (German's "nach erneutem Versuch beantwortet" runs past a narrow card)
+  const jumps = (...parts) => { const s = line(...parts); s.classList.add("jumps"); return s; };
   block("Tokens", fmtN(total), line(t("{a} in · {b} out", { a: fmtN(l.input), b: fmtN(l.output) }), " · ", t("{a} cache", { a: fmtN(l.cache_read + l.cache_write) })), "", ledNum(total));
-  block("Requests", ledNum(l.calls), line(l.errors ? t("{n} failed", { n: ledNum(l.errors) }) + " · " + t("{p} succeeded", { p: (100 * (1 - l.errors / l.calls)).toFixed(l.errors ? 1 : 0) + "%" }) : t("none failed")));
+  // a request is counted once, by how it ended: one a later try answered
+  // is not a failure, and is counted beside them as answered on a retry
+  // (小一 on Discord). Each count is a button for its requests in the list.
+  const jump = (text, to, title) => {
+    const b = el("button", "led-jump" + (to === "failed" ? " bad" : "") + (ledStatusOf() === to ? " on" : ""), text);
+    b.type = "button";
+    b.title = title;
+    b.setAttribute("aria-pressed", ledStatusOf() === to ? "true" : "false");
+    b.onclick = () => ledShowStatus(ledStatusOf() === to ? "" : to);
+    return b;
+  };
+  block("Requests", ledNum(l.calls), l.errors
+    ? jumps(jump(t("{n} failed", { n: ledNum(l.errors) }), "failed", t("Show only the failed requests")), " · " + t("{p} succeeded", { p: (100 * (1 - l.errors / l.calls)).toFixed(1) + "%" }))
+    : line(t("none failed")));
+  if (l.retried) strip.lastChild.append(jumps(jump(t("{n} answered on a retry", { n: ledNum(l.retried) }), "retried", t("Show only the requests answered on a retry"))));
   const c = fmtCost(l);
   block("Cost", c ? "≈" + c : "—", line(l.unpriced ? t(l.unpriced === 1 ? "{n} call had no known price and is not counted" : "{n} calls had no known price and are not counted", { n: l.unpriced }) : t("effective prices")), c ? "cost" : "");
   const hit = block("Cache hit rate", (100 * rate).toFixed(1) + "%", null, "", t("The share of the prompt read from the cache"));
@@ -16771,9 +16883,10 @@ function renderLedgerDash(l) {
   meter.append(fill);
   hit.append(meter);
   // how fast the streamed replies wrote, and how long they took to begin (#860)
+  // a floor beside a measured speed goes under it, the card's figure kept whole
   const gs = ledGroupSpeed(l);
-  block("Output speed", gs ? gs.text : "—",
-    line(ledTTFT(l) ? t("first token in {ms} on average", { ms: ledTook(ledTTFT(l)) }) : t("no streamed replies timed")),
+  block("Output speed", gs ? gs.main : "—",
+    line(...[ledTTFT(l) ? t("first token in {ms} on average", { ms: ledTook(ledTTFT(l)) }) : t("no streamed replies timed")].concat(gs?.floor ? [" · ", gs.floor] : [])),
     "", [gs?.title, t("Output tokens a second after the first, over the streamed replies") + ". " + t("A reply that reasoned counts only its answer, from its first text: the reasoning was written before the stream showed it")].filter(Boolean).join("\n"));
   drawLedTrend();
 }
@@ -17069,19 +17182,24 @@ const ledRowSpeed = (r) => { const d = ledDecode(r); return d ? d.n / (d.w / 100
 // a shorter one or one asked with a tool's result, so only a reply of 1,000
 // or more is told. 0 when it tells none, and a call magpie timed tells its
 // own (ledDecode). Only the row's: the period's speed counts timed calls.
-// Claude Code's and Claude Desktop's files only: a call's time is from the
-// line that asked it, which is written before it is sent. Codex's call in a
-// turn of several is timed from the last tool output before its token count,
-// and Codex writes the output of a tool the call itself asked for before
-// that count (2,968 of 4,588 calls in a month of real rollouts), so its time
-// can begin inside the call and its tokens over it read high. OpenCode's
-// isn't checked against real sessions. They tell none.
-const LED_FLOOR_AGENTS = new Set(["claude", "claude-desktop"]);
-const ledFloorSpeed = (r) => {
-  if (r.source !== "log" || !LED_FLOOR_AGENTS.has(r.agent) || ledFailed_(r) || ledRowSpeed(r)) return 0;
-  if (!(r.out >= 1000 && r.ms >= 1000 && r.out * 1000 <= 10000 * r.ms)) return 0;
-  return r.out / (r.ms / 1000);
+// Claude Code's, Claude Desktop's and Codex's files only (usage.FloorAgents):
+// a call's time is from what asked for it, never from inside it. OpenCode's
+// isn't checked against real sessions, and tells none.
+// A Codex turn of one call that reasoned has its first token but not its
+// first text (Fallmonkey on Discord): its answer, its output less the
+// reasoning, all came after the first token, so the answer over the time
+// after it is a floor of the answer's speed; any size tells one, as the wait
+// isn't in it. ledFloor_ says the tokens, the ms, and whether it is that.
+const LED_FLOOR_AGENTS = new Set(["claude", "claude-desktop", "codex"]);
+const ledFloor_ = (r) => {
+  if (r.source !== "log" || !LED_FLOOR_AGENTS.has(r.agent) || ledFailed_(r) || ledRowSpeed(r)) return null;
+  if (r.agent === "codex" && r.ttft_ms > 0) {
+    const n = r.out - r.reasoning, w = r.ms - r.ttft_ms;
+    return r.reasoning > 0 && n > 0 && w >= 100 && n * 1000 <= 10000 * w ? { n, w, answer: true } : null;
+  }
+  return r.out >= 1000 && r.ms >= 1000 && r.out * 1000 <= 10000 * r.ms ? { n: r.out, w: r.ms } : null;
 };
+const ledFloorSpeed = (r) => { const f = ledFloor_(r); return f ? f.n / (f.w / 1000) : 0; };
 
 // the table as wide as the window, when leaving out what the row's details
 // say anyway makes it so: else it scrolls sideways (#799)
@@ -17155,14 +17273,17 @@ function renderLedger() {
   })), "Gateway keys", (v) => { ledCallerKey = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   const seg = $("#ledStatus");
   seg.replaceChildren();
-  for (const [on, name] of [[false, "All"], [true, "Failed"]]) {
-    const b = el("button", "opt" + (on === ledFailed ? " on" : ""), t(name));
+  // every request, those the agent got an error for, and those answered
+  // after a try that failed first
+  const shown = ledStatusOf();
+  for (const [on, name] of [["", "All"], ["failed", "Failed"], ["retried", "Retried"]]) {
+    const b = el("button", "opt" + (on === shown ? " on" : ""), t(name));
+    if (on === "retried") b.title = t("Show only the requests answered on a retry");
     b.onclick = () => {
-      if (on === ledFailed) return;
+      if (on === ledStatusOf()) return;
       for (const x of seg.querySelectorAll(".opt")) x.classList.toggle("on", x === b);
       slide(seg, "ledStatus");
-      ledFailed = on; ledOffset = 0;
-      loadLedger().catch((e) => status(e.message, "err"));
+      ledShowStatus(on);
     };
     seg.append(b);
   }
@@ -17173,6 +17294,7 @@ function renderLedger() {
   if (l.total) {
     sum.push(t("{n} in", { n: fmtN(l.input) }), t("{n} out", { n: fmtN(l.output) }), t("{n} cache write", { n: fmtN(l.cache_write) }), t("{n} cache read", { n: fmtN(l.cache_read) }));
     if (l.errors) sum.push(t("{n} failed", { n: l.errors }));
+    if (l.retried) sum.push(t("{n} answered on a retry", { n: l.retried }));
   }
   $("#ledSum").textContent = sum.join(" · ");
   // the two sources and their total, in the same block of cells as the totals
@@ -17233,7 +17355,7 @@ function renderLedger() {
   $("#ledRouteClear").setAttribute("aria-label", t("Clear filter"));
   $("#ledRouteClear").onclick = () => {
     ledRoute = 0; ledRouteInfo = null;
-    if (ledBeforeRoute) ({ period, ledOffset, ledPurpose = "", ledAgent, ledProvider, ledAccount = "", ledCallerKey, ledFailed, ledQuery, ledModel, ledComputer = "", ledDay = "", ledVia = "" } = ledBeforeRoute);
+    if (ledBeforeRoute) ({ period, ledOffset, ledPurpose = "", ledAgent, ledProvider, ledAccount = "", ledCallerKey, ledFailed, ledRetried = false, ledQuery, ledModel, ledComputer = "", ledDay = "", ledVia = "" } = ledBeforeRoute);
     ledBeforeRoute = null;
     $("#ledQ").value = ledQuery;
     loadLedger().catch((e) => status(e.message, "err"));
@@ -17245,7 +17367,7 @@ function renderLedger() {
   const pager = $("#ledPager");
   if (!l.total) {
     wrap.classList.add("none");
-    const filtered = ledPurpose || ledDay || ledRoute || ledAgent || ledProvider || ledAccount || ledComputer || ledCallerKey || ledModel || ledVia || ledFailed || ledQuery.trim();
+    const filtered = ledPurpose || ledDay || ledRoute || ledAgent || ledProvider || ledAccount || ledComputer || ledCallerKey || ledModel || ledVia || ledFailed || ledRetried || ledQuery.trim();
     const none = noCallsIn(period);
     wrap.replaceChildren(el("div", "led-none", filtered ? t("No requests match these filters.") : t(none)));
     ledFit();
@@ -17351,6 +17473,7 @@ function renderLedger() {
     td(v ? t("{n} tok/s", { n: ledNum(Math.round(v)) }) : floor ? "≥" + t("{n} tok/s", { n: ledNum(Math.round(floor)) }) : "—", "n speed" + (v || floor ? "" : " faint"),
       v ? (r.reasoning > 0 ? t("{n} answer tokens in {ms} after the first text, the {r} reasoning tokens before it left out", { n: ledNum(ledDecode(r).n), ms: ledTook(ledDecode(r).w), r: ledNum(r.reasoning) })
         : t("{n} output tokens in {ms} after the first", { n: ledNum(r.out), ms: ledTook(r.ms - r.ttft_ms) })) + " · " + t("TTFT {ms}", { ms: ledTook(r.ttft_ms) })
+        : floor && ledFloor_(r).answer ? t("At least: {n} answer tokens in {ms} after the first token, the {r} reasoning tokens left out. The session file has no first text, so reasoning after the first token is counted too", { n: ledNum(ledFloor_(r).n), ms: ledTook(ledFloor_(r).w), r: ledNum(r.reasoning) }) + " · " + t("TTFT {ms}", { ms: ledTook(r.ttft_ms) })
         : floor ? t("At least: {n} output tokens in {ms}, from the line that asked for it to its last. The session file has no first token, so the wait for it is counted too", { n: ledNum(r.out), ms: ledTook(r.ms) })
         : r.ttft_ms || untimed || ledFailed_(r) ? "" : timed ? t("The session file has no first token to time a speed from") : t("Not streamed: no first token to time a speed from"));
     const st = el("span", "st");
@@ -17358,8 +17481,11 @@ function renderLedger() {
     // and says only whether it went well
     let word = r.status ? String(r.status) : r.source === "log" ? (bad ? r.err_type || t("Failed") : t("Succeeded")) : "—";
     if (r.status && bad && r.err_type) word += " · " + r.err_type;
+    if (r.handed_on) word += " · " + t("handed on");
+    else if (r.tries > 1) word += " · " + t("{n} tries", { n: r.tries });
     st.append(el("i", "dot"), document.createTextNode(word));
-    td(st, "", bad ? (r.err || t("Failed: the agent was answered {status}", { status: r.status })) : "");
+    td(st, "", [r.handed_on && t("This try failed and the request was handed on to the next: the request is counted by how it ended, not by this try"),
+      bad ? (r.err || t("Failed: the agent was answered {status}", { status: r.status })) : ""].filter(Boolean).join("\n"));
     const detail = ledOpen.has(key) ? ledDetail(r, LED_COLS.length) : null;
     const toggle = () => {
       if (ledOpen.delete(key)) { tr.classList.remove("open"); tr.setAttribute("aria-expanded", "false"); tr.nextElementSibling?.classList.contains("led-detail") && tr.nextElementSibling.remove(); return; }
@@ -17916,7 +18042,7 @@ function openSessCombo(anchor, all, opts, value, choose, head) {
   placeMenu(box, anchor);
   anchor.classList.add("open");
   const outside = (e) => { if (!box.contains(e.target) && !anchor.contains(e.target)) closeProtoMenu(); };
-  const scroll = (e) => { if (!box.contains(e.target)) closeProtoMenu(); };
+  const scroll = (e) => { if (scrollCloses(box, e)) closeProtoMenu(); };
   const keys = (e) => {
     const i = items.indexOf(document.activeElement);
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeProtoMenu(); anchor.focus(); }
@@ -19569,6 +19695,8 @@ function renderSettings() {
   row(t("Config folder"), s.portable ? t("Portable: everything magpie keeps, in the data folder beside it") : t("providers, profiles and these settings"), s.dir, copyBtn(s.dir, t("Path")), open);
   renderCLI(row(t("Command line"), t("Checking your shells…"), ""));
   row(t("Gateway URL"), t("the address every agent is pointed at"), s.gateway, copyBtn(s.gateway, t("Gateway URL")));
+  // MAGPIE_PUBLIC_URL, where other machines reach it (#1551)
+  if (s.publicURL) row(t("Public address"), t("MAGPIE_PUBLIC_URL: where other computers reach the gateway, with a gateway key"), s.publicURL, copyBtn(s.publicURL, t("Public address"))).id = "publicURLRow";
   const join = el("button", "discord");
   join.innerHTML = DISCORD_SVG;
   join.append(el("span", "", t("Join Discord")));
@@ -20686,22 +20814,32 @@ function renderSearch(s, keep) {
   const d = searchDraft;
   if (!vendors.some((v) => v.id === d.vendor)) d.vendor = vendors[0]?.id || "";
   const vendor = () => vendors.find((v) => v.id === d.vendor) || {};
+  // the one of the picked vendor already added: Add then changes it, its
+  // key kept when none is typed
+  const saved = () => (s.searchAPIs || []).find((a) => a.vendor === d.vendor);
   const pick = el("button", "proto pick search-vendor");
   pick.type = "button";
   pick.setAttribute("aria-label", t("Search API"));
   const key = input(d.key, t("API key"), "password");
+  // any API's base URL (#1580): an endpoint of the user's own that answers
+  // as that API does; empty is the vendor's own, a SearXNG's is required
   const url = input(d.url, "https://searx.example.com");
   key.className = "words search-key";
   url.className = "words search-url";
   key.setAttribute("aria-label", t("API key"));
-  url.setAttribute("aria-label", t("Address"));
   const get = el("button", "link", t("Get a key ↗"));
   get.onclick = () => vendor().keysURL && api("open", { url: vendor().keysURL });
   const draw = () => {
     const v = vendor();
     pick.replaceChildren(el("span", "", v.name || ""), svg(CHEV, 11, 1.6));
-    url.hidden = !v.needURL;
-    key.placeholder = v.needURL ? t("API key, if it needs one") : t("API key, or several split by commas");
+    // the address it is set at shows in the field, so changing its key
+    // never puts the vendor's own back in its place
+    if (d.urlOf !== d.vendor) { d.url = saved()?.url || ""; d.urlOf = d.vendor; }
+    url.value = d.url;
+    url.placeholder = v.needURL ? "https://searx.example.com" : t("Base URL, empty for {url}", { url: v.base || "" });
+    url.setAttribute("aria-label", v.needURL ? t("Address") : t("Base URL"));
+    key.placeholder = v.needURL ? t("API key, if it needs one")
+      : saved()?.key ? t("A new key, or empty to keep {key}", { key: saved().key }) : t("API key, or several split by commas");
     get.hidden = !v.keysURL;
   };
   pick.onclick = (e) => {
@@ -20713,8 +20851,9 @@ function renderSearch(s, keep) {
   const add = el("button", "text", t("Add"));
   add.onclick = () => {
     d.key = key.value.trim(); d.url = url.value.trim();
-    if (vendor().needURL ? !d.url : !d.key) return (vendor().needURL ? url : key).focus();
-    set({ vendor: d.vendor, key: d.key, url: vendor().needURL ? d.url : "" },
+    // one added before keeps its key when none is typed
+    if (vendor().needURL ? !d.url : !d.key && !saved()?.key) return (vendor().needURL ? url : key).focus();
+    set({ vendor: d.vendor, key: d.key, url: d.url },
       () => { searchDraft = { vendor: d.vendor, key: "", url: "", err: "" }; });
   };
   for (const i of [key, url]) {
@@ -20728,7 +20867,7 @@ function renderSearch(s, keep) {
     : apiFirst ? t("Asked before {who}, which searches when these fail", { who: s.searchProvider })
     : t("Now done by {who}; these come after it", { who: s.searchProvider });
   const head = row(t("Search APIs"), d.err || t("When a model can't search the web, magpie searches for it with these, in this order, and gives it what they found") + " · " + by,
-    pick, key, url, get, add);
+    pick, key, get, add, url);
   head.classList.add("rule-row", "search-add");
   head.querySelector(".val").classList.add("rule-add");
   if (d.err) head.querySelector(".sub").classList.add("err");
@@ -20772,7 +20911,8 @@ function renderSearch(s, keep) {
   }
   // the same search as an MCP server of the gateway's (Kayphoon on
   // Discord), for an agent to mount as its web_search tool
-  const mcpURL = (s.gateway || providers?.gateway?.url || `http://127.0.0.1:${s.port || 3425}`).replace(/\/+$/, "") + "/mcp/magpie/web-search";
+  // a page other machines open (magpie web) shows MAGPIE_PUBLIC_URL's (#1551)
+  const mcpURL = ((web && s.publicURL) || s.gateway || providers?.gateway?.url || `http://127.0.0.1:${s.port || 3425}`).replace(/\/+$/, "") + "/mcp/magpie/web-search";
   const mcp = row(t("MCP server"), t("Cursor, Claude Desktop and other agents can add this search as an MCP server (Streamable HTTP) with one web_search tool. From another computer, send a gateway key as Authorization: Bearer <key>."),
     el("code", "", mcpURL), copyBtn(mcpURL, t("Address")));
   mcp.id = "searchMcpRow";
@@ -21094,12 +21234,74 @@ function renderRedactRules(s, row) {
   head.classList.add("rule-row");
   head.querySelector(".val").classList.add("rule-add");
   if (d.err) head.querySelector(".sub").classList.add("err");
-  // and the rules under it, each by the name its placeholders have
+  // and the rules under it, each by the name its placeholders have, with
+  // Edit and Remove
+  const same = (a, b) => (a.kind || "") === (b.kind || "") && (a.prefix || "") === (b.prefix || "") && (a.regex || "") === (b.regex || "");
+  if (ruleEdit && !(rules[ruleEdit.at] && same(rules[ruleEdit.at], ruleEdit.was))) ruleEdit = null;
   rules.forEach((r, n) => {
+    if (ruleEdit?.at === n) return editRedactRule(r, n, row);
+    const ed = el("button", "text rule-edit", t("Edit"));
+    ed.onclick = () => {
+      ruleEdit = { at: n, was: r, kind: r.kind || "", by: r.regex ? "regex" : "prefix", match: r.regex || r.prefix || "", err: "" };
+      renderSettings();
+      $("#redactList input.rule-match.editing")?.focus({ preventScroll: true });
+    };
     const x = el("button", "text", t("Remove"));
     x.onclick = () => set(rules.filter((_, i) => i !== n));
-    row(r.kind, r.prefix ? t("Starts with {p}", { p: r.prefix }) : t("Matches {re}", { re: r.regex }), x);
+    row(r.kind, r.prefix ? t("Starts with {p}", { p: r.prefix }) : t("Matches {re}", { re: r.regex }), ed, x);
   });
+}
+
+// editRedactRule: the rule at n, open to change in its place (nf1qaz2w on
+// Discord: rules could only be removed) — its name, prefix or regex and
+// what to match, laid out as the row that adds one. Save sends it alone,
+// checked as an added rule is: one magpie can't use is said in the row,
+// what was typed kept and every rule as it was. Cancel (or Escape) leaves
+// the rule as it was.
+let ruleEdit = null; // { at, was, kind, by, match, err }
+function editRedactRule(r, n, row) {
+  const d = ruleEdit;
+  const kind = input(d.kind, "API_KEY");
+  const match = input(d.match, d.by === "prefix" ? "oc_sk_" : "oc_sk_[A-Za-z0-9]{20,}");
+  kind.className = "words rule-kind editing";
+  match.className = "words rule-match editing";
+  kind.setAttribute("aria-label", t("Name"));
+  match.setAttribute("aria-label", d.by === "prefix" ? t("Prefix") : t("Regex"));
+  const by = segs([["prefix", t("Prefix")], ["regex", t("Regex")]], d.by, (v) => {
+    d.by = v;
+    match.placeholder = v === "prefix" ? "oc_sk_" : "oc_sk_[A-Za-z0-9]{20,}";
+    match.setAttribute("aria-label", v === "prefix" ? t("Prefix") : t("Regex"));
+  });
+  const save = el("button", "text rule-save", t("Save"));
+  const cancel = el("button", "text rule-cancel", t("Cancel"));
+  cancel.onclick = () => { ruleEdit = null; renderSettings(); };
+  save.onclick = () => {
+    d.kind = kind.value; d.match = match.value.trim();
+    if (!d.match) return match.focus({ preventScroll: true });
+    const rule = { kind: d.kind.trim(), [d.by === "prefix" ? "prefix" : "regex"]: d.match };
+    save.disabled = true;
+    writingPrefs(api("settings/redact-rule", { at: n, was: d.was, rule }))
+      .then((ns) => { prefs = ns; ruleEdit = null; renderSettings(); status(t("Saved"), "ok", 1500); })
+      .catch((e) => { if (ruleEdit === d) d.err = t(e.message); status(t(e.message), "err"); renderSettings(); });
+  };
+  for (const i of [kind, match]) {
+    i.oninput = () => { d.kind = kind.value; d.match = match.value; };
+    i.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") save.onclick();
+      else if (e.key === "Escape") cancel.onclick();
+    };
+  }
+  // the match with Save and Cancel, kept together: a narrow window moves
+  // them as one under the name and Prefix or Regex
+  const tail = el("div", "rule-tail");
+  tail.append(match, save, cancel);
+  row(r.kind, d.err || (r.prefix ? t("Starts with {p}", { p: r.prefix }) : t("Matches {re}", { re: r.regex })), kind, by, tail);
+  // laid out as the row that adds a rule: its words, the fields under them
+  const head = $("#redactList").lastElementChild;
+  head.classList.add("rule-row", "rule-editing");
+  head.querySelector(".val").classList.add("rule-add");
+  if (d.err) head.querySelector(".sub").classList.add("err");
 }
 
 // renderPort: the gateway's port on this computer (Magic_zero on Discord:
@@ -21586,8 +21788,12 @@ function savePrefs(body) {
 // (from a load, a timer, a helper that other clicks share) it is refused,
 // and whatever scroll follows is put back.
 let purposeUntil = 0, held = null;
+// guardUntil is purposeUntil when the window is the click guard's own (a
+// field brought back into sight, backToReader): it lets that scroll stand,
+// but it isn't the reader's, so an app menu the click opens stays open.
+let guardUntil = 0;
 // A new purposeful scroll supersedes any still-pending quota navigation.
-const readerScrolls = (ms) => { quotaFocus = ""; purposeUntil = Math.max(purposeUntil, performance.now() + ms); held = null; };
+const readerScrolls = (ms) => { quotaFocus = ""; purposeUntil = Math.max(purposeUntil, performance.now() + ms); held = null; guardUntil = 0; };
 function scrollOnPurpose(e, ms = 1000) {
   if (!e?.isTrusted || performance.now() - e.timeStamp > 1000) {
     console.warn("magpie: a scroll not asked for by the reader was refused");
@@ -21735,7 +21941,7 @@ function backToReader(v) {
   const f = document.activeElement;
   if (f && f !== document.body && v.contains(f)) {
     const r = f.getBoundingClientRect(), b = v.getBoundingClientRect();
-    if (r.bottom > b.bottom || r.top < b.top) { readerScrolls(1000); f.scrollIntoView({ block: "nearest" }); }
+    if (r.bottom > b.bottom || r.top < b.top) { readerScrolls(1000); guardUntil = purposeUntil; f.scrollIntoView({ block: "nearest" }); }
   }
 }
 // Where an element is on the screen in its view. What's held is the element
@@ -21838,6 +22044,7 @@ function keepHeld() {
   requestAnimationFrame(keepHeld);
 }
 addEventListener("click", (e) => {
+  const readers = performance.now() < purposeUntil;
   purposeUntil = flingUntil = 0; // what came before the click (Space pressed on a button, a tremble, the lift of a tap) is no scroll
   // a pick in a menu (in body, outside any view) is a click on the pill that
   // opened it: what it changes comes in around that pill, which stays put (#961)
@@ -21846,8 +22053,15 @@ addEventListener("click", (e) => {
   if (!v || v.hidden) { held = null; return; }
   // a click before a frame has held the one before it (a tab list's keys
   // pressed in quick turn) holds that one first: the page it shrank is put
-  // back, so this one is taken where the reader left it, not at the top
+  // back, so this one is taken where the reader left it, not at the top.
+  // So is a scroll the page hasn't heard of yet: the browser tells of a
+  // scroll at the next frame, and a scroll made just before the click and
+  // not the reader's (a field focused on the press, scrolled to; a scroll by
+  // code; a test's click scrolling what it clicks into view while the view
+  // slides in) would be heard of only after it, and kept as where the reader
+  // was (#1554).
   if (held?.v === v) hold(held);
+  else if (!readers && barDrag !== v) backToReader(v);
   const chain = [];
   const from = at.closest?.("[data-unrolls]")?.parentElement || at;
   for (let n = from; n && n !== v; n = n.parentElement) {

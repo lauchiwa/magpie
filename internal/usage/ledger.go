@@ -54,7 +54,12 @@ type Filter struct {
 	// Account narrows to the calls a subscription account answered, by its
 	// name as Record.Account gives it (#557)
 	Account string
+	// Failed keeps the rows of the requests the agent got an error for
+	// (Record.LostRequest), Retried those of the requests answered after a
+	// try that failed first (Record.RetriedRequest): what the Requests
+	// card's two counts are of
 	Failed  bool
+	Retried bool
 	Query   string
 	// Computer narrows to the calls of one computer (#542): ThisComputer,
 	// OtherComputers, or another's id; "" is every computer's
@@ -149,7 +154,10 @@ func (f Filter) keeps(r Record) bool {
 	if !f.computer(r) {
 		return false
 	}
-	if f.Failed && !r.Failed() {
+	if f.Failed && !r.LostRequest() {
+		return false
+	}
+	if f.Retried && !r.RetriedRequest() {
 		return false
 	}
 	if q := strings.ToLower(strings.TrimSpace(f.Query)); q != "" {
@@ -483,14 +491,17 @@ var CSVHeader = []string{"time", "agent", "requested_model", "provider", "host",
 	"effort", "input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "reasoning_tokens",
 	"cost_usd", "duration_ms", "ttft_ms", "status", "error", "session", "kind", "provider_key_id", "provider_key_name", "provider_account", "route_id",
 	"request_id", "endpoint", "error_message", "error_type", "source", "rejected", "session_provider", "session_account", "session_official_login", "caller_key_id", "caller_key_name", "response_id", "upstream",
-	"cache_write_5m_tokens", "cache_write_1h_tokens"}
+	"cache_write_5m_tokens", "cache_write_1h_tokens", "tries", "handed_on"}
 
 // WriteCSV writes rows as CSV, a header first (cache_write_tokens is every
 // cache write, as it always was, and the last two columns split it into
 // 5-minute and 1-hour writes): times in RFC 3339 with
 // their offset, the cost in USD at the effective price (empty when unknown), error
 // "true" for a call that failed: answered with a status of 400 or more, or
-// ended by an error a session file tells.
+// ended by an error a session file tells. tries is how many tries the
+// gateway made at the request the row ends, when more than one, and
+// handed_on "true" for the row of a try that failed and handed the request
+// on: the request's outcome is the row with the same route_id after it.
 func WriteCSV(w io.Writer, rows []Row) error {
 	cw := csv.NewWriter(w)
 	cw.Write(CSVHeader)
@@ -504,6 +515,10 @@ func WriteCSV(w io.Writer, rows []Row) error {
 		if r.TTFT > 0 {
 			ttft = strconv.FormatInt(r.TTFT, 10)
 		}
+		tries := ""
+		if r.Tries > 0 {
+			tries = n(r.Tries)
+		}
 		routeID := ""
 		if r.RouteID != 0 {
 			routeID = strconv.FormatInt(r.RouteID, 10)
@@ -512,7 +527,7 @@ func WriteCSV(w io.Writer, rows []Row) error {
 			strconv.FormatBool(r.Swapped), r.Effort, n(r.Input), n(r.Output), n(r.CacheWrite), n(r.CacheRead), n(r.Reasoning),
 			cost, strconv.FormatInt(r.Millis, 10), ttft, n(r.Status), strconv.FormatBool(r.Failed()), r.Session, r.Kind, r.ProviderKeyID, r.ProviderKeyName, r.Account(), routeID,
 			r.RequestID, r.Endpoint, r.Error, r.ErrType, r.Source, strconv.FormatBool(r.IsRejected()), r.SessionProvider, r.SessionAccount, strconv.FormatBool(r.SessionOfficialLogin), r.CallerKeyID, r.CallerKeyName, r.ResponseID, r.Upstream,
-			n(r.CacheWrite - min(r.CacheWrite1h, r.CacheWrite)), n(min(r.CacheWrite1h, r.CacheWrite))})
+			n(r.CacheWrite - min(r.CacheWrite1h, r.CacheWrite)), n(min(r.CacheWrite1h, r.CacheWrite)), tries, strconv.FormatBool(r.HandedOn)})
 	}
 	cw.Flush()
 	return cw.Error()
@@ -614,10 +629,7 @@ func (t *Totals) addRow(r Row) {
 		t.FloorMs += ms
 		t.FloorN++
 	}
-	t.Calls++
-	if r.Failed() {
-		t.Errors++
-	}
+	t.count(r.Record)
 	t.Input += r.Input
 	t.Output += r.Output
 	t.CacheRead += r.CacheRead
@@ -632,25 +644,52 @@ func (t *Totals) addRow(r Row) {
 	}
 }
 
-// FloorAgents are the agents whose session files time a call from the line
-// that asked for it, written before it was sent, to its reply's last
-// (Claude Code's, Claude Desktop's): their calls' tokens over that time are
-// a floor of how fast the reply wrote. A Codex call in a turn of several can
-// be timed from inside the call, and OpenCode's isn't checked against real
-// sessions, so they tell none. app.js's LED_FLOOR_AGENTS has the same.
-var FloorAgents = map[string]bool{"claude": true, "claude-desktop": true}
+// FloorAgents are the agents whose session files time a call from what
+// asked for it to its reply's end, never from inside it: Claude Code's and
+// Claude Desktop's from the line that asked, written before it was sent;
+// Codex's call in a turn of several from what the model had last been given
+// before the call's first output item, to its last (sessions' codexTiming).
+// Their calls' tokens over that time are a floor of how fast the reply
+// wrote. OpenCode's isn't checked against real sessions, so it tells none.
+// app.js's LED_FLOOR_AGENTS has the same.
+var FloorAgents = map[string]bool{"claude": true, "claude-desktop": true, "codex": true}
 
 // Floor is the tokens and ms a row read from a session file tells the least
-// its reply wrote at by, when its speed wasn't measured: its output over its
-// whole time, the wait for the first token in it, for a reply of 1,000
-// tokens or more over a second or more (a shorter one's wait is too much of
-// it to tell anything) and no faster than MaxDecodeSpeed. 0, 0 when it
-// tells none. app.js's ledFloorSpeed is the same rule for one row.
+// its reply wrote at by, when its speed wasn't measured. 0, 0 when it tells
+// none. app.js's ledFloorSpeed is the same rule for one row.
+//
+// Mostly it is its output over its whole time, the wait for the first token
+// in it, for a reply of 1,000 tokens or more over a second or more (a
+// shorter one's wait is too much of it to tell anything; against Claude
+// Code's own stream a floor read 2-5% under for 1,400 tokens or more, 11-33%
+// for a shorter one) and no faster than MaxDecodeSpeed. A count of tokens
+// is what bounds the share the wait can be, not a duration: a 5 s reply can
+// be 4 s of wait (Fallmonkey on Discord asked for 5 s instead).
+//
+// A Codex turn of one call that reasoned has its first token from the turn's
+// end, but not its first text, so DecodeOf tells no speed. Its answer, its
+// output less the reasoning, was all written after the first token, so the
+// answer over the time from the first token to the end is a floor of the
+// answer's speed, the reasoning written after the first token counted in
+// its time. Its output over that time, as Fallmonkey asked, would count the
+// reasoning written before the first token too and read high: a gateway
+// reply of 496 tokens, 224 of them reasoning, 827 ms after a 10.2 s first
+// token, reads 600 tok/s so, its measured answer 415, and this 329.
 func (r Row) Floor() (tokens int, ms int64) {
 	if r.Source != "log" || !FloorAgents[r.Agent] || r.Failed() {
 		return 0, 0
 	}
 	if _, w := r.Decode(); w > 0 {
+		return 0, 0
+	}
+	if r.Agent == "codex" && r.TTFT > 0 {
+		if r.Reasoning <= 0 {
+			return 0, 0
+		}
+		n := r.Output - r.Reasoning
+		if w := DecodeWindow(n, r.Millis, r.TTFT); w > 0 {
+			return n, w
+		}
 		return 0, 0
 	}
 	if r.Output < 1000 || r.Millis < 1000 || int64(r.Output)*1000 > MaxDecodeSpeed*r.Millis {
@@ -762,7 +801,9 @@ type Part struct {
 
 // add counts a row in the part.
 func (p *Part) add(r Row) {
-	p.Calls++
+	if !r.HandedOn {
+		p.Calls++
+	}
 	p.Tokens += r.Input + r.Output + r.CacheRead + r.CacheWrite
 	if r.Priced {
 		p.Cost += r.Cost

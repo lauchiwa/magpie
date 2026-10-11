@@ -123,6 +123,17 @@ type Record struct {
 	ParentAgent string `json:"parent_agent,omitempty"`
 	// Rejected is a request refused locally before an upstream was contacted.
 	Rejected bool `json:"rejected,omitempty"`
+	// Tries is how many tries the gateway made at the request this row
+	// ends, as its route lists them, when there was more than one: a
+	// request answered on a later try was answered, not failed (小一 on
+	// Discord). HandedOn marks the row of one try that failed and handed
+	// the request on to the next (a vendor's refusal kept for what it
+	// billed): it is not the request's outcome, which a later row with
+	// the same RouteID is, so it is neither a request nor a failure of
+	// its own. Neither is in a record written before they were; the log
+	// index tells HandedOn from such a record's route (handedOn).
+	Tries    int  `json:"tries,omitempty"`
+	HandedOn bool `json:"handed_on,omitempty"`
 	// Kind is what the agent made the call for when it isn't a turn of
 	// the conversation: a Codex subagent's (review, compact, guardian…)
 	Kind string `json:"kind,omitempty"`
@@ -301,8 +312,12 @@ func (r Record) CostAt(p catalog.Price) float64 {
 
 // Totals is a sum of calls.
 type Totals struct {
+	// Calls are the requests, Errors those the agent got an error for, and
+	// Retried those answered after a try that failed first (Record.Tries):
+	// a try handed on is in neither count, but its tokens are in the sums
 	Calls      int `json:"calls"`
 	Errors     int `json:"errors"`
+	Retried    int `json:"retried,omitempty"`
 	Input      int `json:"input"`
 	Output     int `json:"output"`
 	CacheRead  int `json:"cache_read"`
@@ -326,9 +341,9 @@ type Totals struct {
 	// 260 calls whose speed is one reply's says so (Fallmonkey on Discord)
 	DecodeN int `json:"decode_n,omitempty"`
 	// FloorOut tokens over FloorMs are the least FloorN replies read from a
-	// session file wrote at, those with no first token (Row.Floor): what a
-	// group none of whose replies was measured shows, as "≥", beside how
-	// many it is of. They are never in Speed.
+	// session file wrote at, those whose speed wasn't measured (Row.Floor):
+	// what a group shows, as "≥", beside how many it is of, after its
+	// measured speed when it has one. They are never in Speed.
 	FloorOut int   `json:"floor_out,omitempty"`
 	FloorMs  int64 `json:"floor_ms,omitempty"`
 	FloorN   int   `json:"floor_n,omitempty"`
@@ -354,8 +369,8 @@ func (t Totals) Speed() float64 {
 	return float64(t.DecodeOut) / (float64(t.DecodeMs) / 1000)
 }
 
-// Floor is the least the replies with no first token wrote at, in tokens a
-// second over their whole time (Row.Floor): 0 for none.
+// Floor is the least the replies whose speed wasn't measured wrote at, in
+// tokens a second (Row.Floor): 0 for none.
 func (t Totals) Floor() float64 {
 	if t.FloorMs <= 0 {
 		return 0
@@ -482,10 +497,7 @@ func FormatCost(amountUSD float64, currency string, rate float64) string {
 }
 
 func (t *Totals) add(r Record, price *catalog.Price) {
-	t.Calls++
-	if r.Failed() {
-		t.Errors++
-	}
+	t.count(r)
 	t.Input += r.Input
 	t.Output += r.Output
 	t.CacheRead += r.CacheRead
@@ -510,6 +522,29 @@ func (t *Totals) add(r Record, price *catalog.Price) {
 	}
 	t.Cost += r.CostAt(*price)
 }
+
+// count counts r as the request it ends: failed, answered on a retry, or
+// answered; a try handed on to another is no request of its own.
+func (t *Totals) count(r Record) {
+	if r.HandedOn {
+		return
+	}
+	t.Calls++
+	switch {
+	case r.Failed():
+		t.Errors++
+	case r.Tries > 1:
+		t.Retried++
+	}
+}
+
+// LostRequest is whether r ends a request the agent got an error for: a
+// failed row that no later try took over from.
+func (r Record) LostRequest() bool { return r.Failed() && !r.HandedOn }
+
+// RetriedRequest is whether r ends a request that was answered after a try
+// that failed first.
+func (r Record) RetriedRequest() bool { return !r.HandedOn && !r.Failed() && r.Tries > 1 }
 
 // Group is the share of one agent or model.
 type Group struct {

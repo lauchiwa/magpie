@@ -135,7 +135,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.locator("#ledPurpose span").textContent(), lang === "zh" ? "未标记" : "Unmarked");
       await choose("#ledPurpose", "kind:thread_title");
       await waitRows(100);
-      await click(page, page.locator("#ledStatus .opt").last());
+      await click(page, page.locator("#ledStatus .opt").nth(1)); // Failed
       await waitRows(1);
       await click(page, page.locator("#ledExport"));
       await page.waitForFunction(() => document.querySelector("#status")?.textContent.includes("purpose.csv"));

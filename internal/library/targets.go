@@ -40,6 +40,9 @@ type Target struct {
 	// account (desktop_skills.go): each gets a copy of the skills and their
 	// entries in its manifest.json. Skills is the first one's skills.
 	Desktop []string
+	// Settings is Claude Code's settings.json, whose permissions.deny
+	// leaves out the tools of a server turned off (mcp_tools_off.go)
+	Settings string
 }
 
 func home() string { h, _ := os.UserHomeDir(); return h }
@@ -87,6 +90,7 @@ func targetOf(a *agent.Agent) *Target {
 		t.Instructions = filepath.Join(d, "CLAUDE.md")
 		t.MCP = &mcpFile{Path: claudeJSON(), Format: fmtClaude}
 		t.Skills = filepath.Join(d, "skills")
+		t.Settings = filepath.Join(d, "settings.json")
 	case "codex":
 		d := codexDir()
 		t.Instructions = filepath.Join(d, "AGENTS.md")
@@ -411,6 +415,7 @@ func wslTargetOf(a *agent.Agent) *Target {
 		t.Instructions = filepath.Join(d, "CLAUDE.md")
 		t.MCP = &mcpFile{Path: filepath.Join(h, ".claude.json"), Format: fmtClaude, WSL: true, Distro: a.WSL, Home: linuxHome(h)}
 		t.Skills = filepath.Join(d, "skills")
+		t.Settings = filepath.Join(d, "settings.json")
 	case "codex":
 		d := filepath.Join(h, ".codex")
 		t.Instructions = filepath.Join(d, "AGENTS.md")

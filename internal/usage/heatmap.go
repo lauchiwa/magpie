@@ -83,7 +83,9 @@ func heatmapOf(since, now time.Time, visit func(add func(Row))) *Heatmap {
 			x = &Day{Date: d}
 			at[d] = x
 		}
-		x.Calls++
+		if !r.HandedOn {
+			x.Calls++ // a request, not each try at it
+		}
 		x.Tokens += r.Input + r.Output + r.CacheRead + r.CacheWrite
 		switch {
 		case r.Priced:

@@ -356,7 +356,7 @@ button.rt-session { cursor: pointer; }
    of logos in, spilling it over the card's left edge onto the name (ARNO
    on Discord) */
 .rt-group .rt-ghandle.ag-handle { position: relative; align-items: center; justify-content: center; width: auto; min-width: 24px; height: 24px; padding: 0 3px; }
-.rt-group .rt-ghandle::before { content: ""; position: absolute; left: -8px; top: 50%; width: 5px; height: 11px; margin-top: -5.5px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3.5px 3.75px; opacity: 0; transition: opacity .15s; }
+.rt-group .rt-ghandle::before { content: ""; position: absolute; left: -7px; top: 50%; width: 5px; height: 11px; margin-top: -5.5px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3.5px 3.75px; opacity: 0; transition: opacity .15s; }
 .rt-group:is(:hover, .dragging) .rt-ghandle::before, .rt-group .rt-ghandle.open::before { opacity: 1; }
 /* apart: Safari before 15.4 drops a whole selector list with :focus-visible in it */
 .rt-group .rt-ghandle:focus-visible::before { opacity: 1; }
@@ -429,7 +429,7 @@ button.rt-session { cursor: pointer; }
 @media (max-width: 760px), (pointer: coarse) and (max-width: 1024px) {
   body.web .rt-group {
     display: grid; grid-template-columns: auto minmax(0, 1fr) auto; /* the logos as wide as they are */
-    gap: 6px 8px; padding: 12px;
+    gap: 6px 8px; padding: 12px 12px 12px 14px; /* the grip's room, as wide */
   }
   body.web .rt-group .tags { display: flex; flex-wrap: wrap; grid-column: 2 / -1; grid-row: 2; }
   body.web .rt-group > .text { grid-column: 3; grid-row: 1; }
@@ -663,6 +663,14 @@ button.rt-session { cursor: pointer; }
    added in a click (provider.Templates) */
 .rt-gtpl { padding: 10px 12px 12px; display: grid; gap: 8px; }
 .rt-gtpl-head { font-size: 12px; color: var(--muted); }
+/* Import a group (laincatx on X): the text pasted, then what came of it */
+.rt-gimport { padding: 10px 12px 12px; display: grid; gap: 8px; min-width: 0; border-bottom: 1px solid var(--line); }
+.rt-gimport-text { width: 100%; box-sizing: border-box; min-height: 72px; padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font-family: var(--code-font, var(--code)); font-size: 12px; line-height: 1.45; resize: vertical; outline: none; overflow-wrap: anywhere; }
+.rt-gimport-text:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.rt-gimport .acts { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.rt-gimport-done { font-size: 12.5px; font-weight: 600; }
+.rt-gimport-missing, .rt-gimport-note { font-size: 12px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
+.rt-gimport-missing { color: var(--danger, #d66); }
 .rt-gtpl-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
 .rt-gtpl-card { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
 .rt-gtpl-card .hd { display: flex; align-items: center; gap: 8px; min-width: 0; }

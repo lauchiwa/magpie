@@ -689,6 +689,11 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		// a web page or nothing at all, served 200, is the 502 it stands
 		// for (#1012)
 		res = notAnAPIReply(res, "OpenAI: ")
+		if base != codexAPIBase {
+			// dropped by ChatGPT for its size: Codex is told it's too
+			// large rather than sending it again (ylorn on Discord)
+			res = codexDropped(res, len(body))
+		}
 	}
 	defer res.Body.Close()
 	if base == codexAPIBase && res.StatusCode == http.StatusUnauthorized {

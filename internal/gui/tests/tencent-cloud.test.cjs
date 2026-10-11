@@ -1,7 +1,8 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // Tencent Cloud as one provider (Jorben on Discord): the Token Plan and
 // TokenHub's two pay-as-you-go presets are one Tencent Cloud preset whose
-// regions are Plan · China, Pay as you go · China and Pay as you go · Global.
+// regions are Plan · China, Pay as you go · China and Pay as you go · Global,
+// and Token Plan 企业版's Enterprise plan · China and · Global (#1574).
 // The add sheet has one Tencent Cloud tile and no TokenHub; its editor picks
 // the region with the segmented control, never a <select>, and a region
 // picked takes its endpoints, its Get a key page and its docs link. A
@@ -22,11 +23,17 @@ const cn = { chat: "https://tokenhub.tencentmaas.com/v1", responses: "https://to
   website: "https://cloud.tencent.com/document/product/1823/130078", keysUrl: "https://console.cloud.tencent.com/tokenhub/apikey", catalog: "tencent-tokenhub" };
 const intl = { chat: "https://tokenhub-intl.tencentmaas.com/v1", responses: "https://tokenhub-intl.tencentmaas.com/v1", anthropic: "https://tokenhub-intl.tencentmaas.com",
   website: "https://www.tencentcloud.com/document/product/1300/78939", keysUrl: "https://console.tencentcloud.com/tokenhub/apikey", catalog: "tencent-tokenhub" };
+// Token Plan 企业版 (#1574), China's and Singapore's
+const ent = { chat: "https://tokenhub.tencentmaas.com/plan/v3", responses: "https://tokenhub.tencentmaas.com/plan/v3", anthropic: "https://tokenhub.tencentmaas.com/plan/anthropic",
+  website: "https://cloud.tencent.com/document/product/1823/130659", keysUrl: "https://console.cloud.tencent.com/tokenhub/tokenplan" };
+const entIntl = { chat: "https://tokenhub-intl.tencentmaas.com/plan/v3", responses: "https://tokenhub-intl.tencentmaas.com/plan/v3", anthropic: "https://tokenhub-intl.tencentmaas.com/plan/anthropic",
+  website: "https://cloud.tencent.com/document/product/1823/130659", keysUrl: "https://console.tencentcloud.com/tokenhub/tokenplan" };
 // as /api/providers serves the preset
 const tencent = (added) => ({
   id: "tencent-cloud", name: "Tencent Cloud", icon: "tencentcloud-color", kind: "vendor", hosts: true, added,
   note: "Token Plan · pay as you go", chat: plan.chat, anthropic: plan.anthropic, website: plan.website, keysUrl: plan.keysUrl,
-  regions: [{ id: "plan", name: "Plan · China", ...plan }, { id: "cn", name: "Pay as you go · China", ...cn }, { id: "intl", name: "Pay as you go · Global", ...intl }],
+  regions: [{ id: "plan", name: "Plan · China", ...plan }, { id: "cn", name: "Pay as you go · China", ...cn }, { id: "intl", name: "Pay as you go · Global", ...intl },
+    { id: "enterprise", name: "Enterprise plan · China", ...ent }, { id: "enterprise-intl", name: "Enterprise plan · Global", ...entIntl }],
 });
 const deepseek = { id: "deepseek", name: "DeepSeek", icon: "deepseek", kind: "vendor", chat: "https://api.deepseek.com/v1", added: false };
 // saved by an older magpie as TokenHub China, its preset id since rewritten
@@ -65,8 +72,8 @@ function serve(lang, list, posts) {
 }
 
 const words = {
-  en: { regions: ["Plan · China", "Pay as you go · China", "Pay as you go · Global"], key: "Get a key ↗", add: "Add", save: "Save" },
-  zh: { regions: ["套餐 · 中国", "按量 · 中国", "按量 · 国际"], key: "获取密钥 ↗", add: "添加", save: "保存" },
+  en: { regions: ["Plan · China", "Pay as you go · China", "Pay as you go · Global", "Enterprise plan · China", "Enterprise plan · Global"], key: "Get a key ↗", add: "Add", save: "Save" },
+  zh: { regions: ["套餐 · 中国", "按量 · 中国", "按量 · 国际", "企业版套餐 · 中国", "企业版套餐 · 国际"], key: "获取密钥 ↗", add: "添加", save: "保存" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -124,6 +131,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await site(page).textContent(), "www.tencentcloud.com ↗");
       assert.equal(await opens(page, posts, site(page)), intl.website);
       assert.equal(await opens(page, posts, getKey), intl.keysUrl);
+      // the enterprise plan's, in China and Singapore
+      await segs(page).nth(3).click();
+      assert.equal(await ed(page).locator(".segs.regions .opt.on").textContent(), w.regions[3]);
+      assert.equal(await opens(page, posts, site(page)), ent.website);
+      assert.equal(await opens(page, posts, getKey), ent.keysUrl);
+      await segs(page).nth(4).click();
+      assert.equal(await opens(page, posts, getKey), entIntl.keysUrl);
       // China's pay as you go
       await segs(page).nth(1).click();
       assert.equal(await opens(page, posts, site(page)), cn.website);
@@ -137,7 +151,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(saved.body.preset, "tencent-cloud");
       assert.deepEqual([saved.body.chat, saved.body.responses, saved.body.anthropic], [cn.chat, cn.responses, cn.anthropic]);
 
-      const missing = await page.evaluate(() => ["Plan · China", "Pay as you go · China", "Pay as you go · Global", "Token Plan · pay as you go"].filter((k) => !I18N.zh[k]));
+      const missing = await page.evaluate(() => ["Plan · China", "Pay as you go · China", "Pay as you go · Global", "Enterprise plan · China", "Enterprise plan · Global", "Token Plan · pay as you go"]
+        .filter((k) => !I18N.zh[k] || !I18N["zh-TW"][k] || !I18N.ja[k] || !I18N.de[k]));
       assert.deepEqual(missing, [], "every string has its Chinese");
       assert.deepEqual(errors, []);
     });

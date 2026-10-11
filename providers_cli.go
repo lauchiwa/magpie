@@ -32,7 +32,7 @@ const providerUsage = `usage:
   magpie provider add <preset> <key>      add a preset vendor   e.g. magpie provider add deepseek sk-…
                                           again, it adds another (deepseek-2); k=v pairs too: id, name, header.X-Foo
   magpie provider add <name> k=v…         add a custom vendor   k: url, anthropic, responses, gemini, decide, key, models, catalog, icon, header.X-Foo, balance, balance.path, balance.token, models.url, search,
-                                          access.key, access.secret (a Volcengine account's access key, for its plan's windows)
+                                          access.key, access.secret (a Volcengine access key, or a Tencent Cloud SecretId and SecretKey, for its plan's windows)
   magpie provider set <id> k=v…           change a provider's settings, with the same k=v pairs as add
   magpie provider key <id> <key>          change the API key
   magpie provider icon <id> <file|name>   give a custom provider a picture (PNG, JPEG, SVG…) or a built-in icon
@@ -230,7 +230,7 @@ func presets() error {
 	for _, pr := range append(all, provider.Presets()...) {
 		if pr.Kind != kind {
 			kind = pr.Kind
-			fmt.Println(faint.Render("  " + map[provider.Kind]string{provider.KindPartner: "partners (sponsors)", provider.KindVendor: "vendors", provider.KindRelay: "relays", provider.KindLocal: "local"}[kind]))
+			fmt.Println(faint.Render("  " + map[provider.Kind]string{provider.KindPartner: "partners (sponsors)", provider.KindVendor: "vendors", provider.KindRelay: "relays", provider.KindLocal: "local", provider.KindRemote: "another computer's magpie"}[kind]))
 		}
 		name := bold.Render(pr.Name)
 		if pr.Sponsored && pr.Kind != provider.KindPartner {
@@ -932,7 +932,8 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			p.BalanceToken = v
 		case "access.key":
 			// a Volcengine account's access key, which Ark tells its
-			// Coding or Agent Plan's windows to (#1427)
+			// Coding or Agent Plan's windows to (#1427), or a Tencent Cloud
+			// SecretId, which TokenHub tells Token Plan 企业版's usage to (#1574)
 			p.AccessKeyID = v
 		case "access.secret":
 			p.SecretAccessKey = v

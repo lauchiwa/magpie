@@ -647,8 +647,11 @@ func claudeIn(at place) *Agent {
 		return edit.SetJSON(path, edit.KV{Path: "env." + claudeCompactEnv, Value: w})
 	}
 	// Claude Code's /model lists what modelPicker says (2.1.287): while it
-	// runs on magpie, that is every one of magpie's models, so the user
-	// picks among them in Claude Code itself. One the user wrote is theirs.
+	// runs on magpie, that is every one of magpie's models, the routing
+	// groups first as viaMagpie lists them, so the user picks among them
+	// in Claude Code itself. Groups were left out, so one magpie had just
+	// made the main model and every tier wasn't in /model (#1575). One the
+	// user wrote is theirs.
 	pickerKey := at.key("claude.model_picker")
 	pickerOurs := func() bool { return stashLoad()[pickerKey] != "" }
 	dropPicker := func() error {
@@ -665,9 +668,6 @@ func claudeIn(at place) *Agent {
 		mark1M := claude1M()
 		rows := []any{}
 		for _, o := range viaMagpie("claude", "") {
-			if o.Group == RoutingGroups {
-				continue
-			}
 			rows = append(rows, map[string]any{"model": spell(mark1M(o.Value)), "label": cmp.Or(o.Label, o.Value), "description": o.Note})
 		}
 		if len(rows) == 0 {

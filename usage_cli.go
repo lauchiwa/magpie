@@ -115,10 +115,16 @@ func printUsage(out io.Writer, s stats.Summary, title string, names map[string]s
 	fmt.Fprintln(out, bold.Render(fmtTokens(s.Tokens())+" tokens"), muted.Render(title+" ·"), plural(s.Calls, "call"), muted.Render("·"), cost(s.Totals))
 	fmt.Fprintln(out, muted.Render("  in "+fmtTokens(s.Input)+"  out "+fmtTokens(s.Output)+"  cache read "+fmtTokens(s.CacheRead)+"  cache write "+fmtTokens(s.CacheWrite)+"  reasoning "+fmtTokens(s.Reasoning)),
 		func() string {
+			// requests, each counted once by how it ended: one a later try
+			// answered is not an error (小一 on Discord)
+			more := ""
 			if s.Errors > 0 {
-				return muted.Render(" · ") + plural(s.Errors, "error")
+				more += muted.Render(" · ") + plural(s.Errors, "error")
 			}
-			return ""
+			if s.Retried > 0 {
+				more += muted.Render(" · ") + fmt.Sprintf("%d answered on a retry", s.Retried)
+			}
+			return more
 		}())
 	table := func(head string, gs []stats.Group, name func(stats.Group) string) {
 		fmt.Fprintln(out)

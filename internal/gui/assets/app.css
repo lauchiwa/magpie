@@ -373,7 +373,7 @@ body.window .ag-handle { width: 28px; height: 28px; }
    logo. Hide is in the handle's menu and the row's right-click menu. */
 #agents > .row .ag-handle { position: relative; }
 #agents > .row .ag-handle::before { content: ""; position: absolute; left: -7px; top: 50%; width: 6px; height: 11px; margin-top: -5.5px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3px 3.75px; opacity: 0; transition: opacity .15s; }
-body.panel #agents > .row .ag-handle::before { left: -10px; }
+body.panel #agents > .row .ag-handle::before { left: -8px; }
 #agents > .row:is(:hover, .dragging) .ag-handle::before, #agents > .row .ag-handle.open::before { opacity: 1; }
 #agents > .row .ag-handle:focus-visible::before { opacity: 1; }
 /* one hidden by hand reads as put away, with its way back beside its name */
@@ -827,6 +827,11 @@ body.window .field.solo { grid-column: auto; }
 .led-strip .v.cost { color: var(--green); }
 .led-strip .sub { display: block; margin-top: 3px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .led-strip .sub b { font-weight: 600; color: var(--fg-2); }
+/* a count on the Requests card that lists its requests */
+.led-strip .sub.jumps { white-space: normal; overflow: visible; }
+.led-strip .led-jump { text-align: start; font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+.led-strip .led-jump.bad { color: var(--red); }
+.led-strip .led-jump:hover, .led-strip .led-jump.on { text-decoration-style: solid; }
 .led-strip .meter { height: 5px; margin-top: 8px; border-radius: 3px; background: var(--pill); overflow: hidden; }
 .led-strip .meter i { display: block; height: 100%; border-radius: 3px; background: var(--green); }
 .led-trend { padding: 10px 14px 10px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
@@ -1406,7 +1411,7 @@ body.panel .profiles #save { height: 25px; } /* the field's: the line keeps its 
 .pq-arow { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 7px 10px 7px 14px; border-radius: 10px; background: var(--card); box-shadow: var(--card-edge); }
 .pq-arow .pq-ahandle { position: relative; width: 22px; height: 22px; margin: -2px; }
 .pq-arow .pq-ahandle .ic { width: 16px; height: 16px; }
-.pq-arow .pq-ahandle::before { content: ""; position: absolute; left: -9px; top: 50%; width: 6px; height: 11px; margin-top: -5.5px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3px 3.75px; opacity: 0; transition: opacity .15s; }
+.pq-arow .pq-ahandle::before { content: ""; position: absolute; left: -8px; top: 50%; width: 6px; height: 11px; margin-top: -5.5px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3px 3.75px; opacity: 0; transition: opacity .15s; }
 .pq-arow:is(:hover, .dragging) .pq-ahandle::before { opacity: 1; }
 .pq-arow .pq-ahandle:focus-visible::before { opacity: 1; }
 .pq-aname { flex: 1 1 auto; min-width: 0; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2734,10 +2739,18 @@ input.words.compact-num { flex: none; width: 76px; font-variant-numeric: tabular
 input.words.rule-kind { flex: none; width: 110px; }
 input.words.gateway-port { flex: none; width: 110px; font-variant-numeric: tabular-nums; }input.words.rule-match { flex: 1 1 auto; width: auto; min-width: 0; }
 input.words.search-key, input.words.search-url { flex: 1 1 120px; width: auto; min-width: 0; }
+/* a search API's base URL (#1580): on a line of its own under the key */
+.prefs .row.search-add .val.rule-add { flex-wrap: wrap; row-gap: 6px; }
+.prefs .row.search-add input.words.search-url { flex: 1 1 100%; }
 /* a search API's key, shown: selectable, and broken anywhere rather than widening the row */
 .search-api .sub.revealed { font-family: var(--code-font, var(--code)); overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
 :where(html[data-fonts]) .search-api .sub.revealed { font-style: var(--code-style, inherit); font-weight: var(--code-weight, inherit); font-stretch: var(--code-stretch, 100%); }
 .prefs .val.rule-add .segs { margin-left: 0; }
+/* a rule open to edit (nf1qaz2w on Discord): laid out as the add row; a
+   narrow window puts the match, Save and Cancel on a line of their own under
+   the name and Prefix or Regex, the match keeping room to type in */
+.prefs .row.rule-editing .val.rule-add { flex-wrap: wrap; row-gap: 6px; }
+.prefs .row.rule-editing .rule-tail { display: flex; align-items: center; gap: 6px; flex: 1 1 240px; min-width: 0; }
 .row.pref .sub.err { color: var(--red); white-space: normal; }
 .warm-at { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }
 .warm-at input.at { width: auto; height: 27px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums; outline: none; transition: border-color .12s, box-shadow .12s; }
@@ -3076,9 +3089,12 @@ body.panel .modal { padding: 16px 12px; }
 .accts[aria-busy=true] > [data-account-id] { cursor: progress; }
 /* the Usage page's cards, dragged by their logos: a grip by the logo on hover.
    A grip's box holds both its columns of dots whole, 3px apart: at 5px wide
-   with 3.5px between them the right column was cut in half (Hu9956, #842) */
+   with 3.5px between them the right column was cut in half (Hu9956, #842).
+   It stands 4px inside the card's border, as the Agents row's does inside
+   its list's: at -8px, with the card's 12px padding, it stood on the border
+   (real-jacket, #1581) */
 .subscription-head .us-handle { position: relative; width: 24px; height: 24px; margin: -4px -3px; }
-.subscription-head .us-handle::before { content: ""; position: absolute; left: -8px; top: 50%; width: 6px; height: 11px; margin-top: -5.5px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3px 3.75px; opacity: 0; transition: opacity .15s; }
+.subscription-head .us-handle::before { content: ""; position: absolute; left: -5px; top: 50%; width: 6px; height: 11px; margin-top: -5.5px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3px 3.75px; opacity: 0; transition: opacity .15s; }
 .subscription-card:is(:hover, .dragging) .us-handle::before { opacity: 1; }
 /* apart: Safari before 15.4 drops a whole selector list with :focus-visible in it */
 .us-handle:focus-visible::before { opacity: 1; }

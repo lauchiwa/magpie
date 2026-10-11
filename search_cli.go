@@ -19,6 +19,11 @@ const searchUsage = `usage:
 
   apis: tavily, brave, exa, firecrawl, searxng
 
+  url= is the API's base URL, for an endpoint of your own that answers as that API
+  does (e.g. url=https://search.example.com/tavily). Without it the vendor's own is
+  used; a new key alone keeps the url set before, and url= with nothing after it puts
+  the vendor's own back. The key is sent only to that url.
+
   A client's web search (Claude Code's WebSearch, Codex's web_search) is done by the
   model's provider when it can search, then by a provider that can (a Claude or ChatGPT
   account, OpenAI, Anthropic, OpenRouter…), and then by these, in the order they were
@@ -60,14 +65,20 @@ func searchCmd(args []string) error {
 			return fmt.Errorf("magpie search add <api> <key> [url=<address>]")
 		}
 		a := provider.SearchAPI{Vendor: strings.ToLower(args[1])}
+		// a new key alone keeps the address set before (#1580); url= with
+		// nothing after it puts the vendor's own back
+		urlGiven := false
 		for _, v := range args[2:] {
 			if u, ok := strings.CutPrefix(v, "url="); ok {
-				a.URL = u
+				a.URL, urlGiven = u, true
 			} else if a.Key == "" {
 				a.Key = v
 			} else {
 				return fmt.Errorf("magpie search add <api> <key> [url=<address>]")
 			}
+		}
+		if i := slices.IndexFunc(provider.StoredSearchAPIs(), func(x provider.SearchAPI) bool { return x.Vendor == a.Vendor }); i >= 0 && !urlGiven {
+			a.URL = provider.StoredSearchAPIs()[i].URL
 		}
 		if err := provider.SetSearchAPI(a); err != nil {
 			return err

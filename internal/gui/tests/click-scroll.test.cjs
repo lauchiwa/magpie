@@ -185,6 +185,27 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       }
     });
 
+    // The browser tells of a scroll at the next frame. A scroll by code made
+    // just before a click, and heard of only after it, was kept as where the
+    // reader was (#1554: Playwright's click scrolled the skill picker's chip
+    // into view while the view slid in, and the view stayed 5px down).
+    await t.test("a scroll the page hears of after the click is still put back", async () => {
+      await reset();
+      await page.locator(view).evaluate((v) => {
+        const s = document.createElement("div");
+        s.style.cssText = "flex:none;height:1600px";
+        const b = document.createElement("button");
+        b.id = "late"; b.textContent = "late"; b.style.flex = "none";
+        v.append(s, b, Object.assign(document.createElement("div"), { style: "flex:none;height:600px" }));
+      });
+      await scrollTo("#late");
+      const was = await page.locator(view).evaluate((v) => v.scrollTop);
+      // the scroll and the click in one task: no frame between them
+      await page.locator(view).evaluate((v) => { v.scrollTop += 40; document.querySelector("#late").click(); });
+      await settle(page);
+      assert.equal(await page.locator(view).evaluate((v) => v.scrollTop), was, "the scroll before the click must be put back");
+    });
+
     await t.test("a control under what it unrolls goes down with it", async () => {
       await reset();
       await page.locator(view).evaluate((v) => {

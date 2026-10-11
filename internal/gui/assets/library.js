@@ -1409,17 +1409,75 @@
     box.hidden = !(toolsOpen.has(name) && list.length);
     if (box.hidden) return box.replaceChildren();
     const ul = el("ul", "lib-toollist");
+    const off = toolsOffOf(name);
     for (const tl of list) {
-      const li = el("li", "");
-      li.append(el("span", "lib-toolname mono", tl.name));
-      if (tl.description) li.append(el("span", "lib-tooldesc", tl.description));
+      const li = el("li", "lib-tool" + (off.includes(tl.name) ? " off" : ""));
+      const txt = el("div", "lib-tooltxt");
+      txt.append(el("span", "lib-toolname mono", tl.name));
+      if (tl.description) txt.append(el("span", "lib-tooldesc", tl.description));
+      li.append(txt, toolSwitch(name, tl.name, !off.includes(tl.name)));
       ul.append(li);
     }
+    const parts = [ul];
+    // the agents given it that can't leave out a single tool get them all,
+    // which is said here rather than shown as off for them too
+    const cant = (lib.servers.find((s) => s.name === name)?.agents || []).map(agentOf).filter((a) => a && a.mcp && !a.toolsOff);
+    if (cant.length) parts.push(el("p", "lib-toolcant", t("{agents} can't turn off single tools: they get every tool of the server.", { agents: cant.map((a) => a.name).join(", ") })));
     const foot = el("div", "lib-toolfoot");
     const h = health.get(name).h;
     if (h.tools > list.length) foot.append(el("span", "note", t("{n} more not shown", { n: h.tools - list.length })));
     foot.append(el("span", "grow"), button(t("Check again"), "", () => recheck(name)));
-    box.replaceChildren(ul, foot);
+    parts.push(foot);
+    box.replaceChildren(...parts);
+  }
+  // Each tool has a switch (nf1qaz2w on Discord): one turned off is left
+  // out by the agents given the server that can leave out a single tool.
+  // A click flips its own switch at once and nothing else on the page, so
+  // the list doesn't move under it; quick clicks are sent as one.
+  const toolsSending = new Map(); // server → { want: the tools off, as last clicked }
+  const toolsOffOf = (name) => toolsSending.get(name)?.want || lib.servers.find((s) => s.name === name)?.disabledTools || [];
+  function toolSwitch(name, tool, on) {
+    const s = toggle(on, t("{tool} on", { tool }), () => {});
+    s.dataset.tool = tool;
+    s.onclick = (e) => {
+      e.stopPropagation();
+      const now = s.getAttribute("aria-checked") !== "true";
+      s.classList.toggle("on", now);
+      s.setAttribute("aria-checked", String(now));
+      s.closest("li")?.classList.toggle("off", !now);
+      const cur = toolsOffOf(name);
+      setToolsOff(name, now ? cur.filter((x) => x !== tool) : [...new Set([...cur, tool])].sort());
+    };
+    return s;
+  }
+  async function setToolsOff(name, want) {
+    const w = toolsSending.get(name);
+    if (w) { w.want = want; return; }
+    const me = { want };
+    toolsSending.set(name, me);
+    let sent = null, v = null;
+    try {
+      while (!sent || sent.join("\n") !== me.want.join("\n")) {
+        sent = me.want;
+        v = await api("library/servers/tools", { name, names: sent });
+      }
+      toolsSending.delete(name);
+      take(v);
+      report(v, t("Tools of {name} saved", { name }));
+    } catch (e) {
+      toolsSending.delete(name);
+      status(e.message, "err");
+      // the switches go back to what the library has
+      for (const box of page.querySelectorAll(`.lib-tools[data-server="${CSS.escape(name)}"]`)) {
+        const off = toolsOffOf(name);
+        for (const s of box.querySelectorAll(".lib-switch[data-tool]")) {
+          const on = !off.includes(s.dataset.tool);
+          s.classList.toggle("on", on);
+          s.setAttribute("aria-checked", String(on));
+          s.closest("li")?.classList.toggle("off", !on);
+        }
+      }
+    }
   }
   async function checkHealth(list, fresh) {
     if (!list.length) return;

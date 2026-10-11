@@ -29,6 +29,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -263,7 +264,11 @@ func snowIn(at place) *Agent {
 			Key: "model", Label: "model",
 			Get: get,
 			Set: func(v string) error {
-				if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
+				ref, through := strings.CutPrefix(v, magpieID+"/")
+				if through && !isMagpie(ref) {
+					return fmt.Errorf("%s isn't a model in magpie's catalog (magpie models snow lists them)", ref)
+				}
+				if through {
 					base := active()
 					if !onOurs() {
 						if b, err := edit.Read(ours); err == nil && b != nil && !snowIsOurs(b) {
@@ -319,21 +324,16 @@ func snowIn(at place) *Agent {
 					return mirror(name)
 				}
 				// leaving magpie's profile: for the user's profile with
-				// that model, or the one they were on
+				// that model. A model no profile of theirs is on is
+				// refused rather than written into one on the way out:
+				// `magpie snow --help` took magpie out of Snow and left
+				// "--help" as the model of the profile it went back to
+				// (#1457). An empty value goes back to the one they were on.
 				to := ""
 				if v != "" {
-					was := stashLoad()[keyActive]
-					to = snowFindProfile(profiles, v, was)
+					to = snowFindProfile(profiles, v, stashLoad()[keyActive])
 					if to == "" {
-						to = was
-						if to == "" {
-							to = "default"
-						}
-						if _, err := os.Stat(profileOf(to)); err == nil {
-							if err := edit.SetJSON(profileOf(to), edit.KV{Path: "snowcfg.advancedModel", Value: v}); err != nil {
-								return err
-							}
-						}
+						return fmt.Errorf("%q is neither a model through magpie nor the model of one of Snow CLI's profiles: nothing was changed (magpie models snow lists them; magpie snow default goes back to your own profile)", v)
 					}
 				}
 				return leave(to)

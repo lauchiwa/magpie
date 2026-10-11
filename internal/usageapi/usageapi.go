@@ -149,7 +149,7 @@ func PeriodOf(s string) usage.Period {
 
 func FilterOf(q url.Values) usage.Filter {
 	id, _ := strconv.ParseInt(q.Get("route"), 10, 64)
-	return usage.Filter{Day: q.Get("day"), RouteID: id, Model: q.Get("model"), Agent: q.Get("agent"), Provider: q.Get("provider"), Purpose: q.Get("purpose"), Account: q.Get("account"), CallerKey: q.Get("callerKey"), Failed: q.Get("failed") == "1", Query: q.Get("q"), Computer: q.Get("computer"), Through: viaOf(q.Get("via"))}
+	return usage.Filter{Day: q.Get("day"), RouteID: id, Model: q.Get("model"), Agent: q.Get("agent"), Provider: q.Get("provider"), Purpose: q.Get("purpose"), Account: q.Get("account"), CallerKey: q.Get("callerKey"), Failed: q.Get("failed") == "1", Retried: q.Get("retried") == "1", Query: q.Get("q"), Computer: q.Get("computer"), Through: viaOf(q.Get("via"))}
 }
 
 // viaOf is the source a request's ?via= names, "" for both.

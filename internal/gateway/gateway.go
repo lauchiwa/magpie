@@ -2289,7 +2289,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 					Input: call.Usage.Input, Output: call.Usage.Output, CacheRead: call.Usage.CacheRead,
 					CacheWrite: call.Usage.CacheWrite, CacheWrite1h: call.Usage.CacheWrite1h, Reasoning: call.Usage.Reasoning, Effort: sent, Millis: time.Since(began).Milliseconds(), Status: call.Status,
 					TTFT: try.TTFT, FirstText: try.FirstText, Flow: try.Flow, Session: sessionOf(r.Header), NativeSession: nativeSessionOf(r.Header), Kind: call.Kind,
-					RequestID: call.Usage.RequestID, Endpoint: endpointOf(r, from, call.To, c.p, c.model), Archive: call.archiveName()}
+					RequestID: call.Usage.RequestID, Endpoint: endpointOf(r, from, call.To, c.p, c.model), Archive: call.archiveName(), HandedOn: true}
 				failedWith(&rec, call.Status, call.Error, call.Usage.ErrType)
 				// what this account answered is its refusal, the reply
 				// captured so far being no one's yet
@@ -2332,7 +2332,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 					Input: call.Usage.Input, Output: call.Usage.Output, CacheRead: call.Usage.CacheRead,
 					CacheWrite: call.Usage.CacheWrite, CacheWrite1h: call.Usage.CacheWrite1h, Reasoning: call.Usage.Reasoning, Effort: sent, Millis: time.Since(began).Milliseconds(), Status: call.Status,
 					TTFT: try.TTFT, FirstText: try.FirstText, Flow: try.Flow, Session: sessionOf(r.Header), NativeSession: nativeSessionOf(r.Header), Kind: call.Kind,
-					RequestID: call.Usage.RequestID, Endpoint: endpointOf(r, from, call.To, c.p, c.model), Archive: call.archiveName()}
+					RequestID: call.Usage.RequestID, Endpoint: endpointOf(r, from, call.To, c.p, c.model), Archive: call.archiveName(), HandedOn: true}
 				failedWith(&rec, call.Status, call.Error, call.Usage.ErrType)
 				// what this account answered is its refusal, the reply
 				// captured so far being no one's yet
@@ -2685,8 +2685,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	if prompt != nil && lastTried.ID != "" {
 		window = windowOf(lastTried, model)
 	}
+	tries := 0 // the request's tries, as its route lists them
 	s.trace.update(tr, func(t *Route) {
 		t.Done, t.Status, t.Error, t.Millis = true, call.Status, call.Error, call.Millis
+		tries = len(t.Tries)
 		if t.TitleLink != nil && isTitleKind(t.Kind) && call.Status < 400 && call.Error == "" && !call.ResponseTruncated {
 			link := *t.TitleLink
 			link.Reply = replyDigest
@@ -2714,6 +2716,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			CacheWrite: call.Usage.CacheWrite, CacheWrite1h: call.Usage.CacheWrite1h, Reasoning: call.Usage.Reasoning, Effort: sent, Millis: call.Millis, Status: call.Status,
 			TTFT: call.TTFT, FirstText: call.FirstText, Flow: call.Flow, Sent: sentMs, Session: sessionOf(r.Header), NativeSession: nativeSessionOf(r.Header), Kind: call.Kind,
 			RequestID: call.Usage.RequestID, ResponseID: call.Usage.ResponseID, Endpoint: endpointOf(r, from, call.To, lastTried, model), Stop: call.Usage.Stop, Archive: call.archiveName()}
+		if tries > 1 {
+			// answered, or not, after a try that failed first: the ledger
+			// counts it once, as the request it is (小一 on Discord)
+			rec.Tries = tries
+		}
 		failedWith(&rec, call.Status, call.Error, call.Usage.ErrType)
 		withBodies(&rec, &call)
 		appendUsage(r, rec)
@@ -3010,6 +3017,7 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 	body = kimiToolEnumTypes(p, to, body)
 	body = kimiLockedSampling(p, to, body)
 	body = clinePin(p, to, body)
+	body = codexImagesFit(p, to, body)
 	if to == provider.Gemini && !p.FactoryGemini() {
 		// the model is in a Gemini API's and Vertex AI's path
 		// (upstreamPath), as Google's own SDK asks it; Factory's generate
@@ -3129,6 +3137,11 @@ func (s *Server) forwardOnce(ctx context.Context, p provider.Provider, to provid
 	// Cline's whole replies come in {success, data}; a web page or
 	// nothing at all, served 200, is the 502 it stands for (#1012)
 	res = notAnAPIReply(clineUnwrapped(p, res), "")
+	if p.Account != nil && p.Account.Agent == "codex" {
+		// a request ChatGPT drops for its size is the request's, not a
+		// 503 to ask every account again for (ylorn on Discord)
+		res = codexDropped(res, len(body))
+	}
 	// what a Codex account's reply says it has used, for its cap (#1295)
 	heardCodexLimits(p, res)
 	return res, nil
@@ -3947,6 +3960,16 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 		res.Body.Close()
 		res.Body = io.NopCloser(bytes.NewReader(b))
+		if to == provider.Anthropic && res.StatusCode == http.StatusBadRequest &&
+			samplingDeprecated.Match(b) && (req.Temp != nil || req.TopP != nil) {
+			// a Claude by a name samplingAsTaken can't read refuses the
+			// sampling a Chat or Responses client sent (#1454): asked once
+			// more without it, as a relayed request is
+			r := *req
+			r.Temp, r.TopP = nil, nil
+			req = &r
+			continue
+		}
 		if req.GeminiCompat && res.StatusCode == http.StatusBadRequest {
 			if l := geminiRefusedLevel(b); l != "" {
 				// a thinking level the model hasn't, turned away: Gemini's
@@ -4068,7 +4091,11 @@ func (s *Server) forwardTranslated(ctx context.Context, p provider.Provider, to 
 			continue
 		}
 		dropped = false
-		if !wrongEndpoint(res.StatusCode, b) {
+		// Responses is asked first there only for what it tells of the
+		// cache, not because the model needs it: a model the vendor doesn't
+		// serve on it (404) is asked on Chat, as before #1578
+		cacheOnly := to == provider.Responses && res.StatusCode == http.StatusNotFound && p.ResponsesTellsCache()
+		if !cacheOnly && !wrongEndpoint(res.StatusCode, b) {
 			return res, to, nil
 		}
 		s.markUnfit(p.ID, model, to)
@@ -4512,9 +4539,12 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 		return t.event, t.release
 	}
 	var col collector
+	ended := false // the upstream said its reply ended
 	see, held := written(zenSee(zen, col.add))
 	err = readSSE(rd, func(_, data string) error {
 		u.add(Usage{Upstream: upstreamOf([]byte(data))})
+		ended = ended || upstreamStop([]byte(data)) != "" ||
+			(actual == provider.Anthropic || actual == provider.Responses) && upstreamEnds(data)
 		return dec(data, see)
 	})
 	held()
@@ -4530,6 +4560,15 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 			u.ErrType = turnedAwayErrType
 		}
 		return writeError(w, from, 502, p.Name+": "+said), said
+	}
+	if col.err == "" && !ended && (actual == provider.Anthropic || actual == provider.Responses) && r.Context().Err() == nil {
+		// an Anthropic stream that just stopped — no stop_reason, no
+		// message_stop — or a Responses one with no response.completed is
+		// a reply cut short, not a finished one, as a streaming client is
+		// told (streamTranslated): handed whole, a non-streaming client
+		// ends its turn a few words in, as if done
+		msg := p.Name + ": " + errEndedShort.Error()
+		return writeError(w, from, 502, msg), msg
 	}
 	if empty && !saidAnything(col.res.Parts) && answersNothing(col.res.Stop) {
 		msg := p.Name + ": " + emptyReply

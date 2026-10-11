@@ -26,6 +26,7 @@
 // plugin's getAuth, client.auth.set and loader see that account alone.
 
 import { AsyncLocalStorage } from "node:async_hooks"
+import dns from "node:dns"
 import fs from "node:fs"
 import http2 from "node:http2"
 import net from "node:net"
@@ -323,24 +324,103 @@ function loopback(host) {
   return host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127\./.test(host)
 }
 
-// proxyFor is the proxy a fetch of input goes through, "" for none.
-function proxyFor(input) {
+// A host on the user's own network — another computer's magpie, an LLM
+// relay on the NAS — is reached directly, whatever proxy the host was
+// started with, as magpie's own requests reach it (netproxy.onLAN, lan.go,
+// #982, #1572): a proxy is for reaching vendors; one elsewhere can't reach
+// the user's network, and one here only goes there directly itself. A
+// provider's own proxy (via) is still taken as it is. The rule is lan.go's:
+// keep the two the same.
+
+// lanWait is how long a name is looked up for before it is taken as not on
+// the network; lanKeep is how long what it resolved to is kept.
+const lanWait = 400
+const lanKeep = 60_000
+const lanSeen = new Map() // host → {lan: Promise<boolean>, at}
+
+// ipBytes is the 16 bytes of the IPv6 address s (an IPv4 one as
+// ::ffff:a.b.c.d), null when s is no address.
+function ipBytes(s) {
+  if (net.isIPv4(s)) return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, ...s.split(".").map(Number)]
+  if (!net.isIPv6(s)) return null
+  s = s.replace(/%.*$/, "")
+  const v4 = s.match(/(\d+\.\d+\.\d+\.\d+)$/)
+  if (v4) {
+    const [a, b, c, d] = v4[1].split(".").map(Number)
+    s = s.slice(0, -v4[1].length) + ((a << 8) | b).toString(16) + ":" + ((c << 8) | d).toString(16)
+  }
+  const [head, tail] = s.includes("::") ? s.split("::") : [s, null]
+  const words = (x) => (x ? x.split(":").map((w) => parseInt(w, 16)) : [])
+  const h = words(head)
+  const t = words(tail)
+  const all = tail === null ? h : [...h, ...Array(8 - h.length - t.length).fill(0), ...t]
+  return all.flatMap((w) => [w >> 8, w & 0xff])
+}
+
+// lanIP is netproxy.lanIP: a private (10/8, 172.16/12, 192.168/16,
+// fc00::/7), link-local (169.254/16, fe80::/10), loopback or carrier-grade
+// NAT (Tailscale's 100.64/10) address.
+function lanIP(s) {
+  const b = ipBytes(s)
+  if (!b) return false
+  if (b.slice(0, 10).every((x) => x === 0) && b[10] === 0xff && b[11] === 0xff) {
+    const [p, q] = b.slice(12)
+    return p === 10 || (p === 172 && (q & 0xf0) === 16) || (p === 192 && q === 168) || (p === 169 && q === 254) || p === 127 || (p === 100 && (q & 0xc0) === 64)
+  }
+  return (b[0] & 0xfe) === 0xfc || (b[0] === 0xfe && (b[1] & 0xc0) === 0x80) || b.every((x, i) => x === (i === 15 ? 1 : 0))
+}
+
+// onLAN is netproxy.onLAN: whether host is on the user's own network — an
+// address lanIP takes, a .local name, or a name every address of which is
+// one of those. A name that doesn't resolve here (in lanWait) is not: the
+// proxy is what reaches it.
+function onLAN(host) {
+  host = host.toLowerCase().replace(/\.$/, "")
+  if (!host) return Promise.resolve(false)
+  if (net.isIP(host)) return Promise.resolve(lanIP(host))
+  if (host.endsWith(".local")) return Promise.resolve(true)
+  const seen = lanSeen.get(host)
+  if (seen && Date.now() - seen.at < lanKeep) return seen.lan
+  let timer
+  const lan = Promise.race([
+    dns.promises.lookup(host, { all: true, verbatim: true }).then(
+      (as) => as.length > 0 && as.every((a) => lanIP(a.address)),
+      () => false,
+    ),
+    new Promise((r) => (timer = setTimeout(() => r(false), lanWait))),
+  ]).finally(() => clearTimeout(timer))
+  if (lanSeen.size >= 256) lanSeen.clear()
+  lanSeen.set(host, { lan, at: Date.now() })
+  return lan
+}
+
+// proxyOf is the proxy a request to input goes through, "" for none, and
+// whether it is the global one, which a host on the user's own network
+// goes around (proxyFor).
+function proxyOf(input) {
   const u = hostOf(input)
-  if (!u || loopback(u.host)) return ""
+  if (!u || loopback(u.host)) return { p: "" }
   const own = via.getStore()
-  if (own === "direct") return ""
-  if (own) return own
-  if (globalProxy.no.some((n) => n === "*" || u.host === n || u.host.endsWith("." + n))) return ""
-  return u.protocol === "https:" ? globalProxy.https : u.protocol === "http:" ? globalProxy.http : ""
+  if (own === "direct") return { p: "" }
+  if (own) return { p: own }
+  if (globalProxy.no.some((n) => n === "*" || u.host === n || u.host.endsWith("." + n))) return { p: "" }
+  const p = u.protocol === "https:" ? globalProxy.https : u.protocol === "http:" ? globalProxy.http : ""
+  return { p, global: !!p, host: u.host }
+}
+
+// proxyFor is the proxy a fetch of input goes through, "" for none.
+async function proxyFor(input) {
+  const { p, global, host } = proxyOf(input)
+  return global && (await onLAN(host)) ? "" : p
 }
 
 // reach is what a check's fetches came to: whether one got an answer, and
 // the first that got none
 const reach = new AsyncLocalStorage()
 
-function sent(input, init) {
+async function sent(input, init) {
   if (init && "proxy" in init) return bunFetch(input, init)
-  const p = proxyFor(input)
+  const p = await proxyFor(input)
   if (!p) return bunFetch(input, init)
   return bunFetch(input, { ...init, proxy: p }).catch(async (e) => {
     if (e?.name === "AbortError" || init?.signal?.aborted) throw e
@@ -448,11 +528,13 @@ http2.connect = function connect(authority, options, listener) {
   } catch {
     return h2connect.call(this, authority, options, listener)
   }
-  const p = options?.createConnection ? "" : proxyFor(u.href)
+  const { p, global } = options?.createConnection ? { p: "" } : proxyOf(u.href)
   if (!p) return h2connect.call(this, authority, options, listener)
   const host = u.hostname.replace(/^\[|\]$/g, "")
   const port = Number(u.port || (u.protocol === "http:" ? 80 : 443))
-  const raw = tunnel(p, host, port)
+  // the session is returned now, and its connection made once it is known
+  // whether host is on the user's own network (direct) or not (the proxy)
+  const raw = tunnel(global ? onLAN(host).then((lan) => (lan ? "" : p)) : p, host, port)
   const createConnection = () =>
     u.protocol === "http:" ? raw : tls.connect({ ...options, socket: raw, servername: options?.servername || (net.isIP(host) ? undefined : host), ALPNProtocols: ["h2"] })
   const session = h2connect.call(this, authority, { ...options, createConnection }, listener)
@@ -463,18 +545,19 @@ http2.connect = function connect(authority, options, listener) {
   return session
 }
 
-// tunnel is a connection to host:port through the HTTP proxy p (a SOCKS
-// one is handed to the host as an HTTP bridge to it, netproxy.ForBun): its
-// CONNECT is asked first, and what is written waits for the tunnel. A proxy
-// that turns it away fails it in Go's words ("proxyconnect …").
-function tunnel(p, host, port) {
-  const pu = new URL(p)
-  const ph = pu.hostname.replace(/^\[|\]$/g, "")
-  const pp = Number(pu.port || (pu.protocol === "https:" ? 443 : 80))
+// tunnel is a connection to host:port through the HTTP proxy which names
+// (a proxy, or a promise of one), or straight to it when that is "" (a host
+// on the user's own network, onLAN). A SOCKS proxy is handed to the host as
+// an HTTP bridge to it, netproxy.ForBun: its CONNECT is asked first, and
+// what is written waits for the tunnel. A proxy that turns it away fails
+// it in Go's words ("proxyconnect …").
+function tunnel(which, host, port) {
   const target = `${host.includes(":") ? `[${host}]` : host}:${port}`
   let ready = false
+  let sock = null
+  let ended = false
+  let gone = false
   const queued = []
-  const sock = pu.protocol === "https:" ? tls.connect({ host: ph, port: pp, servername: net.isIP(ph) ? undefined : ph }) : net.connect({ host: ph, port: pp })
   const conn = new Duplex({
     read() {},
     write(chunk, enc, cb) {
@@ -482,44 +565,64 @@ function tunnel(p, host, port) {
       else queued.push([chunk, cb])
     },
     final(cb) {
-      sock.end()
+      if (ready) sock.end()
+      else ended = true
       cb()
     },
     destroy(err, cb) {
-      sock.destroy()
+      gone = true
+      sock?.destroy()
       cb(err)
     },
   })
-  sock.once(pu.protocol === "https:" ? "secureConnect" : "connect", () => {
-    let req = `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n`
-    if (pu.username) {
-      const cred = `${decodeURIComponent(pu.username)}:${decodeURIComponent(pu.password)}`
-      req += `Proxy-Authorization: Basic ${Buffer.from(cred).toString("base64")}\r\n`
-    }
-    sock.write(req + "\r\n")
-  })
-  let got = Buffer.alloc(0)
-  const head = (chunk) => {
-    got = Buffer.concat([got, chunk])
-    const end = got.indexOf("\r\n\r\n")
-    if (end < 0) {
-      if (got.length > 8192) conn.destroy(new Error(`proxyconnect tcp: ${ph}:${pp} answered CONNECT with no HTTP`))
-      return
-    }
-    sock.off("data", head)
-    const status = got.subarray(0, got.indexOf("\r\n")).toString("latin1").replace(/^HTTP\/\d(\.\d)?\s+/, "")
-    if (!/^2\d\d/.test(status)) {
-      const body = got.subarray(end + 4, end + 304).toString("utf8").trim()
-      return conn.destroy(new Error(`proxyconnect tcp: ${body ? `${status}: ${body}` : status}`))
-    }
+  const open = () => {
     ready = true
-    if (got.length > end + 4) conn.push(got.subarray(end + 4))
     sock.on("data", (d) => conn.push(d))
     for (const [c, cb] of queued.splice(0)) sock.write(c, cb)
+    if (ended) sock.end()
   }
-  sock.on("data", head)
-  sock.on("end", () => conn.push(null))
-  sock.on("error", (e) => conn.destroy(ready ? e : new Error(`proxyconnect tcp: dial tcp ${ph}:${pp}: ${e?.message || e?.code || e}`)))
+  Promise.resolve(which).then((p) => {
+    if (gone) return
+    if (!p) {
+      sock = net.connect({ host, port })
+      sock.once("connect", open)
+      sock.on("end", () => conn.push(null))
+      sock.on("error", (e) => conn.destroy(e))
+      return
+    }
+    const pu = new URL(p)
+    const ph = pu.hostname.replace(/^\[|\]$/g, "")
+    const pp = Number(pu.port || (pu.protocol === "https:" ? 443 : 80))
+    sock = pu.protocol === "https:" ? tls.connect({ host: ph, port: pp, servername: net.isIP(ph) ? undefined : ph }) : net.connect({ host: ph, port: pp })
+    sock.once(pu.protocol === "https:" ? "secureConnect" : "connect", () => {
+      let req = `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n`
+      if (pu.username) {
+        const cred = `${decodeURIComponent(pu.username)}:${decodeURIComponent(pu.password)}`
+        req += `Proxy-Authorization: Basic ${Buffer.from(cred).toString("base64")}\r\n`
+      }
+      sock.write(req + "\r\n")
+    })
+    let got = Buffer.alloc(0)
+    const head = (chunk) => {
+      got = Buffer.concat([got, chunk])
+      const end = got.indexOf("\r\n\r\n")
+      if (end < 0) {
+        if (got.length > 8192) conn.destroy(new Error(`proxyconnect tcp: ${ph}:${pp} answered CONNECT with no HTTP`))
+        return
+      }
+      sock.off("data", head)
+      const status = got.subarray(0, got.indexOf("\r\n")).toString("latin1").replace(/^HTTP\/\d(\.\d)?\s+/, "")
+      if (!/^2\d\d/.test(status)) {
+        const body = got.subarray(end + 4, end + 304).toString("utf8").trim()
+        return conn.destroy(new Error(`proxyconnect tcp: ${body ? `${status}: ${body}` : status}`))
+      }
+      if (got.length > end + 4) conn.push(got.subarray(end + 4))
+      open()
+    }
+    sock.on("data", head)
+    sock.on("end", () => conn.push(null))
+    sock.on("error", (e) => conn.destroy(ready ? e : new Error(`proxyconnect tcp: dial tcp ${ph}:${pp}: ${e?.message || e?.code || e}`)))
+  }).catch((e) => conn.destroy(e))
   return conn
 }
 

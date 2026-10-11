@@ -107,6 +107,11 @@ func (a SearchAPI) check() error {
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return fmt.Errorf("%s: %q is not an http:// or https:// address", a.Name(), a.URL)
 		}
+		// the API's own paths go after it (/search), so it can't end in a
+		// query or a fragment
+		if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+			return fmt.Errorf("%s: %q has a ?query or #fragment; give its base URL alone", a.Name(), a.URL)
+		}
 	}
 	if a.Vendor == "searxng" && a.URL == "" {
 		return fmt.Errorf("SearXNG needs its address, as url=https://…")

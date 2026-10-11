@@ -18,7 +18,9 @@ import (
 // fifoWatch turns each path into a FIFO and notes every open of one for
 // reading: a non-blocking open for writing succeeds only while a reader
 // waits in its open, which is handed "{}" (once more for each loop that
-// finds it still open) and an end of file.
+// finds it still open) and an end of file. The func returned waits for a
+// whole loop that began after the call, so an open the loop found before
+// then is in what it returns.
 func fifoWatch(t *testing.T, paths []string) func() []string {
 	t.Helper()
 	for _, p := range paths {
@@ -33,6 +35,7 @@ func fifoWatch(t *testing.T, paths []string) func() []string {
 	var (
 		mu     sync.Mutex
 		opened []string
+		loops  int
 	)
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -54,6 +57,9 @@ func fifoWatch(t *testing.T, paths []string) func() []string {
 				_, _ = syscall.Write(fd, []byte("{}"))
 				_ = syscall.Close(fd)
 			}
+			mu.Lock()
+			loops++
+			mu.Unlock()
 			time.Sleep(200 * time.Microsecond)
 		}
 	}()
@@ -67,6 +73,13 @@ func fifoWatch(t *testing.T, paths []string) func() []string {
 	})
 	return func() []string {
 		mu.Lock()
+		// the loop under way may have opened a FIFO and not noted it yet;
+		// the one after it begins after this call
+		for until := loops + 2; loops < until; {
+			mu.Unlock()
+			time.Sleep(100 * time.Microsecond)
+			mu.Lock()
+		}
 		defer mu.Unlock()
 		return slices.Clone(opened)
 	}
