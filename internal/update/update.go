@@ -1,6 +1,8 @@
-// Package update keeps magpie current. Builds are published as GitHub
-// releases of yetone/magpie-releases; usemagpie.ai/api/latest describes the
-// newest one: its version, notes, and every file with its SHA-256.
+// Package update keeps magpie current. This fork's builds are published as
+// GitHub releases of its own repository (update.Repo, fork.go), and the
+// updater reads them from GitHub itself: the newest version, its notes, and
+// every file with its SHA-256 from the release's SHA256SUMS. Upstream's JSON
+// feed is used instead when MAGPIE_UPDATE_FEED names one.
 //
 // The macOS app replaces its own bundle: the new zip is downloaded, checked
 // against its hash, unpacked, and accepted only if it is signed by the same
@@ -35,11 +37,14 @@ import (
 	"github.com/yetone/magpie/internal/source"
 )
 
-// Site is magpie's home; its /api/latest is the update feed.
+// Site is upstream magpie's home. This fork has no site of its own, so it
+// is where a message sends someone to download a build by hand, and its
+// /api/latest is the update feed MAGPIE_UPDATE_FEED can point back at.
 const Site = "https://usemagpie.ai"
 
-// Feed is where the newest release is described. MAGPIE_UPDATE_FEED points
-// it elsewhere, for testing an update against a local server.
+// Feed is where the newest release is described, when a JSON feed is used
+// rather than GitHub itself (fork.go). MAGPIE_UPDATE_FEED points it
+// elsewhere, for testing an update against a local server.
 func Feed() string {
 	if f := os.Getenv("MAGPIE_UPDATE_FEED"); f != "" {
 		return f
@@ -77,9 +82,18 @@ func proxied() http.RoundTripper {
 // Latest asks the feed for the newest release, its notes in English.
 func Latest(ctx context.Context) (*Release, error) { return LatestIn(ctx, "") }
 
-// LatestIn asks the feed for the newest release, its notes in lang (see
-// InLang): the app's language, which What's new follows.
+// LatestIn asks for the newest release, its notes in lang (see InLang): the
+// app's language, which What's new follows. It reads this fork's own GitHub
+// releases, unless MAGPIE_UPDATE_FEED names a JSON feed to ask instead.
 func LatestIn(ctx context.Context, lang string) (*Release, error) {
+	if ownFeed() {
+		return forkLatest(ctx, lang)
+	}
+	return fromFeed(ctx, lang)
+}
+
+// fromFeed is the newest release as a JSON feed describes it.
+func fromFeed(ctx context.Context, lang string) (*Release, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", withLang(Feed(), lang), nil)
 	if err != nil {
 		return nil, err
@@ -112,7 +126,11 @@ func Released(v string) bool {
 }
 
 // describe matches what git describe adds after a tag: commits since, hash.
-var describe = regexp.MustCompile(`^\d+-g[0-9a-f]+`)
+// It is looked for at the start of the pre-release, for a bare tag
+// ("0.1.0-3-g0bcb2cc"), and after a dash, for a tag that already has a
+// pre-release ("0.1.0-rc.0-3-g0bcb2cc"), so a build from source past either
+// kind of tag is not taken for a release and doesn't update itself.
+var describe = regexp.MustCompile(`(?:^|-)\d+-g[0-9a-f]+`)
 
 // Newer reports whether version a comes after b. A pre-release comes before
 // the release it leads up to.

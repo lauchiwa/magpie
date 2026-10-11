@@ -20,8 +20,9 @@ type Note struct {
 	URL     string `json:"url,omitempty"`
 }
 
-// NotesFeed is where the notes of past releases are listed: beside the
-// update feed, on magpie's site. MAGPIE_NOTES_FEED points it elsewhere.
+// NotesFeed is where the notes of past releases are listed, when a JSON feed
+// is used rather than GitHub itself (fork.go): beside the update feed, on
+// upstream magpie's site. MAGPIE_NOTES_FEED points it elsewhere.
 func NotesFeed() string {
 	if f := os.Getenv("MAGPIE_NOTES_FEED"); f != "" {
 		return f
@@ -29,16 +30,24 @@ func NotesFeed() string {
 	return Site + "/api/notes"
 }
 
-// ReleasePage is version's page on GitHub, where its notes are when the
-// site can't give them (#661).
+// ReleasePage is version's page on GitHub: the release this fork published,
+// where its notes are when they can't be read any other way (#661).
 func ReleasePage(version string) string {
-	return "https://github.com/yetone/magpie-releases/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
+	return "https://github.com/" + Repo() + "/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
-// NotesBetween asks the site for the notes of every release after after
-// (none when "") up to and including upto, newest first, in lang (see
-// InLang).
+// NotesBetween asks for the notes of every release after after (none when
+// "") up to and including upto, newest first, in lang (see InLang). It reads
+// this fork's own GitHub releases, unless MAGPIE_NOTES_FEED names a feed.
 func NotesBetween(ctx context.Context, after, upto, lang string) ([]Note, error) {
+	if os.Getenv("MAGPIE_NOTES_FEED") == "" {
+		return forkNotes(ctx, after, upto, lang)
+	}
+	return notesFromFeed(ctx, after, upto, lang)
+}
+
+// notesFromFeed is NotesBetween asked of a JSON feed.
+func notesFromFeed(ctx context.Context, after, upto, lang string) ([]Note, error) {
 	q := url.Values{"upto": {upto}}
 	if after != "" {
 		q.Set("after", after)

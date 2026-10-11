@@ -22,6 +22,14 @@ authors whose PRs are closed on sight.
 Before changing code, read [LESSONS.md](LESSONS.md): what recent merged
 work got wrong and the rule that would have caught it.
 
+## Fork releases
+
+This repository builds and publishes its own releases, as `vX.Y.Z-rc.N`:
+`X.Y.Z` is the upstream version synced from, `N` counts this fork's releases
+on top of it, and a bare `vX.Y.Z` is never published. Before changing the
+release workflow or tagging a version, read
+[fork releases](docs/fork-releases.md).
+
 ## Built-in subscriptions that a plugin serves
 
 Some built-in subscriptions are deprecated. Reaching them can break their

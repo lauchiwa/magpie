@@ -167,3 +167,8 @@ jobs:
         run: |
           sh -n site/public/install.sh
           node --test site/*.test.mjs
+      # This fork's own release rule: the version it publishes, and that the
+      # release goes to this repository rather than upstream's.
+      - name: Test the release rule
+        if: matrix.goos == 'linux'
+        run: node --test scripts/*.test.mjs

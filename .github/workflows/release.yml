@@ -1,51 +1,338 @@
 name: Release
 
-# Pushing a v* tag hands off to yetone/magpie-releases, which builds, signs,
-# notarises and publishes magpie there; that repo is where people download
-# from, and the signing secrets live only there.
+# Builds and publishes this fork's own releases, on this repository's
+# Releases page. Nothing is sent to the upstream repository or to its
+# release repository: the source is this repository at the tag, and the
+# assets go to ${{ github.repository }}.
+#
+# Pushing a vX.Y.Z-rc.N tag runs it. X.Y.Z is the upstream magpie version
+# this fork synced from and N counts this fork's releases on top of it; the
+# rule and the reason a bare vX.Y.Z is never published are in
+# scripts/release-version.mjs and docs/fork-releases.md. A tag of any other
+# shape is refused before anything is built.
+#
+# Every release is marked as a pre-release, because every version this fork
+# publishes carries -rc.N.
+#
+# Nothing is signed with a paid certificate. This fork has no Apple Developer
+# membership, so the macOS app is ad-hoc signed (`codesign --sign -`), which
+# is free and needs no secrets, and the dmg is not notarised. Gatekeeper
+# therefore refuses the app on first launch until it is let through once; the
+# release notes say how. Ad-hoc signing still has the updater's own check
+# pass: it accepts a new app signed by the same team as the installed one,
+# and an ad-hoc build has no team either way (internal/update: sameSigner).
+#
+# The Windows and Linux apps are not signed. Each is launched on its own
+# platform before the release goes out: it must come up and serve the
+# gateway.
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*-rc.*'
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version to release (e.g., 0.1.0 — no v prefix; the v tag must exist)'
+      tag:
+        description: 'Existing tag to build and publish (vX.Y.Z-rc.N)'
         required: true
         type: string
+      publish:
+        description: 'Publish the release (off: build only, as a dry run)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  trigger-release:
+  # The tag decides the version, and it is checked before any build runs: a
+  # tag that isn't vX.Y.Z-rc.N (a bare version among them) fails here.
+  validate:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check the tag
+        id: version
+        run: node scripts/release-version.mjs check "$TAG"
+
+      - name: Test the version rule
+        run: node --test scripts/release-version.test.mjs
+
+  mac:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+          - os: macos-15-intel
+            arch: amd64
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
 
     steps:
-      - name: Get version
-        id: version
-        env:
-          INPUT_VERSION: ${{ github.event.inputs.version }}
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            REF="$GITHUB_REF_NAME"
-            VERSION="${REF#v}"
-          else
-            VERSION="$INPUT_VERSION"
-            REF="v$INPUT_VERSION"
-          fi
-          # a newline or quote would add outputs or break the JSON below
-          [[ "$VERSION" =~ ^[0-9][0-9A-Za-z.+-]*$ ]] || { echo "bad version: $VERSION" >&2; exit 1; }
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "ref=$REF" >> $GITHUB_OUTPUT
-          echo "Triggering release for version: $VERSION (ref: $REF)"
-
-      - name: Trigger release workflow in magpie-releases
-        uses: peter-evans/repository-dispatch@v3
+      - uses: actions/checkout@v4
         with:
-          # PAT with contents write on yetone/magpie-releases.
-          token: ${{ secrets.RELEASES_REPO_TOKEN }}
-          repository: yetone/magpie-releases
-          event-type: release
-          client-payload: '{"ref": "${{ steps.version.outputs.ref }}", "version": "${{ steps.version.outputs.version }}"}'
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
 
-      - name: Output status
-        run: echo "Watch the build at https://github.com/yetone/magpie-releases/actions"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build magpie.app
+        run: make app VERSION="$VERSION"
+
+      # Ad-hoc: free, no certificate, no secrets. The hardened runtime is
+      # left off, because it is only meaningful with a Developer ID and
+      # would stop an ad-hoc app from loading its own libraries.
+      - name: Sign magpie.app
+        run: |
+          codesign --force --deep --sign - magpie.app
+          codesign --verify --deep --strict --verbose=2 magpie.app
+          codesign -dv --verbose=2 magpie.app 2>&1 | grep -E 'Signature|Identifier'
+
+      - name: Build dmg
+        run: |
+          DMG=magpie-darwin-${{ matrix.arch }}.dmg
+          mkdir -p $RUNNER_TEMP/dmg
+          cp -R magpie.app $RUNNER_TEMP/dmg/
+          ln -s /Applications $RUNNER_TEMP/dmg/Applications
+          hdiutil create -volname magpie -srcfolder $RUNNER_TEMP/dmg -ov -format UDZO "$DMG"
+
+      - name: Zip magpie.app
+        run: ditto -c -k --keepParent magpie.app magpie-darwin-${{ matrix.arch }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-darwin-${{ matrix.arch }}
+          path: |
+            magpie-darwin-*.dmg
+            magpie-darwin-*.zip
+          if-no-files-found: error
+
+  # The terminal-only magpie (no GUI, no cgo) and the Windows app (WebView2,
+  # no cgo either) cross-compile from one runner.
+  cli:
+    needs: validate
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: make release-cli release-windows VERSION="$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-cli
+          path: |
+            dist/magpie-cli-*
+            dist/magpie-windows-*.exe
+          if-no-files-found: error
+
+  # Launch the Windows app for real: it has to come up and serve the gateway.
+  windows-check:
+    needs: [validate, cli]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: amd64
+          - os: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-cli
+          path: dist
+
+      - name: Launch magpie
+        shell: pwsh
+        run: |
+          $exe = "dist\magpie-windows-${{ matrix.arch }}.exe"
+          $v = (& $exe --version | Out-String).Trim()
+          Write-Output $v
+          if ($v -notlike "magpie $env:VERSION*") { throw "unexpected version: $v" }
+          $log = "$env:RUNNER_TEMP\magpie"
+          $p = Start-Process -FilePath $exe -ArgumentList app -PassThru -RedirectStandardOutput "$log.out" -RedirectStandardError "$log.err"
+          function Fail($why) { Get-Content "$log.out", "$log.err" -ErrorAction SilentlyContinue; throw $why }
+          $ok = $false
+          foreach ($i in 1..30) {
+            Start-Sleep -Seconds 2
+            if ($p.HasExited) { Fail "magpie exited with $($p.ExitCode)" }
+            try { Invoke-WebRequest http://127.0.0.1:3425/v1/models -UseBasicParsing | Out-Null; $ok = $true; break } catch {}
+          }
+          if (-not $ok) { Fail "the gateway never answered" }
+          Start-Sleep -Seconds 5
+          if ($p.HasExited) { Fail "magpie exited with $($p.ExitCode)" }
+          Stop-Process -Id $p.Id
+          Write-Output "magpie ran and served the gateway"
+
+  # The Linux app links GTK 3 and WebKitGTK 4.1, so each arch builds on its
+  # own runner. Ubuntu 22.04 keeps the glibc requirement low.
+  linux:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: amd64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install GTK and WebKitGTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev xvfb dbus-x11
+
+      - name: Build
+        run: make release-linux VERSION="$VERSION"
+
+      - name: Launch magpie
+        run: |
+          BIN=dist/magpie-linux-${{ matrix.arch }}
+          $BIN --version | grep -F "magpie $VERSION"
+          export HOME=$(mktemp -d)
+          xvfb-run -a dbus-launch --exit-with-session $BIN app > $RUNNER_TEMP/magpie.log 2>&1 &
+          for i in $(seq 30); do
+            sleep 2
+            curl -fs -o /dev/null http://127.0.0.1:3425/v1/models && break
+          done
+          sleep 5
+          curl -fs -o /dev/null http://127.0.0.1:3425/v1/models || { cat $RUNNER_TEMP/magpie.log; echo "::error::magpie did not come up"; exit 1; }
+          pkill -f "$BIN" || true
+          echo "magpie ran and served the gateway"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-linux-${{ matrix.arch }}
+          path: dist/magpie-linux-*
+          if-no-files-found: error
+
+  publish:
+    needs: [validate, mac, cli, windows-check, linux]
+    if: github.event_name != 'workflow_dispatch' || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          ls -la
+
+      # The notes are this fork's own commits since its previous release,
+      # which says what this build changed rather than repeating upstream's
+      # whole history.
+      - name: Write the notes
+        run: |
+          PREV=$(git tag --list 'v*-rc.*' --sort=-v:refname | grep -A1 -x -F "$TAG" | tail -1)
+          BASE="${VERSION%%-*}"
+          {
+            printf '### Changes\n\n'
+            if [ -n "$PREV" ] && [ "$PREV" != "$TAG" ]; then
+              printf 'Since %s:\n\n' "$PREV"
+              git log "$PREV..$TAG" --pretty=format:'- %s' --no-merges
+              printf '\n'
+            else
+              printf -- '- The first release of this fork on upstream %s.\n' "$BASE"
+            fi
+            printf '\n### This build\n\n'
+            printf -- '- A build of this fork, synced from upstream magpie **%s**.\n' "$BASE"
+            printf -- '- Marked as a pre-release: every version this fork publishes carries `-rc.N`.\n'
+            printf -- '- Built from `%s` at `%s`.\n' "$GITHUB_REPOSITORY" "$TAG"
+            printf '\n### Install\n\n'
+            printf -- '- **macOS (Apple Silicon):** `magpie-darwin-arm64.dmg`\n'
+            printf -- '- **macOS (Intel):** `magpie-darwin-amd64.dmg`\n'
+            printf -- '- **Windows:** `magpie-windows-amd64.exe` (ARM: `magpie-windows-arm64.exe`)\n'
+            printf -- '- **Linux:** `magpie-linux-amd64` / `magpie-linux-arm64` (needs GTK 3 and WebKitGTK 4.1)\n'
+            printf -- '- **Terminal only:** `magpie-cli-<os>-<arch>`\n'
+            printf '\n### Unsigned builds\n\n'
+            printf 'These builds are not signed with a paid Apple or Windows certificate, so each system asks before running one the first time.\n\n'
+            printf -- '- **macOS:** the app is ad-hoc signed and not notarised. Open it once with right-click (or Control-click) → **Open**, or run `xattr -dr com.apple.quarantine /Applications/magpie.app`. Later updates install without asking again.\n'
+            printf -- '- **Windows:** SmartScreen shows "unrecognised app": **More info** → **Run anyway**.\n'
+          } > $RUNNER_TEMP/notes.md
+          cat $RUNNER_TEMP/notes.md
+
+      # Uploaded to this repository, never to the upstream one, and always as
+      # a pre-release: see the version rule at the top of this file.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::$TAG is already released on $GITHUB_REPOSITORY"
+            exit 1
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "magpie $TAG" --notes-file $RUNNER_TEMP/notes.md \
+            --prerelease --verify-tag dist/*
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | sort | tee $RUNNER_TEMP/uploaded
+          for f in dist/*; do
+            grep -qx "$(basename "$f")" $RUNNER_TEMP/uploaded ||
+              { echo "::error::$(basename "$f") was not uploaded"; exit 1; }
+          done
