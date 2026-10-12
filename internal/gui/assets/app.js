@@ -31,6 +31,9 @@ if (window.bootPrefs) setLocale(window.bootPrefs.lang);
 let state = { agents: [], profiles: [], catalog: "", settings: {} };
 let prefs = null; // the settings page: theme, lang, version, dir, gateway
 let providers = null; // { providers, presets, gateway }
+let identityState = null; // profiles, bindings and capture windows, separate from providers.json
+let identityLoadError = "";
+let identityCountdownTimer = null;
 let view = "agents";
 let showAllAgents = false; // the agents no one has set anything on, folded away
 let period = "today"; // usage window
@@ -4831,7 +4834,14 @@ async function loadProviders() {
   // at once, not left as empty cards until the new one is in (#123)
   else if (view === "gateway" && !$("#gateway").childElementCount) renderGatewayView();
   const was = providers;
+  // the two are asked together: the identity panel is part of this page, and
+  // a second round trip would hold the provider list back. A failed identity
+  // read leaves the list alone and is said in the panel, not thrown here.
+  const asking = api("identity").then((s) => ({ s }), (e) => ({ e }));
   providers = await api("providers");
+  const identity = await asking;
+  identityState = identity.s ?? null;
+  identityLoadError = identity.e ? identity.e.message : "";
   // a reload's provider may be gone since
   if (typeof editing === "string" && !providers.providers.some((p) => p.id === editing)) editing = null;
   // a providers.json that can't be read is not a first use: no Add sheet
@@ -4978,6 +4988,230 @@ $("#foldOff").onclick = () => {
   renderProviders();
 };
 
+// Identity profiles are their own policy store, not provider headers or
+// provider-save data. A candidate's only action is confirm; a confirmed
+// snapshot can be bound to one or more applicable providers.
+let identityFolded = true;
+try { identityFolded = localStorage.getItem("magpie.identityProfilesOpen") !== "1"; } catch {}
+
+function renderIdentityProfiles() {
+  const head = $("#identityHead"), panel = $("#identityPanel"), button = $("#foldIdentity");
+  if (!head || !panel || !button) return;
+  // A body this magpie can't read is neither "no profiles" nor "none bound":
+  // the panel claims nothing and isn't offered at all. Only a read that
+  // failed outright is said, so the reader isn't told profiles are gone
+  // while the gateway merely couldn't be asked.
+  const s = identityState && Array.isArray(identityState.profiles) && Array.isArray(identityState.providers) ? identityState : null;
+  const profiles = s?.profiles || [];
+  const armed = Array.isArray(s?.armed) ? s.armed : [];
+  head.hidden = !s && !identityLoadError;
+  panel.hidden = (!s && !identityLoadError) || identityFolded;
+  button.setAttribute("aria-expanded", String(!identityFolded));
+  button.title = t(identityFolded ? "Show identity profiles" : "Fold identity profiles away");
+  $("#identityCount").textContent = profiles.length || armed.length ? t("{profiles} profiles · {armed} capturing", { profiles: profiles.length, armed: armed.length }) : "";
+  panel.replaceChildren();
+  if (!s) {
+    panel.append(el("p", "hint", identityLoadError || t("Identity profiles could not be loaded.")));
+    return;
+  }
+  const top = el("div", "identity-top");
+  top.append(el("p", "hint", t("A confirmed profile lets a plain API provider present the frozen Codex CLI or Claude Code identity. It never changes a signed-in account or plugin.")));
+  if (!s.gateway) {
+    top.append(el("p", "identity-note", t("Start the gateway before capturing an identity profile.")));
+  }
+  panel.append(top);
+
+  if (s.armedWhy) panel.append(el("p", "identity-note", t("Capture status could not be read: {error}", { error: s.armedWhy })));
+  if (armed.length) {
+    const windows = el("div", "identity-windows");
+    windows.append(el("h3", "", t("Capturing one request")));
+    for (const a of armed) {
+      const row = el("div", "identity-armed");
+      row.append(el("span", "identity-dot", "●"));
+      const words = el("span", "identity-armed-words");
+      words.append(el("b", "", providerName(a.provider)), el("span", "sub", a.client || t("Client unavailable from this gateway")));
+      if (a.expiresAt && !isNaN(new Date(a.expiresAt))) {
+        const expiry = el("span", "note identity-expiry");
+        expiry.dataset.expiresAt = a.expiresAt;
+        words.append(expiry);
+      }
+      row.append(words);
+      const disarm = el("button", "text", t("Stop capture"));
+      disarm.type = "button";
+      disarm.disabled = !s.gateway;
+      disarm.onclick = () => identityAction("disarm", { provider: a.provider });
+      row.append(disarm);
+      windows.append(row);
+    }
+    panel.append(windows);
+  }
+
+  const arm = el("div", "identity-arm");
+  const providerButton = el("button", "field identity-picker");
+  providerButton.type = "button";
+  providerButton.setAttribute("aria-label", t("Provider to capture"));
+  let selectedProvider = "";
+  const applicable = s.providers.filter((p) => p.applicable);
+  const setProvider = (p) => { selectedProvider = p?.id || ""; providerButton.replaceChildren(el("span", "v" + (p ? "" : " empty"), p ? p.name : t("Choose provider")), el("span", "chev", "⌄")); };
+  setProvider(applicable[0]);
+  providerButton.onclick = () => openProtoMenu(providerButton, applicable.map((p) => ({ v: p.id, name: p.name, note: p.id })), selectedProvider, (id) => setProvider(applicable.find((p) => p.id === id)), "Provider to capture", "", "left");
+  const clientButton = el("button", "field identity-picker");
+  clientButton.type = "button";
+  clientButton.setAttribute("aria-label", t("Client identity"));
+  let selectedClient = "codex_cli";
+  const clients = [{ v: "codex_cli", name: "Codex CLI", note: "codex_cli" }, { v: "claude_code", name: "Claude Code", note: "claude_code" }];
+  const setClient = (c) => { selectedClient = c.v; clientButton.replaceChildren(el("span", "v", t(c.name)), el("span", "chev", "⌄")); };
+  setClient(clients[0]);
+  clientButton.onclick = () => openProtoMenu(clientButton, clients, selectedClient, (id) => setClient(clients.find((c) => c.v === id)), "Client identity", "", "left");
+  const armButton = el("button", "text primary", t("Capture identity"));
+  armButton.type = "button";
+  armButton.disabled = !s.gateway || !selectedProvider;
+  armButton.onclick = () => identityAction("arm", { provider: selectedProvider, client: selectedClient });
+  arm.append(providerButton, clientButton, armButton);
+  panel.append(arm);
+  updateIdentityCountdowns();
+  clearInterval(identityCountdownTimer);
+  identityCountdownTimer = armed.some((a) => a.expiresAt) ? setInterval(updateIdentityCountdowns, 1000) : null;
+
+  if (!profiles.length) {
+    panel.append(el("p", "identity-empty", t("No identity profiles yet. Arm a capture, then send one request through that provider.")));
+  }
+  const candidates = profiles.filter((p) => p.state === "candidate");
+  const confirmed = profiles.filter((p) => p.state === "confirmed");
+  if (candidates.length) {
+    panel.append(el("h3", "identity-section-title", t("Needs review")));
+    for (const p of candidates) panel.append(identityProfileCard(p, s));
+  }
+  if (confirmed.length) {
+    panel.append(el("h3", "identity-section-title", t("Confirmed profiles")));
+    for (const p of confirmed) panel.append(identityProfileCard(p, s));
+  }
+}
+
+function updateIdentityCountdowns() {
+  for (const node of document.querySelectorAll(".identity-expiry[data-expires-at]")) {
+    const ms = Math.max(0, new Date(node.dataset.expiresAt).getTime() - Date.now());
+    const seconds = Math.ceil(ms / 1000);
+    node.textContent = t("Expires in {time}", { time: `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}` });
+  }
+}
+
+function providerName(id) {
+  return identityState?.providers?.find((p) => p.id === id)?.name || id;
+}
+
+function identityProfileCard(profile, state) {
+  const card = el("article", "identity-card");
+  const title = el("div", "identity-card-title");
+  title.append(el("div", "identity-profile-name", profile.client === "codex_cli" ? t("Codex CLI identity") : t("Claude Code identity")), el("span", "identity-state", t(profile.state === "candidate" ? "Candidate" : "Confirmed")));
+  title.append(el("span", "identity-source", t(profile.source === "request_capture" ? "Captured from a request" : profile.source === "request_import" ? "Imported from headers" : "Built-in profile")));
+  card.append(title);
+  const fields = el("dl", "identity-fingerprint");
+  const entries = [[t("User-Agent"), profile.fingerprint?.userAgent], [t("Version"), profile.fingerprint?.version], ...Object.entries(profile.fingerprint?.headers || {})];
+  for (const [name, value] of entries) {
+    if (!value) continue;
+    fields.append(el("dt", "", name), el("dd", "", value));
+  }
+  card.append(fields);
+  const meta = el("div", "identity-meta");
+  const made = profile.createdAt ? new Date(profile.createdAt) : null;
+  if (made && !isNaN(made)) meta.append(el("span", "", t("Created {time}", { time: made.toLocaleString() })));
+  if (profile.bindings?.length) meta.append(el("span", "", t("Presented by: {providers}", { providers: profile.bindings.map(providerName).join(", ") })));
+  card.append(meta);
+
+  if (profile.state === "candidate") {
+    const actions = el("div", "identity-actions");
+    const confirm = el("button", "text primary", t("Confirm profile"));
+    confirm.type = "button";
+    confirm.onclick = () => identityAction("confirm", { profile: profile.id });
+    const remove = el("button", "text", t("Remove"));
+    remove.type = "button";
+    remove.onclick = () => removeIdentityProfile(profile);
+    actions.append(confirm, remove);
+    card.append(actions);
+    return card;
+  }
+
+  const boundProviders = (profile.bindings || []).map((id) => state.providers.find((p) => p.id === id) || { id, name: id });
+  if (boundProviders.length) {
+    const bound = el("div", "identity-bound");
+    bound.append(el("span", "sub", t("Presented by: {providers}", { providers: boundProviders.map((p) => p.name).join(", ") })));
+    for (const p of boundProviders) {
+      const unbind = el("button", "text", t("Unbind {provider}", { provider: p.name }));
+      unbind.type = "button";
+      unbind.onclick = () => identityAction("unbind", { provider: p.id });
+      bound.append(unbind);
+    }
+    card.append(bound);
+  }
+  const free = state.providers.filter((p) => p.applicable && !(state.bindings || {})[p.id]);
+  if (free.length) {
+    const bindRow = el("div", "identity-actions");
+    const picker = el("button", "field identity-picker");
+    picker.type = "button";
+    picker.setAttribute("aria-label", t("Provider to bind"));
+    let id = "";
+    const set = (p) => { id = p?.id || ""; picker.replaceChildren(el("span", "v" + (p ? "" : " empty"), p ? p.name : t("Choose provider")), el("span", "chev", "⌄")); };
+    set(free[0]);
+    picker.onclick = () => openProtoMenu(picker, free.map((p) => ({ v: p.id, name: p.name, note: p.id })), id, (v) => set(free.find((p) => p.id === v)), "Provider to bind", "", "left");
+    const bind = el("button", "text primary", t("Bind profile"));
+    bind.type = "button";
+    bind.disabled = !id;
+    bind.onclick = () => identityAction("bind", { provider: id, profile: profile.id });
+    bindRow.append(picker, bind);
+    card.append(bindRow);
+  }
+  const unavailable = state.providers.filter((p) => !p.applicable);
+  if (unavailable.length) {
+    const why = el("details", "identity-inapplicable");
+    why.append(el("summary", "", t("Providers that cannot use profiles ({n})", { n: unavailable.length })));
+    const list = el("ul");
+    for (const p of unavailable) list.append(el("li", "", t("{provider}: {reason}", { provider: p.name, reason: p.why || "" })));
+    why.append(list);
+    card.append(why);
+  }
+  const remove = el("button", "text", t("Remove profile"));
+  remove.type = "button";
+  remove.onclick = () => removeIdentityProfile(profile);
+  card.append(remove);
+  return card;
+}
+
+async function removeIdentityProfile(profile) {
+  const name = profile.client === "codex_cli" ? t("Codex CLI identity") : t("Claude Code identity");
+  // t() fills {n} itself: a number put in before it would no longer match
+  // the key, and the sentence would stay English (zh caught this)
+  const n = profile.bindings?.length || 0;
+  const consequence = n
+    ? t("This also unbinds {n} providers using this profile. Continue?", { n })
+    : t("This removes the profile. Continue?");
+  if (!(await confirmAction(t("Remove {name}?", { name }), consequence, t("Remove")))) return;
+  await identityAction("remove", { profile: profile.id });
+}
+
+async function identityAction(action, body) {
+  try {
+    const [nextIdentity, nextProviders] = await Promise.all([
+      api("identity/" + action, body),
+      api("providers"),
+    ]);
+    identityState = nextIdentity;
+    providers = nextProviders;
+    identityLoadError = "";
+    renderProviders();
+    status(t(({ arm: "Capture armed on the gateway", disarm: "Capture stopped", confirm: "Identity profile confirmed", bind: "Identity profile bound", unbind: "Identity profile unbound", remove: "Identity profile removed" })[action] || "Identity profiles updated"), "ok");
+  } catch (e) {
+    status(e.message, "err");
+  }
+}
+
+$("#foldIdentity").prepend(svg(CHEV_R, 11, 1.6));
+$("#foldIdentity").onclick = () => {
+  identityFolded = !identityFolded;
+  try { localStorage.setItem("magpie.identityProfilesOpen", identityFolded ? "0" : "1"); } catch {}
+  renderIdentityProfiles();
+};
+
 // One row per provider: logo, name, the agents pointed at it, key status.
 // Everything else lives in the editor, a dialog over the page.
 function renderProviders() {
@@ -5075,6 +5309,7 @@ function renderProviders() {
   renderFileError();
   renderMovable();
   renderProviderDiscovery();
+  renderIdentityProfiles();
   dialog = renderAdd() || dialog;
   if (importing) dialog = renderImport(importing);
   if (importingApps) dialog = renderImportApps(importingApps);

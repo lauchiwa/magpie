@@ -34,6 +34,13 @@ local policy and must not be merged into the provider schema.
 - Signed-in accounts and plugin providers are excluded. Their own signers own
   the outbound identity, and a magpie-side binding would otherwise appear to
   succeed while never being sent.
+- `internal/gui/identity.go` serves the page's side. It reads and writes the
+  same store and asks the same gateway control paths the CLI asks, so neither
+  surface holds a window or an applicability rule of its own. Every change
+  answers with the whole state, so the page never stitches one together from a
+  guess while another refresh is in flight. Only the closed projection
+  (`Fingerprint.Header`) is sent to the page, so no raw observed header can
+  ride along.
 
 A profile is not authentication. Recognition and projection validate only the
 format of headers controlled by the caller. A profile contains no credential,
@@ -76,6 +83,41 @@ A file import is available when the operator already has a request header dump:
 unconfirmed `request_import` candidate; the file is projected through the same
 closed allowlist and consistency checks.
 
+## The page
+
+The GUI does the same four steps on the Providers page, under an **Identity
+profiles** fold below the provider list (`#identityHead`, `#identityPanel` in
+`index.html`; `renderIdentityProfiles` in `app.js`). It is not a top-level
+page: a profile is a property of a provider, and the Providers page is where a
+provider is already managed. The fold starts folded and is remembered per
+viewer.
+
+| Path | What it does |
+| --- | --- |
+| `GET /api/identity` | profiles, bindings, per-provider applicability, armed windows, whether a gateway runs, and the capture window's length |
+| `POST /api/identity/arm` | asks the running gateway for a one-shot window |
+| `POST /api/identity/disarm` | cancels one |
+| `POST /api/identity/confirm` | makes a candidate usable |
+| `POST /api/identity/bind`, `/unbind` | starts and stops presentation |
+| `POST /api/identity/remove` | removes a profile and every binding to it |
+
+What the panel will not do:
+
+- It never claims a state it does not have. A body it cannot read is neither
+  "no profiles" nor "none bound": the fold is not offered, and a read that
+  failed is said. An `armedWhy` from a gateway that could not be asked lists
+  the profiles and says the windows are unknown, rather than showing none.
+- It invents no countdown. An older gateway answers `IdentityArmedPath` with
+  provider ids alone, and such a window is shown armed with its client
+  unavailable and no expiry; only an `expiresAt` the gateway gave runs down.
+- It offers no action that would not be sent. Capture is disabled with no
+  gateway, a candidate offers confirm and remove but never bind, and a
+  provider `IdentityApplies` rejects is listed with its reason instead of
+  being bindable. The API checks applicability again on every bind, so the
+  page's own list is not the guard.
+- It shows no credential, session, thread, request or window id, and no raw
+  observed request. Removal asks first and says how many providers it unbinds.
+
 ## Compatibility and upstream synchronization
 
 The implementation intentionally keeps identity data out of `Provider`,
@@ -101,5 +143,18 @@ anchors rather than a long-lived fork of provider or gateway structures.
   an `httptest` upstream for signing, model lists and endpoint tests; it also
   covers user-header precedence, broken bindings, accounts and unbound
   providers.
+- `internal/gui/identity_test.go` covers the empty state, confirming a
+  candidate, binding and unbinding, removal cascading to bindings, the
+  sensitive fields left out, a provider no profile applies to, a gateway that
+  is down, an older gateway without window details, a failed armed read and
+  fail-closed behaviour.
+- `internal/gui/tests/identity-profiles.test.cjs` drives the page in Chromium
+  and WebKit: the empty state, a candidate that only confirms, a confirmed
+  profile bound and unbound, the countdown running down, a removal that says
+  what it unbinds and sends nothing on Cancel, no gateway, an older gateway's
+  id-only window, a provider that cannot present a profile, a refused action
+  shown without changing the list, and no leaked header. English and Chinese
+  for the behaviour, all five languages for the strings, and 420px wide for
+  the layout.
 - Run affected tests with an isolated home and pinned Go caches, as described
   in [Provider and plugin ownership](provider-plugins.md#verification).
