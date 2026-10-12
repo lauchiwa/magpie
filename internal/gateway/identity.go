@@ -110,18 +110,24 @@ func (s *Server) identityDisarm(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// identityArmed is which providers have a live window here.
+// identityArmed is which providers have a live window here. `data` keeps
+// the original provider-id-only response for older clients; `details` adds
+// the client and expiry that a GUI needs without exposing request headers.
 func (s *Server) identityArmed(w http.ResponseWriter, r *http.Request) {
 	if !identityOnlyHere(w, r) {
 		return
 	}
-	now := time.Now().UTC()
-	var ids []string
-	for _, p := range provider.All() {
-		if identity.CaptureArmed(p.ID, now) {
-			ids = append(ids, p.ID)
-		}
+	captures := identity.ArmedCaptures(time.Now().UTC())
+	sort.Slice(captures, func(i, j int) bool { return captures[i].Provider < captures[j].Provider })
+	ids := make([]string, 0, len(captures))
+	details := make([]map[string]any, 0, len(captures))
+	for _, capture := range captures {
+		ids = append(ids, capture.Provider)
+		details = append(details, map[string]any{
+			"provider":  capture.Provider,
+			"client":    string(capture.Client),
+			"expiresAt": capture.Expires.UTC().Format(time.RFC3339Nano),
+		})
 	}
-	sort.Strings(ids)
-	writeJSON(w, 200, map[string]any{"object": "list", "data": ids})
+	writeJSON(w, 200, map[string]any{"object": "list", "data": ids, "details": details})
 }

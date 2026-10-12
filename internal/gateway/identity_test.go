@@ -52,8 +52,8 @@ func TestIdentityCaptureArmedOnTheRunningGateway(t *testing.T) {
 	if code, b := call("POST", IdentityArmPath+"?provider="+p.ID+"&client=codex_cli"); code != 200 {
 		t.Fatalf("arm: %d %s", code, b)
 	}
-	if code, b := call("GET", IdentityArmedPath); code != 200 || !strings.Contains(b, p.ID) {
-		t.Fatalf("the gateway doesn't hold the window it was asked to arm: %d %s", code, b)
+	if code, b := call("GET", IdentityArmedPath); code != 200 || !strings.Contains(b, p.ID) || !strings.Contains(b, "codex_cli") || !strings.Contains(b, "expiresAt") {
+		t.Fatalf("the gateway doesn't hold the detailed window it was asked to arm: %d %s", code, b)
 	}
 
 	// the request the gateway then forwards is the one that is projected:

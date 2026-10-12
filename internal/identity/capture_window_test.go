@@ -15,6 +15,10 @@ func TestCaptureWindowIsExplicitOneShotAndMemoryOnly(t *testing.T) {
 	if !CaptureArmed("relay", now.Add(time.Second)) {
 		t.Fatal("armed capture is not visible")
 	}
+	armed := ArmedCaptures(now.Add(time.Second))
+	if len(armed) != 1 || armed[0].Provider != "relay" || armed[0].Client != ClientCodex || !armed[0].Expires.Equal(now.Add(CaptureWindow)) {
+		t.Fatalf("armed snapshot = %+v", armed)
+	}
 	p, consumed, err := Observe("relay", ClientCodex, codexHeader(), now.Add(2*time.Second))
 	if err != nil || !consumed {
 		t.Fatalf("observe = %v, %v", p, err)

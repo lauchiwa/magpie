@@ -1,11 +1,9 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -97,20 +95,24 @@ func identityArmedNote() {
 	if !gateway.Running() {
 		return
 	}
-	res, err := (&http.Client{Timeout: 10 * time.Second}).Get(gateway.URL() + gateway.IdentityArmedPath)
-	if err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	armed, err := gateway.ArmedIdentities(ctx, gateway.URL())
+	if err != nil || len(armed) == 0 {
 		return
 	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return
+	ids := make([]string, 0, len(armed))
+	for _, item := range armed {
+		label := item.Provider
+		if item.Client != "" {
+			label += " (" + string(item.Client) + ")"
+		}
+		if item.Expires != nil {
+			label += " until " + item.Expires.Local().Format("15:04:05")
+		}
+		ids = append(ids, label)
 	}
-	var got struct{ Data []string }
-	b, _ := io.ReadAll(io.LimitReader(res.Body, 8192))
-	if json.Unmarshal(b, &got) != nil || len(got.Data) == 0 {
-		return
-	}
-	fmt.Printf("capture armed on the gateway for: %s\n", strings.Join(got.Data, ", "))
+	fmt.Printf("capture armed on the gateway for: %s\n", strings.Join(ids, ", "))
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -213,52 +215,17 @@ func identityArm(args []string) error {
 	if !client.Valid() {
 		return fmt.Errorf("no such client %q: codex_cli or claude_code", args[1])
 	}
-	q := url.Values{"provider": {p.ID}, "client": {string(client)}}
-	if err := askGateway(http.MethodPost, gateway.IdentityArmPath, q); err != nil {
+	if !gateway.Running() {
+		return fmt.Errorf("no gateway runs here, and a capture window belongs to the gateway that forwards the requests: start one (the app, magpie web or magpie serve), then arm it")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := gateway.ArmIdentity(ctx, gateway.URL(), p.ID, client); err != nil {
 		return err
 	}
 	fmt.Printf("armed a one-shot %s capture for %s on the gateway; it expires in %s and creates an unconfirmed candidate\n", client, p.Name, identity.CaptureWindow)
 	fmt.Printf("send one request through %s with %s now, then: magpie identity ls\n", p.Name, client)
 	return nil
-}
-
-// askGateway calls one of the gateway's local identity paths. A window is
-// the running gateway's to hold, so a missing gateway is an error with
-// what to do about it, never a silent no-op.
-func askGateway(method, path string, q url.Values) error {
-	if !gateway.Running() {
-		return fmt.Errorf("no gateway runs here, and a capture window belongs to the gateway that forwards the requests: start one (the app, magpie web or magpie serve), then arm it")
-	}
-	u := gateway.URL() + path
-	if len(q) > 0 {
-		u += "?" + q.Encode()
-	}
-	req, err := http.NewRequest(method, u, nil)
-	if err != nil {
-		return err
-	}
-	res, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-	if err != nil {
-		return fmt.Errorf("ask the gateway at %s: %w", gateway.URL(), err)
-	}
-	defer res.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(res.Body, 8192))
-	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("the gateway answered %s: %s", res.Status, gatewaySaid(b))
-	}
-	return nil
-}
-
-// gatewaySaid is the message out of a gateway error body, which is the
-// same shape an agent is answered with.
-func gatewaySaid(b []byte) string {
-	var e struct {
-		Error struct{ Message string } `json:"error"`
-	}
-	if json.Unmarshal(b, &e) == nil && e.Error.Message != "" {
-		return e.Error.Message
-	}
-	return strings.TrimSpace(string(b))
 }
 
 func identityDisarm(args []string) error {
@@ -269,7 +236,12 @@ func identityDisarm(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := askGateway(http.MethodPost, gateway.IdentityDisarmPath, url.Values{"provider": {p.ID}}); err != nil {
+	if !gateway.Running() {
+		return fmt.Errorf("no gateway runs here, and a capture window belongs to the gateway that forwards the requests: start one (the app, magpie web or magpie serve), then disarm it")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := gateway.DisarmIdentity(ctx, gateway.URL(), p.ID); err != nil {
 		return err
 	}
 	fmt.Printf("disarmed identity capture for %s\n", p.Name)
