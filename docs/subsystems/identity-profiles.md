@@ -156,7 +156,10 @@ anchors rather than a long-lived fork of provider or gateway structures.
   candidate, binding and unbinding, removal cascading to bindings, the
   sensitive fields left out, a provider no profile applies to, a gateway that
   is down, an older gateway without window details, a failed armed read and
-  fail-closed behaviour.
+  fail-closed behaviour. Its real-control tests send arm, disarm and armed
+  reads through `gateway.ArmIdentity`, `DisarmIdentity` and
+  `ArmedIdentities` to a local fake gateway, checking the returned client and
+  expiry, refused actions and bounded calls that receive no gateway response.
 - `internal/gui/tests/identity-profiles.test.cjs` drives the page in Chromium
   and WebKit: the empty state, a candidate that only confirms, a confirmed
   profile bound and unbound, the countdown running down, a removal that says

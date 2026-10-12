@@ -98,8 +98,11 @@ type identityStateJSON struct {
 	Window string `json:"window"`
 }
 
-// identityControlTimeout bounds a control call to the local gateway.
-const identityControlTimeout = 10 * time.Second
+// identityControlTimeout bounds a control call to the local gateway, so a
+// gateway that accepts the connection and then answers nothing fails the
+// one call rather than holding the page's request open. A var so a test
+// can shorten it instead of waiting out the real bound.
+var identityControlTimeout = 10 * time.Second
 
 // armedIdentities is the control client, which tests stand in for.
 var armedIdentities = gateway.ArmedIdentities

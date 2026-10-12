@@ -59,6 +59,28 @@ func identityMux(t *testing.T, running bool) (*http.ServeMux, *[]gateway.ArmedId
 	return mux, armed, calls
 }
 
+// identityRealControl points the API at a fake gateway over the real
+// control client (internal/gateway/control.go), the one the CLI uses: no
+// stand-in, so what the page gets is what that client made of the
+// gateway's own answer. handler is the gateway; MAGPIE_ADDR is how
+// gateway.URL finds it. Returns the API with nothing stood in for.
+func identityRealControl(t *testing.T, handler http.HandlerFunc) *http.ServeMux {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		// what gateway.ServedBy asks to know a magpie answers here
+		if r.URL.Path == "/" {
+			writeJSON(rw, map[string]any{"name": "magpie", "version": "test", "window": false})
+			return
+		}
+		handler(rw, r)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("MAGPIE_ADDR", strings.TrimPrefix(srv.URL, "http://"))
+	mux := http.NewServeMux()
+	identityRoutes(mux)
+	return mux
+}
+
 func identityCall(t *testing.T, mux *http.ServeMux, method, path, body string) (int, string) {
 	t.Helper()
 	var r *http.Request
@@ -429,5 +451,223 @@ func TestIdentityFailsClosedOnABrokenBinding(t *testing.T) {
 	}
 	if code, body := identityCall(t, mux, "POST", "/api/identity/remove", `{"profile":"`+p.ID+`"}`); code == 200 || !strings.Contains(body, "no identity profile") {
 		t.Errorf("removing a profile that is gone: %d %s", code, body)
+	}
+}
+
+// The page and the CLI ask one gateway over one client. Here nothing is
+// stood in for: the API's arm, armed read and disarm go through
+// gateway.ArmIdentity and friends to a fake gateway, so the query string
+// the gateway is asked with, and the state made of its answer, are the
+// real ones.
+func TestIdentityControlGoesThroughTheRealClient(t *testing.T) {
+	identityHome(t)
+	plainProvider(t, "relay", "Relay")
+	var asked []string
+	expires := time.Now().UTC().Add(identity.CaptureWindow).Format(time.RFC3339Nano)
+	armed := false
+	mux := identityRealControl(t, func(rw http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		switch r.URL.Path {
+		case gateway.IdentityArmPath:
+			armed = true
+			writeJSON(rw, map[string]any{"data": []string{"relay"}})
+		case gateway.IdentityDisarmPath:
+			armed = false
+			writeJSON(rw, map[string]any{"data": []string{}})
+		case gateway.IdentityArmedPath:
+			if !armed {
+				writeJSON(rw, map[string]any{"data": []string{}, "details": []any{}})
+				return
+			}
+			writeJSON(rw, map[string]any{
+				"data":    []string{"relay"},
+				"details": []any{map[string]string{"provider": "relay", "client": "codex_cli", "expiresAt": expires}},
+			})
+		default:
+			http.NotFound(rw, r)
+		}
+	})
+
+	code, body := identityCall(t, mux, "POST", "/api/identity/arm", `{"provider":"relay","client":"codex_cli"}`)
+	if code != 200 {
+		t.Fatalf("arm: %d %s", code, body)
+	}
+	s := identityStateOf(t, body)
+	if !s.Gateway {
+		t.Error("a gateway answers at MAGPIE_ADDR, and the state says none does")
+	}
+	if len(s.Armed) != 1 || s.Armed[0].Provider != "relay" || s.Armed[0].Client != "codex_cli" || s.Armed[0].ExpiresAt == nil {
+		t.Fatalf("armed = %+v, want the window the gateway reported", s.Armed)
+	}
+	if s.ArmedWhy != "" {
+		t.Errorf("armedWhy = %q, want none", s.ArmedWhy)
+	}
+	if code, body := identityCall(t, mux, "POST", "/api/identity/disarm", `{"provider":"relay"}`); code != 200 {
+		t.Fatalf("disarm: %d %s", code, body)
+	} else if s := identityStateOf(t, body); len(s.Armed) != 0 {
+		t.Fatalf("armed after disarm = %+v", s.Armed)
+	}
+	// the gateway is asked for this provider and this client, by the names
+	// its own control paths use
+	want := []string{
+		"POST " + gateway.IdentityArmPath + "?client=codex_cli&provider=relay",
+		"GET " + gateway.IdentityArmedPath + "?",
+		"POST " + gateway.IdentityDisarmPath + "?provider=relay",
+		"GET " + gateway.IdentityArmedPath + "?",
+	}
+	if len(asked) != len(want) {
+		t.Fatalf("the gateway was asked %v, want %v", asked, want)
+	}
+	for i := range want {
+		if asked[i] != want[i] {
+			t.Errorf("call %d = %q, want %q", i, asked[i], want[i])
+		}
+	}
+}
+
+// A gateway that refuses an arm or a disarm is reported with what it said.
+// The page's own state is not moved by a refusal: nothing is armed, and
+// the profiles are the ones that were there.
+func TestIdentityControlRefusalIsSaidAndChangesNothing(t *testing.T) {
+	identityHome(t)
+	plainProvider(t, "relay", "Relay")
+	p := codexCandidate(t)
+	mux := identityRealControl(t, func(rw http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case gateway.IdentityArmedPath:
+			writeJSON(rw, map[string]any{"data": []string{}, "details": []any{}})
+		default:
+			rw.WriteHeader(http.StatusBadRequest)
+			writeJSON(rw, map[string]any{"error": map[string]string{"message": "another capture is already armed for relay"}})
+		}
+	})
+	for _, c := range [][2]string{
+		{"/api/identity/arm", `{"provider":"relay","client":"codex_cli"}`},
+		{"/api/identity/disarm", `{"provider":"relay"}`},
+	} {
+		code, body := identityCall(t, mux, "POST", c[0], c[1])
+		if code == 200 {
+			t.Errorf("%s: accepted a refusal as success (%d %s)", c[0], code, body)
+		}
+		if !strings.Contains(body, "already armed") {
+			t.Errorf("%s: %d %.200s, want the gateway's own words", c[0], code, body)
+		}
+	}
+	_, body := identityCall(t, mux, "GET", "/api/identity", "")
+	s := identityStateOf(t, body)
+	if len(s.Armed) != 0 {
+		t.Errorf("armed = %+v after two refusals", s.Armed)
+	}
+	if len(s.Profiles) != 1 || s.Profiles[0].ID != p.ID || s.Profiles[0].State != "candidate" {
+		t.Errorf("profiles = %+v, want the candidate untouched", s.Profiles)
+	}
+}
+
+// A gateway that takes the connection and then answers nothing fails the
+// one call it was asked, rather than holding the page's request open until
+// the browser gives up. The bound is identityControlTimeout, shortened
+// here: the point is that there is one, not how long it is.
+func TestIdentityControlDoesNotWaitForever(t *testing.T) {
+	identityHome(t)
+	plainProvider(t, "relay", "Relay")
+	done := make(chan struct{})
+	reached := make(chan string, 4)
+	mux := identityRealControl(t, func(rw http.ResponseWriter, r *http.Request) {
+		reached <- r.URL.Path
+		select {
+		case <-done:
+		case <-r.Context().Done():
+		}
+	})
+	// Released after the server is made, so that this cleanup runs before
+	// the server's: httptest's Close waits for a handler still in flight,
+	// and a call the page left behind is held by one of these. Registered
+	// the other way round, an unbounded call deadlocks the teardown instead
+	// of failing the test.
+	t.Cleanup(func() { close(done) })
+	old := identityControlTimeout
+	identityControlTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { identityControlTimeout = old })
+
+	// room on both sides: the call must outlast the timeout it is bounded
+	// by, and finish well inside a bound no loaded machine reaches. The
+	// wait is the test's own, so an unbounded call fails here instead of
+	// hanging until the whole package times out.
+	start := time.Now()
+	code, body, ok := identityCallBounded(t, mux, "POST", "/api/identity/arm", `{"provider":"relay","client":"codex_cli"}`)
+	took := time.Since(start)
+	if !ok {
+		t.Fatalf("arm did not return in %v: the control call is not bounded", identityPatience)
+	}
+	if code == 200 {
+		t.Fatalf("arm: a gateway that never answered reported success (%d %s)", code, body)
+	}
+	if !strings.Contains(body, "context deadline exceeded") && !strings.Contains(body, "Client.Timeout") {
+		t.Errorf("arm: %d %.200s, want the timeout said", code, body)
+	}
+	if took < identityControlTimeout {
+		t.Errorf("arm returned in %v, before its own %v bound: it was not the timeout that ended it", took, identityControlTimeout)
+	}
+	if took > 20*time.Second {
+		t.Errorf("arm took %v: the bound did not hold", took)
+	}
+	if got := <-reached; got != gateway.IdentityArmPath {
+		t.Errorf("the gateway was asked %q", got)
+	}
+
+	// the read is bounded too: the profiles still answer, with the windows
+	// unknown and said to be
+	start = time.Now()
+	code, body, ok = identityCallBounded(t, mux, "GET", "/api/identity", "")
+	took = time.Since(start)
+	if !ok {
+		t.Fatalf("the read did not return in %v: the armed read is not bounded", identityPatience)
+	}
+	if code != 200 {
+		t.Fatalf("the read failed whole over an unreadable window: %d %s", code, body)
+	}
+	s := identityStateOf(t, body)
+	if s.ArmedWhy == "" || len(s.Armed) != 0 {
+		t.Errorf("armedWhy = %q, armed = %+v, want the windows unknown and said", s.ArmedWhy, s.Armed)
+	}
+	if took < identityControlTimeout || took > identityPatience {
+		t.Errorf("the read took %v, bound %v", took, identityControlTimeout)
+	}
+}
+
+// identityPatience is how long a bounded call is waited for before the
+// test calls it unbounded. Far above identityControlTimeout as the test
+// shortens it, and far below the package's own timeout, so neither side is
+// a wall-clock guess a loaded machine can cross.
+const identityPatience = 5 * time.Second
+
+// identityCallBounded is identityCall with a wait of its own: ok is false
+// when the handler had not returned in identityPatience, which is a call
+// that is not bounded rather than a slow one. The goroutine is left to the
+// handler's own end (the fake gateway is released on cleanup), so nothing
+// here outlives the test still running.
+func identityCallBounded(t *testing.T, mux *http.ServeMux, method, path, body string) (int, string, bool) {
+	t.Helper()
+	type reply struct {
+		code int
+		body string
+	}
+	out := make(chan reply, 1)
+	go func() {
+		var r *http.Request
+		if body == "" {
+			r = httptest.NewRequest(method, path, nil)
+		} else {
+			r = httptest.NewRequest(method, path, strings.NewReader(body))
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		out <- reply{w.Code, w.Body.String()}
+	}()
+	select {
+	case got := <-out:
+		return got.code, got.body, true
+	case <-time.After(identityPatience):
+		return 0, "", false
 	}
 }
