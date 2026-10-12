@@ -8322,6 +8322,61 @@ function duplicateProvider(p) {
 }
 
 // renderEditor: an existing provider (p), a new preset (presetID), or custom.
+// identityField is the editor's view of the outbound identity profile this
+// provider presents, and nothing more: a summary and a way to the panel that
+// manages them. It is deliberately not an editor of one.
+//
+// The profile never joins the provider's save: a binding lives in
+// identities.json, keyed by provider id, and is changed through
+// /api/identity/{bind,unbind} alone. So the field reads identityState, not
+// draft, and a Save (or a discarded draft) leaves the binding as it was.
+function identityField(p) {
+  // a provider not saved yet has no id to bind to, and the API read may have
+  // failed: nothing is claimed either way
+  const s = identityState && Array.isArray(identityState.providers) ? identityState : null;
+  if (!p?.id || !s) return [];
+  const mine = s.providers.find((x) => x.id === p.id);
+  if (!mine) return [];
+  const box = el("div", "stack identity-field");
+  // a provider no profile would ever be sent on says so, with the one
+  // reason provider.IdentityApplies gives, and offers nothing to bind
+  if (!mine.applicable) {
+    box.append(el("div", "identity-field-none", mine.why || t("This provider cannot present an identity profile.")));
+    return field(t("Identity"), box, t("Only a provider reached with your own key and base URL can present a frozen client identity."));
+  }
+  const bound = mine.profileId ? s.profiles.find((x) => x.id === mine.profileId) : null;
+  if (bound) {
+    const who = el("div", "identity-field-on");
+    who.append(el("b", "", bound.client === "codex_cli" ? t("Codex CLI identity") : t("Claude Code identity")));
+    if (bound.fingerprint?.version) who.append(el("span", "sub", bound.fingerprint.version));
+    box.append(who);
+    if (bound.fingerprint?.userAgent) box.append(el("div", "identity-field-ua", bound.fingerprint.userAgent));
+    const unbind = el("button", "text", t("Unbind"));
+    unbind.type = "button";
+    // the binding is its own store: unbinding leaves the open draft alone,
+    // and a refused one changes nothing but the status line
+    unbind.onclick = () => identityAction("unbind", { provider: p.id });
+    box.append(unbind);
+  } else {
+    box.append(el("div", "identity-field-none", t("No identity profile: requests go out as magpie.")));
+  }
+  const manage = el("button", "text", t("Manage identity profiles"));
+  manage.type = "button";
+  manage.onclick = async (e) => {
+    // the panel is on the page under this editor: open the fold, close the
+    // editor and take the reader to it. The scroll is the reader's own
+    // click, so the click guard lets it stand (scrollOnPurpose).
+    const go = scrollOnPurpose(e, 1200);
+    if (identityFolded) $("#foldIdentity").click();
+    if (!(await cancelEdit())) return;
+    if (go) $("#identityPanel").scrollIntoView({ block: "nearest" });
+  };
+  box.append(manage);
+  return field(t("Identity"), box, bound
+    ? t("Every request, probe and model list for this provider presents this frozen client identity.")
+    : t("Capture and confirm a profile in Identity profiles on the Providers page, then bind it here."));
+}
+
 function renderEditor(p, presetID) {
   // its own icons, not the page's kept ones, which the rows after it take back
   const kept = keptIcons;
@@ -8720,6 +8775,7 @@ function drawEditor(p, presetID) {
   proxies.append(proxyPicker());
   const perKey = keyProxyPicker(p);
   if (perKey) proxies.append(perKey);
+  ed.append(...identityField(p));
   ed.append(...field(t("Proxy"), proxies));
   ed.append(...concurrencyField(p));
   ed.append(...priceRateField());

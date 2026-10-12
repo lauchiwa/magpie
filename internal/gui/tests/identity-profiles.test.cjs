@@ -322,3 +322,96 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     });
   }
 }
+
+// The provider editor's Identity field is a summary and a way to the panel,
+// never an editor of a profile: the binding is its own store, so unbinding
+// from here leaves an unsaved draft alone and a provider save carries no
+// profile field.
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  for (const lang of ["en", "zh"]) {
+    const w = { en: { manage: "Manage identity profiles", unbind: "Unbind", none: "No identity profile", cannot: "cannot present an identity profile" },
+      zh: { manage: "管理身份档案", unbind: "解绑", none: "没有身份档案", cannot: "不能呈现身份档案" } }[lang];
+    test(`${engine} ${lang}: the provider editor says which identity a provider presents`, async (t) => {
+      const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+      const page = await (await browser.newContext({ viewport: { width: 1100, height: 820 }, reducedMotion: "reduce" })).newPage();
+      t.after(async () => {
+        if (process.env.ARTIFACT_DIR) {
+          await fs.mkdir(process.env.ARTIFACT_DIR, { recursive: true });
+          await page.screenshot({ path: path.join(process.env.ARTIFACT_DIR, `${engine}-${lang}-identity-editor.png`) });
+        }
+        await browser.close();
+      });
+      page.setDefaultTimeout(5000);
+      const errors = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+
+      // bound: the editor names the profile and offers Unbind
+      let current = identityState({
+        profiles: [{ ...confirmed, bindings: ["relay"] }],
+        bindings: { relay: confirmed.id },
+        providers: [
+          { id: "relay", name: "Relay", applicable: true, profileId: confirmed.id },
+          { id: "relay-two", name: "Relay Two", applicable: true },
+        ],
+      });
+      const posts = [];
+      const saves = [];
+      await page.route("**/*", async (route) => {
+        const url = new URL(route.request().url());
+        if (url.pathname.startsWith("/api/provider/")) saves.push({ path: url.pathname, body: route.request().postDataJSON() });
+        return serve(lang, (action, body) => {
+          if (action === "unbind") current = { ...current, bindings: {}, profiles: current.profiles.map((p) => ({ ...p, bindings: [] })), providers: current.providers.map((p) => ({ ...p, profileId: undefined })) };
+          return current;
+        }, posts)(route);
+      });
+      await page.goto("http://magpie.test/?view=providers");
+      await page.locator('#providers .row.provider[data-id="relay"]').click();
+      const editor = page.locator(".editor");
+      await editor.waitFor();
+      const field = editor.locator(".identity-field");
+      await field.waitFor();
+      let text = await field.textContent();
+      assert(text.includes("0.162.1"), text);
+      assert(text.includes(SECRET_UA), "the editor doesn't say what identity goes out");
+      for (const leak of ["Authorization", "Bearer", "X-Codex-Window-Id"]) assert(!text.includes(leak), `the editor shows ${leak}`);
+
+      // an unsaved edit survives an unbind: the binding is not part of the
+      // provider's draft, and the editor stays open on it
+      const nameBox = editor.locator("input").first();
+      await nameBox.fill("Relay edited");
+      await field.getByRole("button", { name: w.unbind, exact: true }).click();
+      await page.waitForTimeout(300);
+      assert.equal(posts.at(-1).action, "unbind");
+      assert.deepEqual(posts.at(-1).body, { provider: "relay" });
+      assert.deepEqual(saves, [], "unbinding saved the provider");
+      assert(await editor.isVisible(), "the editor closed on an unbind");
+      assert.equal(await nameBox.inputValue(), "Relay edited", "the unsaved draft was lost");
+      text = await field.textContent();
+      assert(text.includes(w.none), text);
+
+      // Manage takes the reader to the panel on the page under the editor.
+      // The draft is still dirty, so it asks first, as leaving the editor
+      // any other way does; discarding opens the panel.
+      await field.getByRole("button", { name: w.manage }).click();
+      const ask = page.locator("dialog.action-confirm");
+      await ask.waitFor();
+      await ask.getByRole("button").last().click();
+      await page.locator("#identityPanel .identity-arm").waitFor();
+      // the editor folds back into its row: gone once that has run
+      await page.locator(".editor").waitFor({ state: "detached" });
+
+      // a provider no profile would be sent on says why, and offers nothing
+      current = identityState({
+        profiles: [confirmed],
+        providers: [{ id: "relay", name: "Relay", applicable: false, why: "this provider is a signed-in account, whose agent owns the outbound identity" }],
+      });
+      await page.goto("http://magpie.test/?view=providers");
+      await page.locator('#providers .row.provider[data-id="relay"]').click();
+      await page.locator(".editor .identity-field").waitFor();
+      text = await page.locator(".editor .identity-field").textContent();
+      assert(text.includes("signed-in account") || text.includes(w.cannot), text);
+      assert.equal(await page.locator(".editor .identity-field button").count(), 0, "an inapplicable provider offers an identity action");
+      assert.deepEqual(errors, []);
+    });
+  }
+}

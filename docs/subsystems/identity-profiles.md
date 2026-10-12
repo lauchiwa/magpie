@@ -118,6 +118,15 @@ What the panel will not do:
 - It shows no credential, session, thread, request or window id, and no raw
   observed request. Removal asks first and says how many providers it unbinds.
 
+A provider's editor has an **Identity** field of its own (`identityField` in
+`app.js`), between Headers and Proxy: what this provider presents, an Unbind,
+and a way to the panel. It is a summary, not a second editor. The binding is
+not part of the provider's draft or its save: it is read from the identity
+state and changed through `/api/identity/{bind,unbind}` alone, so an unbind
+leaves an unsaved draft open and untouched, and a provider save carries no
+profile field. A provider `IdentityApplies` rejects shows that reason and
+offers no action.
+
 ## Compatibility and upstream synchronization
 
 The implementation intentionally keeps identity data out of `Provider`,
@@ -155,6 +164,8 @@ anchors rather than a long-lived fork of provider or gateway structures.
   id-only window, a provider that cannot present a profile, a refused action
   shown without changing the list, and no leaked header. English and Chinese
   for the behaviour, all five languages for the strings, and 420px wide for
-  the layout.
+  the layout. The same file covers the editor's Identity field: the profile it
+  names, an unbind that leaves an unsaved draft open and saves no provider,
+  the way to the panel, and an inapplicable provider's reason with no action.
 - Run affected tests with an isolated home and pinned Go caches, as described
   in [Provider and plugin ownership](provider-plugins.md#verification).

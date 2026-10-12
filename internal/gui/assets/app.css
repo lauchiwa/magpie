@@ -3052,6 +3052,12 @@ body.panel .modal { padding: 16px 12px; }
 .identity-armed-words { display: flex; flex: 1 1 180px; flex-direction: column; min-width: 0; font-size: 12px; }
 .identity-armed-words .sub, .identity-armed-words .note { font-size: 10.5px; color: var(--muted); overflow-wrap: anywhere; }
 .identity-head .note { margin-left: auto; }
+.identity-field { align-items: flex-start; gap: 6px; min-width: 0; }
+.identity-field-on { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; font-size: 12.5px; }
+.identity-field-on .sub { font-size: 11px; color: var(--muted); }
+.identity-field-ua { min-width: 0; font-family: var(--code); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.identity-field-none { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.identity-field > button { align-self: flex-start; }
 @media (max-width: 600px) {
   .identity { padding: 10px; }
   .identity-arm, .identity-actions { align-items: stretch; }

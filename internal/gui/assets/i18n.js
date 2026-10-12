@@ -4,6 +4,15 @@
 // works. {name} slots are filled by t(str, vars).
 const I18N = {
   zh: {
+    // identity profiles (provider editor)
+    "Identity": "身份",
+    "This provider cannot present an identity profile.": "该供应商不能呈现身份档案。",
+    "Only a provider reached with your own key and base URL can present a frozen client identity.": "只有用你自己的密钥和 base URL 访问的供应商才能呈现冻结的客户端身份。",
+    "No identity profile: requests go out as magpie.": "没有身份档案：请求以 magpie 的身份发出。",
+    "Unbind": "解绑",
+    "Manage identity profiles": "管理身份档案",
+    "Every request, probe and model list for this provider presents this frozen client identity.": "该供应商的每个请求、探测和模型列表都会呈现这个冻结的客户端身份。",
+    "Capture and confirm a profile in Identity profiles on the Providers page, then bind it here.": "先在 Providers 页的身份档案里捕获并确认一个档案，然后在这里绑定。",
     "Expires in {time}": "{time} 后过期",
     "Unbind {provider}": "解绑 {provider}",
     // identity profiles (Providers page)
@@ -4343,6 +4352,15 @@ const I18N = {
     "~/.dsh/settings.yaml sets its own DeepSeek endpoint or key, which dsh puts over magpie's; clear it in dsh's Models page to go through magpie.": "~/.dsh/settings.yaml 设置了自己的 DeepSeek 地址或 Key，dsh 会优先用它而不是 magpie 的；请在 dsh 的 Models 页面清除它，才能走 magpie。",
   },
   "zh-TW": {
+    // identity profiles (provider editor)
+    "Identity": "身分",
+    "This provider cannot present an identity profile.": "該供應商不能呈現身分檔案。",
+    "Only a provider reached with your own key and base URL can present a frozen client identity.": "只有用你自己的金鑰和 base URL 存取的供應商才能呈現凍結的用戶端身分。",
+    "No identity profile: requests go out as magpie.": "沒有身分檔案：請求以 magpie 的身分送出。",
+    "Unbind": "解除繫結",
+    "Manage identity profiles": "管理身分檔案",
+    "Every request, probe and model list for this provider presents this frozen client identity.": "該供應商的每個請求、探測和模型列表都會呈現這個凍結的用戶端身分。",
+    "Capture and confirm a profile in Identity profiles on the Providers page, then bind it here.": "先在 Providers 頁的身分檔案裡擷取並確認一個檔案，然後在這裡繫結。",
     "Expires in {time}": "{time} 後過期",
     "Unbind {provider}": "解除繫結 {provider}",
     // identity profiles (Providers page)
@@ -8665,6 +8683,15 @@ const I18N = {
     "~/.dsh/settings.yaml sets its own DeepSeek endpoint or key, which dsh puts over magpie's; clear it in dsh's Models page to go through magpie.": "~/.dsh/settings.yaml 設定了自己的 DeepSeek 位址或 Key，dsh 會優先用它而不是 magpie 的；請在 dsh 的 Models 頁面清除它，才能走 magpie。",
   },
   ja: {
+    // identity profiles (provider editor)
+    "Identity": "アイデンティティ",
+    "This provider cannot present an identity profile.": "このプロバイダーはアイデンティティプロファイルを提示できません。",
+    "Only a provider reached with your own key and base URL can present a frozen client identity.": "自分のキーとベース URL で接続するプロバイダーだけが、固定したクライアントのアイデンティティを提示できます。",
+    "No identity profile: requests go out as magpie.": "アイデンティティプロファイルなし: リクエストは magpie として送信されます。",
+    "Unbind": "バインドを解除",
+    "Manage identity profiles": "アイデンティティプロファイルを管理",
+    "Every request, probe and model list for this provider presents this frozen client identity.": "このプロバイダーのすべてのリクエスト、プローブ、モデル一覧がこの固定したクライアントのアイデンティティを提示します。",
+    "Capture and confirm a profile in Identity profiles on the Providers page, then bind it here.": "まず Providers ページのアイデンティティプロファイルでプロファイルを取得して確認し、ここでバインドしてください。",
     "Expires in {time}": "{time} 後に期限切れ",
     "Unbind {provider}": "{provider} のバインドを解除",
     // identity profiles (Providers page)
@@ -12989,6 +13016,15 @@ const I18N = {
     "~/.dsh/settings.yaml sets its own DeepSeek endpoint or key, which dsh puts over magpie's; clear it in dsh's Models page to go through magpie.": "~/.dsh/settings.yaml に独自の DeepSeek エンドポイントやキーがあり、dsh は magpie のものよりそちらを優先します。magpie を経由するには dsh の Models ページで消してください。",
   },
   de: {
+    // identity profiles (provider editor)
+    "Identity": "Identität",
+    "This provider cannot present an identity profile.": "Dieser Anbieter kann kein Identitätsprofil zeigen.",
+    "Only a provider reached with your own key and base URL can present a frozen client identity.": "Nur ein Anbieter, der mit Ihrem eigenen Schlüssel und Ihrer Basis-URL erreicht wird, kann eine eingefrorene Client-Identität zeigen.",
+    "No identity profile: requests go out as magpie.": "Kein Identitätsprofil: Anfragen gehen als magpie hinaus.",
+    "Unbind": "Lösen",
+    "Manage identity profiles": "Identitätsprofile verwalten",
+    "Every request, probe and model list for this provider presents this frozen client identity.": "Jede Anfrage, Prüfung und Modellliste dieses Anbieters zeigt diese eingefrorene Client-Identität.",
+    "Capture and confirm a profile in Identity profiles on the Providers page, then bind it here.": "Erfassen und bestätigen Sie zuerst ein Profil unter Identitätsprofile auf der Seite Providers, dann binden Sie es hier.",
     "Expires in {time}": "Läuft in {time} ab",
     "Unbind {provider}": "{provider} lösen",
     // identity profiles (Providers page)
