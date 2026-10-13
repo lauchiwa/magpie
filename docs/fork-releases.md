@@ -142,6 +142,12 @@ Two details of this fork's releases shape that code:
 - The repository has to stay public: an install downloads from it with no
   credentials. GitHub also limits unauthenticated callers by address, which
   the error message says plainly when it happens.
+- The release list and `SHA256SUMS` are asked of GitHub alone, never of a
+  fallback mirror (`MAGPIE_MIRRORS`, `source.DoOfficial`). They say what the
+  files must hash to, and an ad-hoc build has no team for `sameSigner` to
+  catch a swapped app, so the hash is the only check a mirror cannot pass
+  by serving both. The files themselves may still come through a mirror;
+  `internal/update/fork_mirror_test.go` checks both halves.
 
 The repository is `update.ForkRepo`. Three variables override the defaults:
 

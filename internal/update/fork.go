@@ -21,6 +21,12 @@ package update
 //     same comparison the updater uses everywhere else.
 //   - The release repository has to be public, because an install downloads
 //     from it without credentials.
+//   - The release list and SHA256SUMS are asked of GitHub alone
+//     (source.DoOfficial), never of a fallback mirror. They say what the
+//     files must hash to; a mirror that served them could serve a file
+//     and the hash it is checked against, and an ad-hoc signed app has no
+//     team for sameSigner to catch the swap. Only the files themselves may
+//     come through a mirror (fetch), where the hash is what stops one.
 //
 // MAGPIE_UPDATE_FEED still points the updater at a JSON feed instead, for a
 // test or for anyone who runs a feed of their own; MAGPIE_RELEASE_REPO points
@@ -88,7 +94,8 @@ func forkReleases(ctx context.Context) ([]ghRelease, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	res, err := source.Do(client, req)
+	// GitHub alone: the list names the release and where its checksums are
+	res, err := source.DoOfficial(client, req)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +182,8 @@ func checksums(ctx context.Context, gh ghRelease) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := source.Do(client, req)
+	// GitHub alone: these are the hashes a mirrored file is checked against
+	res, err := source.DoOfficial(client, req)
 	if err != nil {
 		return nil, err
 	}

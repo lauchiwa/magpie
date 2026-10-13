@@ -655,6 +655,15 @@ func download(ctx context.Context, a Asset, path string) error {
 	return err
 }
 
+// checksumSource names where a file's checksum came from, for the message
+// a mirror's changed file gets: the release on GitHub, or the feed's site.
+func checksumSource() string {
+	if ownFeed() {
+		return "the release on github.com/" + Repo()
+	}
+	return Feed()
+}
+
 func fetch(ctx context.Context, a Asset, path string) error {
 	// through a mirror when one is given (mirror.go): the hash checked
 	// below is still the feed's
@@ -698,7 +707,7 @@ func fetch(ctx context.Context, a Asset, path string) error {
 	if err == nil && !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), a.SHA256) {
 		err = fmt.Errorf("%s does not match its checksum", filepath.Base(path))
 		if u != a.URL {
-			err = fmt.Errorf("%s from the mirror %s does not match its checksum from %s; not installed", filepath.Base(path), strings.TrimSuffix(u, a.URL), Site)
+			err = fmt.Errorf("%s from the mirror %s does not match its checksum from %s; not installed", filepath.Base(path), strings.TrimSuffix(u, a.URL), checksumSource())
 		}
 	}
 	if err != nil && u != a.URL && !errors.As(err, new(*MirrorError)) {
