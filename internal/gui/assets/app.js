@@ -5676,7 +5676,7 @@ function identityProfileCard(profile, state) {
   card.append(fields);
   const meta = el("div", "identity-meta");
   const made = profile.createdAt ? new Date(profile.createdAt) : null;
-  if (made && !isNaN(made)) meta.append(el("span", "", t("Created {time}", { time: made.toLocaleString() })));
+  if (made && !isNaN(made)) meta.append(el("span", "", t("Created {time}", { time: made.toLocaleString(intlLang()) })));
   if (profile.bindings?.length) meta.append(el("span", "", t("Presented by: {providers}", { providers: profile.bindings.map(providerName).join(", ") })));
   card.append(meta);
 
