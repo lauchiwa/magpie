@@ -37,9 +37,9 @@ import (
 	"github.com/yetone/magpie/internal/source"
 )
 
-// Site is upstream magpie's home. This fork has no site of its own, so it
-// is where a message sends someone to download a build by hand, and its
-// /api/latest is the update feed MAGPIE_UPDATE_FEED can point back at.
+// Site is upstream magpie's home. Its /api/latest is the update feed
+// MAGPIE_UPDATE_FEED can point back at; a build to download by hand is
+// this fork's, from Downloads, never upstream's from here.
 const Site = "https://usemagpie.ai"
 
 // Feed is where the newest release is described, when a JSON feed is used
@@ -655,6 +655,15 @@ func download(ctx context.Context, a Asset, path string) error {
 	return err
 }
 
+// checksumSource names where a file's checksum came from, for the message
+// a mirror's changed file gets: the release on GitHub, or the feed's site.
+func checksumSource() string {
+	if ownFeed() {
+		return "the release on github.com/" + Repo()
+	}
+	return Feed()
+}
+
 func fetch(ctx context.Context, a Asset, path string) error {
 	// through a mirror when one is given (mirror.go): the hash checked
 	// below is still the feed's
@@ -698,7 +707,7 @@ func fetch(ctx context.Context, a Asset, path string) error {
 	if err == nil && !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), a.SHA256) {
 		err = fmt.Errorf("%s does not match its checksum", filepath.Base(path))
 		if u != a.URL {
-			err = fmt.Errorf("%s from the mirror %s does not match its checksum from %s; not installed", filepath.Base(path), strings.TrimSuffix(u, a.URL), Site)
+			err = fmt.Errorf("%s from the mirror %s does not match its checksum from %s; not installed", filepath.Base(path), strings.TrimSuffix(u, a.URL), checksumSource())
 		}
 	}
 	if err != nil && u != a.URL && !errors.As(err, new(*MirrorError)) {

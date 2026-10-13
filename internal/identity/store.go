@@ -1,10 +1,13 @@
 package identity
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net/http"
 	"os"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/steady"
 )
 
@@ -48,24 +52,49 @@ func NewID() (string, error) {
 	return "identity_" + hex.EncodeToString(b[:]), nil
 }
 
-// read loads the store. A file that can't be parsed is reported rather
-// than silently replaced: it holds what the operator confirmed.
+// read loads the store. A file that can't be parsed is unknown, never
+// empty: it holds what the operator confirmed, and which providers are
+// bound. One a crash left all zero or cut short (#1505) is read from its
+// last good generation (lastgood), which write keeps before each change.
+// With no good generation either, the error names the file and leaves it
+// as it is.
+//
+// Every request Sign gives auth to reads the store (HeaderFor), bound or
+// not, so an unreadable store fails every plain provider's requests: with
+// the bindings unknown, sending under magpie's own User-Agent could be
+// exactly what a bound provider must never do.
 func read() (file, error) {
 	b, err := steady.ReadFile(Path())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return file{}, nil
-		}
-		return file{}, fmt.Errorf("read %s: %w", Path(), err)
-	}
-	if len(b) == 0 {
+	if errors.Is(err, fs.ErrNotExist) {
 		return file{}, nil
 	}
-	var f file
-	if err := json.Unmarshal(b, &f); err != nil {
+	if err != nil {
 		return file{}, fmt.Errorf("read %s: %w", Path(), err)
 	}
+	var f file
+	if err = json.Unmarshal(b, &f); err == nil {
+		return f, nil
+	}
+	bak, ferr := lastgood.Fallback(Path(), b, validStore)
+	if ferr != nil {
+		if len(bytes.TrimSpace(b)) == 0 {
+			// an empty file with nothing kept before it, as one made by
+			// hand: no profiles, as it has always been read
+			return file{}, nil
+		}
+		return file{}, fmt.Errorf("%s can't be read (%v) and has no good backup, so which providers present an identity profile is unknown; magpie left it unchanged — fix it, or move it aside to bind none", Path(), err)
+	}
+	f = file{}
+	if err := json.Unmarshal(bak, &f); err != nil {
+		return file{}, fmt.Errorf("read %s: %w", lastgood.Bak(Path()), err)
+	}
 	return f, nil
+}
+
+// validStore is identities.json's contents read as the store.
+func validStore(b []byte) bool {
+	var f file
+	return json.Unmarshal(b, &f) == nil
 }
 
 func write(f file) error {
@@ -83,6 +112,11 @@ func write(f file) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(Path()), 0o700); err != nil {
+		return err
+	}
+	// the file there now is the last good generation read falls back to;
+	// one that isn't valid is copied aside before it is written over
+	if err := lastgood.Keep(Path(), validStore, 0o600); err != nil {
 		return err
 	}
 	// 0o600: a fingerprint is not a secret, but it describes the user's

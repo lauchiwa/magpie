@@ -229,7 +229,7 @@ func (p Provider) Sign(ctx context.Context, req *http.Request, proto Protocol, b
 	return nil
 }
 
-// ListHeader is a header
+// ListHeader is a header whose value is a comma-separated list the request
 // has its own of, which a provider's header of the same name adds to:
 // anthropic-beta, the betas an agent asks on each request.
 func ListHeader(name string) bool { return strings.EqualFold(name, "anthropic-beta") }

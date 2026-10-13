@@ -2,6 +2,7 @@ package identity
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -204,5 +205,113 @@ func TestProfilesAreCopied(t *testing.T) {
 	}
 	if again[0].Fingerprint.Headers["Originator"] != "codex_cli_rs" {
 		t.Error("a caller changed the stored profile through the value it was given")
+	}
+}
+
+// bindOne stores, confirms and binds a Codex profile to relay, the way an
+// operator does, so the file and its last good generation are both
+// written by the store itself.
+func bindOne(t *testing.T) Profile {
+	t.Helper()
+	p := newCandidate(t, ClientCodex, codexHeader())
+	if err := Add(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := Confirm(p.ID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := Bind("relay", p.ID); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A store a crash left all zero (#1505) is its last good generation, not
+// an error on every request of every plain provider: HeaderFor is read by
+// Sign whether a provider is bound or not, so a store that can't be read
+// stopped them all.
+//
+// The last good generation is the file as it was before its last write
+// (lastgood.Keep), as for providers.json and logins.json: the change made
+// last is what a crash in the middle of it loses. Here that is the bind, so
+// relay reads as bound to nothing until it is bound again; the profile,
+// confirmed, is still there.
+func TestAZeroedStoreIsItsLastGoodGeneration(t *testing.T) {
+	ownStore(t)
+	p := bindOne(t)
+	st, err := os.Stat(Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(), make([]byte, st.Size()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// an unbound provider still presents nothing, without an error
+	if h, err := HeaderFor("other"); err != nil || h != nil {
+		t.Fatalf("an unbound provider over a zeroed store got %v, %v", h, err)
+	}
+	// the generation before the bind: the profile confirmed, relay unbound
+	ps, err := Profiles()
+	if err != nil || len(ps) != 1 || ps[0].ID != p.ID || ps[0].ConfirmedAt == nil {
+		t.Fatalf("profiles over a zeroed store = %v, %v; want the confirmed one", ps, err)
+	}
+	if h, err := HeaderFor("relay"); err != nil || h != nil {
+		t.Errorf("relay over the generation before its bind got %v, %v", h, err)
+	}
+
+	// binding again keeps the zeroed file aside rather than writing over
+	// it, and relay presents the profile once more
+	if err := Bind("relay", p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if bad, _ := filepath.Glob(Path() + ".bad-*"); len(bad) != 1 {
+		t.Errorf("the zeroed file kept aside as %v, want one copy", bad)
+	}
+	h, err := HeaderFor("relay")
+	if err != nil || h.Get("User-Agent") != p.Fingerprint.UserAgent {
+		t.Errorf("relay after binding again presents %v, %v", h, err)
+	}
+}
+
+// With no good generation to read, the store stays unknown and fails
+// closed, as before: it is not taken as "nothing bound", which would send
+// a bound provider's requests under magpie's own User-Agent. The error
+// says which file, and that it was left as it is.
+func TestAStoreWithNoGoodGenerationFailsClosed(t *testing.T) {
+	ownStore(t)
+	bindOne(t)
+	if err := os.Remove(Path() + ".bak"); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(), []byte(`{"profiles": [`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := HeaderFor("relay")
+	if err == nil {
+		t.Fatal("a store that can't be read was taken as nothing bound")
+	}
+	if !strings.Contains(err.Error(), "identities.json") || !strings.Contains(err.Error(), "unchanged") {
+		t.Errorf("error = %q, want it to name the file and say it was left as it is", err)
+	}
+	if err := Bind("relay", "identity_0000000000000000"); err == nil {
+		t.Error("a change was written over a store that can't be read")
+	}
+	if b, _ := os.ReadFile(Path()); string(b) != `{"profiles": [` {
+		t.Errorf("the unreadable store was changed to %q", b)
+	}
+}
+
+// An empty file made by hand is no profiles, as it has always been read.
+func TestAnEmptyStoreIsNoProfiles(t *testing.T) {
+	ownStore(t)
+	if err := os.MkdirAll(filepath.Dir(Path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(Path(), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if h, err := HeaderFor("relay"); err != nil || h != nil {
+		t.Fatalf("an empty store gave %v, %v", h, err)
 	}
 }

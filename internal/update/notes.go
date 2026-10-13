@@ -36,6 +36,13 @@ func ReleasePage(version string) string {
 	return "https://github.com/" + Repo() + "/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
+// Downloads is where a message sends someone to download a build by hand:
+// this fork's Releases page. Site would be upstream's, whose build put in
+// by hand replaces this fork's and then updates from upstream.
+func Downloads() string {
+	return "https://github.com/" + Repo() + "/releases"
+}
+
 // NotesBetween asks for the notes of every release after after (none when
 // "") up to and including upto, newest first, in lang (see InLang). It reads
 // this fork's own GitHub releases, unless MAGPIE_NOTES_FEED names a feed.

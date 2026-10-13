@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -252,5 +253,44 @@ func TestAnUnboundProviderIsUnchanged(t *testing.T) {
 	}
 	if o := req.Header.Get("Originator"); o != "" {
 		t.Errorf("Originator = %q, want none added for an unbound provider", o)
+	}
+}
+
+// An identities.json a crash left all zero (#1505) does not stop a plain
+// provider's requests. Sign reads the store for every one, bound or not, so
+// before it was read from its last good generation every key+URL provider
+// failed with "invalid character '\x00'". Through the real store, not the
+// lookup a test replaces.
+func TestAZeroedIdentityStoreLeavesProvidersSigning(t *testing.T) {
+	detectHome(t)
+	profile := codexProfile(t)
+	if err := identity.Add(profile); err != nil {
+		t.Fatal(err)
+	}
+	// one more write after the profile is there, so the last good
+	// generation holds it
+	if err := identity.Unbind("nobody"); err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.Bind("other", profile.ID); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(identity.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identity.Path(), make([]byte, st.Size()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{ID: "relay", Name: "Relay", Key: "sk-test", Chat: "https://example.invalid/v1"}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.invalid/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Sign(context.Background(), req, Chat, nil); err != nil {
+		t.Fatalf("an unbound provider over a zeroed identities.json: %v", err)
+	}
+	if ua := req.Header.Get("User-Agent"); ua != "" {
+		t.Errorf("User-Agent = %q, want none for an unbound provider", ua)
 	}
 }
