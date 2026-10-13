@@ -11,7 +11,8 @@ import (
 // deepseekRefuseToolTurns answers as DeepSeek's Chat API does in thinking
 // mode (checked against api.deepseek.com, October 2026): a tool call made
 // since the user's last message that comes back without reasoning_content
-// turns the whole request away, while an empty one, a reply's, or one
+// turns the whole request away, as does a reply to a tool result without
+// it, while an empty one, another reply's, or one
 // from before the user's last message missing are taken.
 func deepseekRefuseToolTurns(body []byte) (int, string) {
 	var q struct {
@@ -24,10 +25,13 @@ func deepseekRefuseToolTurns(body []byte) (int, string) {
 			last = i
 		}
 	}
+	afterTool := false
 	for _, m := range q.Messages[last+1:] {
-		if string(m["role"]) == `"assistant"` && len(m["tool_calls"]) > 0 && m["reasoning_content"] == nil {
+		// a reply to a tool result too (checked 2026-10-12, #1822)
+		if string(m["role"]) == `"assistant"` && (len(m["tool_calls"]) > 0 || afterTool) && m["reasoning_content"] == nil {
 			return 400, `{"error":{"message":"The ` + "`reasoning_content`" + ` in the thinking mode must be passed back to the API. (request_id: 06048513-d7c7-4cdf-9998-47bfc20484e6)","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`
 		}
+		afterTool = string(m["role"]) == `"tool"`
 	}
 	return 0, ""
 }

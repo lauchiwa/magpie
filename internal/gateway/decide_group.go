@@ -86,6 +86,9 @@ func (s *Server) decideFailed(c candidate, status int, header http.Header, body 
 // in turn until one answers, or the last one's answer passed on.
 func (s *Server) serveDecisionGroup(w http.ResponseWriter, r *http.Request, body []byte, asked string, g provider.Group, ms []provider.Member) {
 	start := time.Now()
+	if refuseOff(w, provider.Chat, asked) { // every model of it disabled (#1867)
+		return
+	}
 	g = g.Live()
 	keyWho, keyHeld := keyHolds(r)
 	accWho, accHeld := accountHolds(r)
@@ -96,7 +99,7 @@ func (s *Server) serveDecisionGroup(w http.ResponseWriter, r *http.Request, body
 		return
 	}
 	// a model a pause rule holds for now is out, as for a chat
-	ms, paused := provider.PausedOut(g, ms, agentOf(r), ruleClock())
+	ms, paused := provider.PausedOut(g, ms, agentOf(r), "", ruleClock())
 	if len(ms) == 0 && len(paused) > 0 {
 		writeError(w, provider.Chat, http.StatusServiceUnavailable, pausedError(asked, paused))
 		return
@@ -121,12 +124,13 @@ func (s *Server) serveDecisionGroup(w http.ResponseWriter, r *http.Request, body
 			return
 		}
 	}
+	cs = probeOne(cs) // of those resting, only the one back soonest (#1799)
 	if len(cs) == 0 {
 		writeError(w, provider.Chat, http.StatusServiceUnavailable, fmt.Sprintf("no key or account of the group %s's decision models may serve them now", g.Name))
 		return
 	}
 	who := callerOf(r)
-	tr := s.trace.begin(Route{Time: start, Agent: who.agent, Session: sessionOf(r.Header), Model: asked, Provider: cs[0].p.ID,
+	tr := s.trace.beginFor(r, Route{Time: start, Agent: who.agent, Session: sessionOf(r.Header), Model: asked, Provider: cs[0].p.ID,
 		Group: groupRef(g, ms), Order: pl.order, Left: pl.left})
 	var skipped []string
 	for i, c := range cs {
@@ -193,6 +197,7 @@ func (s *Server) serveDecisionGroup(w http.ResponseWriter, r *http.Request, body
 			}
 		}
 		last = true
+		took := time.Since(start).Milliseconds() // before what magpie writes down of it (#1939)
 		tried(status, errMsg, fail, rest, used)
 		if status < 400 {
 			servedCandidate(c, used.Input+used.Output)
@@ -203,7 +208,7 @@ func (s *Server) serveDecisionGroup(w http.ResponseWriter, r *http.Request, body
 		}
 		appendUsage(r, usage.Record{RouteID: tr.ID, Time: start, Agent: who.agent, Via: who.via, Provider: c.p.ID, Host: c.p.Where(), Model: c.model, Requested: asked, Served: use.Model,
 			ProviderKeyID: keyID, ProviderKeyName: keyName, ProviderAccount: accountOf(c.p),
-			Input: use.Usage.Input, Output: use.Usage.Output, Millis: time.Since(start).Milliseconds(), Status: status})
+			Input: use.Usage.Input, Output: use.Usage.Output, Millis: took, Status: status})
 		ctype := header.Get("Content-Type")
 		if ctype == "" || status < 300 {
 			ctype = "application/json"
@@ -244,8 +249,9 @@ func (s *Server) askDecisionGroup(model string, intents []string, prev before, e
 		return verdict{}, false, nil
 	}
 	g = g.Live()
-	ms, _ = provider.PausedOut(g, ms, RouterAgent, ruleClock())
+	ms, _ = provider.PausedOut(g, ms, RouterAgent, "", ruleClock())
 	cs, _, _ := s.decideTries(g, ms)
+	cs = probeOne(cs) // of those resting, only the one back soonest (#1799)
 	if len(cs) == 0 {
 		return verdict{}, true, fmt.Errorf("no decision model of the group %s can be asked now", g.Name)
 	}

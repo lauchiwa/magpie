@@ -35,6 +35,33 @@ func TestSwappedGrokServingName(t *testing.T) {
 	}
 }
 
+// A model offered at a window beside its default (grok-4.7@500k) is
+// answered under its plain name: the same model, not a swap (#1645,
+// ggbdpq). Another version or variant at that window is still one.
+func TestSwappedGrokWindowID(t *testing.T) {
+	for _, c := range [][2]string{
+		{"grok-4.7@500k", "grok-4.7"},
+		{"grok-4.7@500k", "grok-4.7-build"},
+		{"grok-4.6@256k", "grok-4.6"},
+		{"x-ai/grok-4.7@500k", "grok-4.7"},
+		{"claude-opus-5-5@300k", "claude-opus-5-5"},
+	} {
+		if Swapped(c[0], c[1]) {
+			t.Errorf("%s answered as %s is the same model at a window", c[0], c[1])
+		}
+	}
+	for _, c := range [][2]string{
+		{"grok-4.7@500k", "grok-4.6"},
+		{"grok-4.7@500k", "grok-4.7-mini"},
+		{"grok-4.7@500k", "grok-4.7-build-fast"},
+		{"grok-4.7@500k", "grok-4.6-build"},
+	} {
+		if !Swapped(c[0], c[1]) {
+			t.Errorf("%s answered as %s is another model", c[0], c[1])
+		}
+	}
+}
+
 // A row kept marked swapped before is read back as not swapped when xAI
 // named the build serving it; a real swap stays one.
 func TestKeptRowGrokServingNameNotSwapped(t *testing.T) {

@@ -32,7 +32,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -51,7 +50,7 @@ import (
 // tests can fake it. The installer puts it in ~/.local/bin, and on macOS
 // inside Kiro CLI.app as well.
 var KiroExecutable = func() string {
-	if p, err := exec.LookPath("kiro-cli"); err == nil {
+	if p, err := proc.LookPath("kiro-cli"); err == nil {
 		return p
 	}
 	home, _ := os.UserHomeDir()

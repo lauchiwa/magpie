@@ -312,7 +312,7 @@ func (c *asideConnection) provider() (string, string) {
 	if p.Key == "" || p.URL == "" {
 		return "foreign", "Aside's magpie provider has no ownership credential; it will not be overwritten"
 	}
-	if p.Key != gateway.TokenFor("aside") {
+	if p.Key != gateway.TokenFor("aside") && p.Key != agentKeyAt("aside", c.at.gw()) {
 		return "foreign", "Aside's magpie provider belongs to another configuration; it will not be overwritten"
 	}
 	if !sameGateway(p.URL, c.at.v1()) {
@@ -326,7 +326,7 @@ func (c *asideConnection) provider() (string, string) {
 
 func (c *asideConnection) block() any {
 	p := magpieProviderJSONAt("pi", "aside", c.at.gw()).(map[string]any)
-	p["apiKey"] = gateway.TokenFor("aside")
+	p["apiKey"] = agentKeyAt("aside", c.at.gw())
 	return p
 }
 
@@ -427,6 +427,11 @@ func asideImageOptions() []Option {
 }
 
 func asideImageOffered(value string) bool {
+	// a ChatGPT account's gpt-image-2.5, offered before #1865, is its one
+	// GPT Image, which draws the same
+	if ref, ok := strings.CutPrefix(value, "magpie/"); ok {
+		value = "magpie/" + gateway.ListedDrawer(ref)
+	}
 	for _, o := range asideImageOptions() {
 		if o.Value == value {
 			return true

@@ -31,7 +31,6 @@ import (
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
-	"github.com/yetone/magpie/internal/gateway"
 )
 
 // openChamberDir is where OpenChamber keeps its settings.
@@ -205,7 +204,7 @@ func openChamber(home, cfg string) *Agent {
 				return ""
 			}
 			return wiringOff("OpenChamber", ocPath, func(k string) (string, bool) { return edit.GetJSON(ocPath, "provider."+magpieID+".options."+k) },
-				"baseURL", gatewayV1(), "apiKey", gateway.Token)
+				"baseURL", gatewayV1(), "apiKey", hereKey())
 		},
 		Sync: func() error {
 			if _, ok := edit.GetJSON(ocPath, "provider."+magpieID); !ok && usesMagpie(s.model(), s.small()) {

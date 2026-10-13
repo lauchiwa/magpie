@@ -8,12 +8,14 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
 )
 
 // ZCode (Zhipu's desktop app) keeps its model providers in
-// ~/.zcode/v2/config.json, OpenCode's provider shape with a kind of its own:
+// ~/.zcode/v2/config.json (under the folder the user moved its data to, when
+// they did: appdir.ZCodeDataIn), OpenCode's provider shape with a kind of its own:
 //
 //	{"provider":{"magpie":{"name":"magpie","kind":"anthropic",
 //	  "options":{"apiKey":"magpie","baseURL":"http://127.0.0.1:3425"},
@@ -53,7 +55,8 @@ import (
 // Anthropic Messages.
 
 func zcode(home string) *Agent {
-	dir := filepath.Join(home, ".zcode")
+	// where ZCode keeps its data, moved there in its settings or not
+	dir := filepath.Join(appdir.ZCodeDataIn(home), ".zcode")
 	path := filepath.Join(dir, "v2", "config.json")
 	rules := filepath.Join(dir, "v2", "provider_config.json")
 	key := "provider." + magpieID
@@ -141,7 +144,7 @@ func zcodeProviderJSON(path string, keep bool) any {
 	if v, ok := edit.GetJSON(path, "provider."+magpieID+".enabled"); ok && v == "false" {
 		on = false
 	}
-	base, token := gateway.URL(), gateway.Token
+	base, token := gateway.URL(), hereKey()
 	if keep {
 		base, token = zcodeKept(filepath.Dir(path))
 	}
@@ -178,8 +181,8 @@ func zcodeVariants(path string) map[string]string {
 // keeps with its key. An address on this machine's loopback is magpie's own
 // and follows the gateway.
 func zcodeAddress(was, wasKey string) (string, string) {
-	if !onAnotherMachine(was) {
-		return gateway.URL(), gateway.Token
+	if !onAnotherMachine(was) || sameGateway(was, gateway.URL()) {
+		return gateway.URL(), hereKey()
 	}
 	if wasKey == "" {
 		wasKey = gateway.Token
@@ -445,7 +448,7 @@ func zcodeRules(path string, on, keep bool) error {
 		if ids == nil {
 			ids = []string{}
 		}
-		base, token := gateway.URL(), gateway.Token
+		base, token := gateway.URL(), hereKey()
 		if keep {
 			base, token = zcodeKept(filepath.Dir(path))
 		}

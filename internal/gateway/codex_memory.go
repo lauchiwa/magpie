@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/yetone/magpie/internal/access"
@@ -36,6 +37,15 @@ func (s *Server) rememberCodexTurn(r *http.Request, who, agent, kind, asked stri
 // its list has that or names it as a model's auto_review_model_override.
 func isReviewCall(kind, asked string) bool {
 	return kind == "guardian" || asked == "codex-auto-review"
+}
+
+// freeOnChatGPT says whether a ChatGPT sign-in's call on model is free,
+// counted in none of its usage windows: Codex's reviewer model,
+// codex-auto-review, since OpenAI made Auto-review free for every ChatGPT
+// sign-in on 2026-10-06 (#1593, hywang1230). A review run on another
+// model, or through an API key, is counted as any call.
+func freeOnChatGPT(model string) bool {
+	return strings.EqualFold(strings.TrimSpace(model), "codex-auto-review")
 }
 
 // codexMemoryStandIn is the model a Codex memory call goes to when magpie
@@ -73,7 +83,7 @@ func (s *Server) codexMemoryStandIn(r *http.Request, who, agent, kind, asked str
 	keyID := access.Caller(r.Context()).KeyID
 	var last usage.Record
 	usage.Visit(time.Now().Add(-7*24*time.Hour), func(rec usage.Record) {
-		if rec.Agent != who || rec.CallerKeyID != keyID || rec.Kind != "" || rec.Rejected || rec.Failed() || rec.Requested == "" {
+		if rec.Agent != who || rec.CallerKeyID != keyID || rec.Kind != "" || rec.Rejected || rec.IsReported() || rec.Failed() || rec.Requested == "" {
 			return
 		}
 		if rec.Time.After(last.Time) {

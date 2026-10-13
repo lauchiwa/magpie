@@ -91,7 +91,8 @@ func tencentPlanRegion(p Provider) (string, bool) {
 // tencentPlanQuotas is a card for each Token Plan 企业版 team plan the
 // account of a provider in use has, read with its SecretId and SecretKey:
 // each account and region asked once, its cards named for the first such
-// provider.
+// provider. A region no provider on it has the access key for is a card
+// that says so (accessKeyCard, #1821), as Volcengine's.
 func tencentPlanQuotas(ctx context.Context) []SubscriptionQuota {
 	type job struct {
 		p      Provider
@@ -99,12 +100,22 @@ func tencentPlanQuotas(ctx context.Context) []SubscriptionQuota {
 	}
 	seen := map[string]bool{}
 	var jobs []job
+	keyed := map[string]bool{}
+	var keyless []job
 	for _, p := range All() {
-		if p.Hidden || p.Off || p.AccessKeyID == "" || p.SecretAccessKey == "" {
+		if p.Hidden || p.Off {
 			continue
 		}
 		region, ok := tencentPlanRegion(p)
-		if !ok || seen[p.AccessKeyID+" "+region] || !wantsCard(ctx, p.ID, "") {
+		if !ok {
+			continue
+		}
+		if p.AccessKeyID == "" || p.SecretAccessKey == "" {
+			keyless = append(keyless, job{p, region})
+			continue
+		}
+		keyed[region] = true
+		if seen[p.AccessKeyID+" "+region] || !wantsCard(ctx, p.ID, "") {
 			continue
 		}
 		seen[p.AccessKeyID+" "+region] = true
@@ -123,6 +134,13 @@ func tencentPlanQuotas(ctx context.Context) []SubscriptionQuota {
 	out := []SubscriptionQuota{}
 	for _, qs := range got {
 		out = append(out, qs...)
+	}
+	for _, j := range keyless {
+		if keyed[j.region] || seen["none "+j.region] || !wantsCard(ctx, j.p.ID, "") {
+			continue
+		}
+		seen["none "+j.region] = true
+		out = append(out, accessKeyCard(j.p, tcPlanName))
 	}
 	return out
 }

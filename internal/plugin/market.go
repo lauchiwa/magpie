@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/ghtoken"
 	"github.com/yetone/magpie/internal/source"
 )
 
@@ -237,6 +238,10 @@ func fetchJSONFrom(ctx context.Context, u string, limit int64, do func(*http.Cli
 	}
 	req.Header.Set("User-Agent", "magpie")
 	req.Header.Set("Accept", "application/json")
+	// GitHub's API is asked with the user's GitHub token, as the
+	// library's skills are: without one it answers an address 60
+	// requests an hour, which a few git plugins' checks use up (#1942)
+	token := ghtoken.Authorize(req, githubAPI)
 	res, err := do(http.DefaultClient, req)
 	if err != nil {
 		return nil, err
@@ -245,6 +250,15 @@ func fetchJSONFrom(ctx context.Context, u string, limit int64, do func(*http.Cli
 	if res.StatusCode == http.StatusNotFound {
 		return nil, errNotFound
 	}
+	if res.StatusCode != http.StatusOK && sameHost(u, githubAPI) {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+		if e, ok := ghtoken.LimitedBy(res, body, token); ok {
+			return nil, e
+		}
+		if res.StatusCode == http.StatusUnauthorized && token {
+			return nil, ghtoken.Refused()
+		}
+	}
 	if res.StatusCode != http.StatusOK {
 		return nil, &statusError{URL: u, Code: res.StatusCode, Status: res.Status}
 	}
@@ -252,6 +266,13 @@ func fetchJSONFrom(ctx context.Context, u string, limit int64, do func(*http.Cli
 }
 
 var errNotFound = errors.New("not found")
+
+// sameHost is whether u is on base's host.
+func sameHost(u, base string) bool {
+	a, err1 := url.Parse(u)
+	b, err2 := url.Parse(base)
+	return err1 == nil && err2 == nil && a.Host != "" && strings.EqualFold(a.Host, b.Host)
+}
 
 // statusError is a server's answer other than 200 or 404.
 type statusError struct {
@@ -634,6 +655,26 @@ func Installed(spec string) string {
 	var p struct{ Version string }
 	_ = json.Unmarshal(b, &p)
 	return p.Version
+}
+
+// InstalledIcon is the picture the installed plugin spec's package.json
+// gives in magpie.icon, as ownIcon takes one: the plugin's own, for its
+// row, apart from those its providers give themselves in the auth hook
+// (#1775). "" for none, or a plugin that is one file.
+func InstalledIcon(spec string) string {
+	b, err := os.ReadFile(filepath.Join(Target(spec), "package.json"))
+	if err != nil {
+		return ""
+	}
+	var p struct {
+		Magpie struct {
+			Icon string `json:"icon"`
+		} `json:"magpie"`
+	}
+	if json.Unmarshal(b, &p) != nil {
+		return ""
+	}
+	return ownIcon(p.Magpie.Icon)
 }
 
 // Upgrade installs the newest version of one plugin: npm's, or its git

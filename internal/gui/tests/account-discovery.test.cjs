@@ -1,7 +1,9 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // Settings → Privacy → Subscription accounts (#1535, MaxHaiCom): whether
 // magpie reads the agents' own sign-ins (Claude Code's and Codex's files,
-// the Keychain) at all. On by default; Off posts
+// the Keychain) at all. On by default; Off first asks, naming the
+// subscriptions it stops (#1761: a click that didn't mean it left a user with
+// none working), and Cancel leaves it on with nothing posted; taken, Off posts
 // settings/account-discovery {off:true} and is drawn chosen, a save of
 // another setting keeps it, On takes it back. With MAGPIE_NO_ACCOUNTS set
 // the row says so and shows Off. The row fits a narrow window without the
@@ -50,6 +52,13 @@ function server(lang, posts, over) {
     }
     if (url.pathname === "/api/usage/quotas") return json([]);
     if (url.pathname === "/api/plugins") return json({ plugins: [] });
+    // two subscriptions signed in, one switched off, and an API-key provider
+    if (url.pathname === "/api/providers") return json({ gateway: {}, presets: [], providers: [
+      { id: "claude", name: "Claude Pro", account: { user: "a@example.com" }, models: [], agents: [] },
+      { id: "codex", name: "ChatGPT Plus", account: { user: "b@example.com" }, models: [], agents: [] },
+      { id: "kimi", name: "Kimi Off", account: { user: "c@example.com" }, off: true, models: [], agents: [] },
+      { id: "deepseek", name: "DeepSeek Key", host: "api.deepseek.com", models: [], agents: [] },
+    ] });
     if (url.pathname === "/api/groups") return json({ groups: [], models: [] });
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);
@@ -69,7 +78,7 @@ async function open(browser, lang, width, posts, over) {
   await page.route("**/*", server(lang, posts, over));
   await page.goto("http://magpie.test/?view=usage");
   await page.locator("#prefs").click();
-  await page.locator("#setTab-privacy").click();
+  await page.locator(":is(#setTab-privacy, .nav-s[data-of=setTab-privacy]):visible").click();
   await page.locator("#discoveryList .opt").first().waitFor();
   return { context, page, errors };
 }
@@ -80,12 +89,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
     t.after(() => browser.close());
 
-    for (const [lang, head, name] of [
-      ["en", "Agents' sign-ins", "Subscription accounts"],
-      ["zh", "智能体登录", "订阅账号"],
-      ["zh-TW", "智慧體登入", "訂閱帳號"],
-      ["ja", "エージェントのサインイン", "サブスクリプションアカウント"],
-      ["de", "Anmeldungen der Agenten", "Abo-Konten"],
+    for (const [lang, head, name, ask, take] of [
+      ["en", "Agents' sign-ins", "Subscription accounts", "Turn off subscription accounts?", "Turn them off"],
+      ["zh", "智能体登录", "订阅账号", "关闭订阅账号？", "关闭"],
+      ["zh-TW", "智慧體登入", "訂閱帳號", "關閉訂閱帳號？", "關閉"],
+      ["ja", "エージェントのサインイン", "サブスクリプションアカウント", "サブスクリプションアカウントをオフにしますか？", "オフにする"],
+      ["de", "Anmeldungen der Agenten", "Abo-Konten", "Abo-Konten ausschalten?", "Ausschalten"],
     ]) {
       for (const width of [900, 360]) {
         await t.test(lang + " " + width, async () => {
@@ -114,7 +123,27 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(fit.sideways, false, "the page scrolls sideways");
 
           const before = await view(page);
+          // Off asks first, naming the subscriptions in use that it stops
           await opts.nth(0).click();
+          const dialog = page.locator("dialog.action-confirm");
+          await dialog.waitFor();
+          assert.equal((await dialog.locator("h2").textContent()).trim(), ask);
+          const said = (await dialog.locator("p").textContent()).trim();
+          assert(said.includes("Claude Pro, ChatGPT Plus"), "the subscriptions it stops are named: " + said);
+          assert(!said.includes("Kimi Off") && !said.includes("DeepSeek Key"), "only subscriptions in use are named: " + said);
+          if (lang !== "en") assert(!said.includes("stop working"), lang + " warning not translated: " + said);
+          const box1 = await dialog.boundingBox();
+          assert(box1.x >= 0 && box1.x + box1.width <= width + 0.5, "the dialog runs out of the window: " + JSON.stringify(box1));
+          // Cancel: still on, nothing saved
+          await dialog.locator("button").nth(0).click();
+          await dialog.waitFor({ state: "detached" });
+          await page.waitForTimeout(200);
+          assert.deepEqual(posts, [], "Cancel saved Off");
+          assert.equal(await page.locator("#discoveryList .opt").nth(1).evaluate((b) => b.classList.contains("on")), true, "Cancel left Off chosen");
+          await page.locator("#discoveryList .opt").nth(0).click();
+          await dialog.waitFor();
+          assert.equal((await dialog.locator("button").nth(1).textContent()).trim(), take);
+          await dialog.locator("button").nth(1).click();
           for (let i = 0; i < 50 && !posts.length; i++) await page.waitForTimeout(50);
           assert.deepEqual(posts.at(-1), { off: true });
           await page.waitForFunction(() => document.querySelectorAll("#discoveryList .opt")[0]?.classList.contains("on"));

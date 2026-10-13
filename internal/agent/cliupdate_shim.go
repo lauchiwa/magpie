@@ -16,7 +16,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -114,7 +113,7 @@ func sameFolder(a, b string) bool {
 
 // lookTool is name on PATH, else the first of at that is a file.
 func lookTool(name string, at ...string) string {
-	if p, err := exec.LookPath(name); err == nil {
+	if p, err := proc.Look(name); err == nil {
 		return p
 	}
 	for _, p := range at {

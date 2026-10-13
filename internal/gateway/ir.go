@@ -9,6 +9,9 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/yetone/magpie/internal/catalog"
 )
 
 // The APIs are close cousins; everything below is the shape they have
@@ -283,6 +286,13 @@ type Event struct {
 	Usage            Usage
 	Hits             []Hit
 	SafeguardResults json.RawMessage
+	// StopDetails: Anthropic's stop_details, what its classifier said of
+	// a refusal (#1768), carried to the client as it came
+	StopDetails json.RawMessage
+
+	// Wait: for KError, how long the vendor said to wait before asking
+	// again, when it said; sent on as Retry-After
+	Wait time.Duration
 }
 
 // Usage counts tokens.
@@ -314,6 +324,28 @@ type Usage struct {
 	// (stop_reason, finish_reason, a Responses status): "" when it said
 	// none, as a stream that just stops does (upstreamStop)
 	Stop string `json:"stop,omitempty"`
+	// Tier is the service tier the reply says it ran at (upstreamTier),
+	// "" when it says none
+	Tier string `json:"tier,omitempty"`
+	// Deferred is what the reply counted of earlier requests of its
+	// conversation, which their own replies couldn't (cUsage's
+	// MagpieDeferred): billed with this one, never told as its prompt
+	Deferred *Usage `json:"deferred,omitempty"`
+}
+
+// billed is what the request is billed for: its own count, and what it
+// counted of earlier ones (Deferred).
+func (u Usage) billed() Usage {
+	if d := u.Deferred; d != nil {
+		u.Input += d.Input
+		u.Output += d.Output
+		u.CacheRead += d.CacheRead
+		u.CacheWrite += d.CacheWrite
+		u.CacheWrite1h += d.CacheWrite1h
+		u.Reasoning += d.Reasoning
+		u.Deferred = nil
+	}
+	return u
 }
 
 // prompt is every token the prompt came to, as OpenAI's and Gemini's
@@ -348,6 +380,9 @@ func (u *Usage) add(v Usage) {
 	if v.Upstream != "" {
 		u.Upstream = v.Upstream
 	}
+	if v.Tier != "" {
+		u.Tier = v.Tier
+	}
 	if v.RequestID != "" {
 		u.RequestID = v.RequestID
 	}
@@ -360,6 +395,9 @@ func (u *Usage) add(v Usage) {
 	if v.Stop != "" {
 		u.Stop = v.Stop
 	}
+	if v.Deferred != nil {
+		u.Deferred = v.Deferred
+	}
 }
 
 // Result is a whole reply, for non-streaming clients.
@@ -370,6 +408,7 @@ type Result struct {
 	Stop             string
 	Usage            Usage
 	SafeguardResults json.RawMessage
+	StopDetails      json.RawMessage
 }
 
 // collector assembles a Result from events. Encoders use the same logic to
@@ -418,6 +457,9 @@ func (c *collector) closeTool() {
 func (c *collector) add(ev Event) {
 	if len(ev.SafeguardResults) > 0 {
 		c.res.SafeguardResults = ev.SafeguardResults
+	}
+	if len(ev.StopDetails) > 0 {
+		c.res.StopDetails = ev.StopDetails
 	}
 	switch ev.Kind {
 	case KStart:
@@ -564,7 +606,7 @@ func stringOrText(raw json.RawMessage) string {
 		return ""
 	}
 	var s string
-	if json.Unmarshal(raw, &s) == nil {
+	if decodeJSON(raw, &s) == nil {
 		return s
 	}
 	var blocks []struct {
@@ -572,7 +614,7 @@ func stringOrText(raw json.RawMessage) string {
 		Text     string `json:"text"`
 		ToolName string `json:"tool_name"`
 	}
-	if json.Unmarshal(raw, &blocks) == nil {
+	if decodeJSON(raw, &blocks) == nil {
 		var b strings.Builder
 		for _, x := range blocks {
 			switch x.Type {
@@ -609,7 +651,7 @@ func toolOutput(raw json.RawMessage) (string, []Part) {
 		} `json:"source"`
 		ImageURL json.RawMessage `json:"image_url"`
 	}
-	if len(raw) == 0 || raw[0] != '[' || json.Unmarshal(raw, &blocks) != nil {
+	if len(raw) == 0 || raw[0] != '[' || decodeJSON(raw, &blocks) != nil {
 		return text, nil
 	}
 	var images []Part
@@ -623,11 +665,11 @@ func toolOutput(raw json.RawMessage) (string, []Part) {
 			}
 		case "input_image", "image_url":
 			var u string
-			if json.Unmarshal(b.ImageURL, &u) != nil {
+			if decodeJSON(b.ImageURL, &u) != nil {
 				var o struct {
 					URL string `json:"url"`
 				}
-				json.Unmarshal(b.ImageURL, &o)
+				decodeJSON(b.ImageURL, &o)
 				u = o.URL
 			}
 			if u != "" {
@@ -652,7 +694,7 @@ func effortOf(s string) string {
 }
 
 // effortRank orders the reasoning levels agents and vendors name.
-var effortRank = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+var effortRank = catalog.EffortRank
 
 // ByStrength is efforts weakest first, in effortRank's order; a level it
 // doesn't know keeps its place among the others of its kind, after them.
@@ -682,28 +724,7 @@ func fitEffort(want string, levels []string) string {
 		want = "max"
 		levels = slices.DeleteFunc(slices.Clone(levels), func(l string) bool { return l == "ultra" })
 	}
-	if len(levels) == 0 || slices.Contains(levels, want) {
-		return want
-	}
-	at := slices.Index(effortRank, want)
-	if at < 0 {
-		return want
-	}
-	best, dist := want, len(effortRank)
-	for _, l := range levels {
-		i := slices.Index(effortRank, l)
-		if i < 0 || l == "none" {
-			continue
-		}
-		d := i - at
-		if d < 0 {
-			d = -d
-		}
-		if d < dist || d == dist && i > at {
-			best, dist = l, d
-		}
-	}
-	return best
+	return catalog.NearestEffort(want, levels)
 }
 
 // budgetOf is the Anthropic thinking budget for an effort level.

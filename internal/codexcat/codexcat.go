@@ -42,6 +42,34 @@ func DefaultEffort(e []string) string {
 	return e[0]
 }
 
+// NewSessionEffort is the effort a new Codex session starts at, as the
+// top of this machine's Codex config.toml says it (model_reasoning_effort,
+// magpie's "New sessions" effort, or the one Codex's own picker last
+// saved); "" when it is unset or the config can't be read.
+func NewSessionEffort() string {
+	v, _ := edit.GetTOMLTop(filepath.Join(catalog.CodexHome(), "config.toml"), "model_reasoning_effort")
+	return v
+}
+
+// ModelDefault is the default_reasoning_level of a model of these levels
+// with chosen set for new sessions: chosen when the model takes it, else
+// the level of its own nearest chosen (catalog.NearestEffort: by
+// strength, a tie going up — xhigh on a model of high and max is max), the
+// one the gateway would send it at anyway. Codex takes a model's default
+// when it is switched to: the CLI's /model offers it first and saves it as
+// the effort, and the Codex app keeps the current effort only for a model
+// that lists it. With the middle of the road there, a session started at
+// xhigh dropped to medium on a switch to a routing group (Creat.wu on
+// Discord). Nothing chosen, or nothing near it, keeps DefaultEffort.
+func ModelDefault(levels []string, chosen string) string {
+	if chosen != "" {
+		if n := catalog.NearestEffort(chosen, levels); slices.Contains(levels, n) {
+			return n
+		}
+	}
+	return DefaultEffort(levels)
+}
+
 // TakesEffort is the effort Codex takes for the model id when none is set:
 // the default_reasoning_level of the entry it reads for it. Codex's own
 // model and a ChatGPT account's (codex/) keep their entry from Codex's
@@ -61,11 +89,17 @@ func TakesEffort(ms []catalog.Model, id string) string {
 	return DefaultEffort(e)
 }
 
-// Catalog renders models as a whole models.json.
-func Catalog(ms []catalog.Model) []byte {
+// Catalog renders models as a whole models.json, for the effort this
+// machine's Codex starts new sessions at (NewSessionEffort).
+func Catalog(ms []catalog.Model) []byte { return CatalogAt(ms, NewSessionEffort()) }
+
+// CatalogAt renders models as a whole models.json for a Codex that starts
+// new sessions at effort ("" for its models' own defaults): each model's
+// default_reasoning_level is ModelDefault's.
+func CatalogAt(ms []catalog.Model, effort string) []byte {
 	out := struct {
 		Models []any `json:"models"`
-	}{Models: Entries(ms, 0)}
+	}{Models: entriesAt(ms, 0, effort)}
 	if out.Models == nil {
 		out.Models = []any{}
 	}
@@ -151,8 +185,13 @@ type model struct {
 
 // Entries renders models as models.json entries, ranked after the first
 // `after`. Only fields Codex requires or that change behaviour are set; the
-// rest take Codex's defaults.
+// rest take Codex's defaults. A model's default effort is ModelDefault's
+// for the effort this machine's Codex starts new sessions at.
 func Entries(ms []catalog.Model, after int) []any {
+	return entriesAt(ms, after, NewSessionEffort())
+}
+
+func entriesAt(ms []catalog.Model, after int, effort string) []any {
 	own := CacheEntries()
 	v1 := V1()
 	work := settings.Load()
@@ -219,7 +258,7 @@ func Entries(ms []catalog.Model, after int) []any {
 		}
 		e.AgentsEffort = agentsEffort(own, m)
 		if len(m.Efforts) > 0 {
-			d := DefaultEffort(m.Efforts)
+			d := ModelDefault(m.Efforts, effort)
 			e.DefaultEffort = &d
 			e.Summaries = true
 		}
@@ -535,9 +574,13 @@ func CacheEntries() map[string]map[string]any {
 // subagent's task, so a GPT lead can't hand one to a magpie-served
 // subagent; in V1 the task goes as text (#141). With settings.CodexAgentsV1
 // the OpenAI entries magpie hands Codex say "v1"; nothing else in them
-// changes. Codex keeps what it was handed in models_cache.json, versions
-// and all, so what the backend itself said is kept aside (originals) and
-// put back when the cache is read again (CacheEntries).
+// changes. Codex's own features.multi_agent_v2 still wins over the entry, so
+// where it is on in the config magpie routes the setting can't reach Codex:
+// magpie says so (internal/agent/codex.go, and the Settings row) and leaves
+// the config alone — turning the key off there is the user's. Codex keeps
+// what it was handed in models_cache.json, versions and all, so what the
+// backend itself said is kept aside (originals) and put back when the cache
+// is read again (CacheEntries).
 
 // V1 reports whether the OpenAI models magpie hands Codex say "v1".
 func V1() bool { return settings.Load().CodexAgentsV1 }

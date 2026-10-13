@@ -2,8 +2,11 @@
 // Phone navigation and content stay usable in both languages (#391). The
 // desktop screenshots match BASE_REF within a small rendering tolerance
 // (origin/main by default), but for the Agents page while BASE_REF hasn't its
-// 「接入」 rows yet; only API boundaries are faked, never the page's layout or
-// scrolling helpers.
+// 「接入」 rows yet. Until BASE_REF has the visibility manager, its new footer
+// alone is excluded; agent-bulk-visibility and agent-grip cover that footer's
+// layout and controls. Its height is rounded only for the pixel comparison,
+// so unchanged text below keeps the baseline's subpixel antialiasing. API
+// boundaries are faked; the page's scrolling helpers are left intact.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -312,6 +315,30 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
               await current.mouse.move(0, 0); await original.mouse.move(0, 0);
               // Removing hover can repaint the tab's shadow in a later frame.
               await current.waitForTimeout(350); await original.waitForTimeout(350);
+              // The new management footer intentionally differs from main.
+              // Compare the rest at its new position: the footer also moves
+              // Profiles down. Compare the footer too once main contains it.
+              // Do not skip the Agents page or increase the pixel tolerance.
+              let addedFooter = view === "agents" && !baselineFile("app.js").includes("function agentsManageButton")
+                ? await current.locator("#agentsManage").boundingBox() : null;
+              if (addedFooter) {
+                // A fractional new height changes text antialiasing below it,
+                // even after translating the screenshot back. Normalize only
+                // that new height; the footer's real layout is tested separately.
+                await current.locator("#agentsManage").evaluate((bar, height) => {
+                  bar.style.boxSizing = "border-box";
+                  bar.style.height = Math.ceil(height) + "px";
+                }, addedFooter.height);
+                addedFooter = await current.locator("#agentsManage").boundingBox();
+              }
+              // Plugins' Built-in tab is new: until BASE_REF has it, the
+              // page is compared with that tab taken out of its strip (the
+              // sidebar's list follows the strip); builtins.test.cjs covers
+              // the tab and its list.
+              if (view === "plugins" && !baselineFile("plugins.js").includes("function drawBuiltin")) {
+                await current.locator("#view-plugins .lib-tabs .opt").first().evaluate((b) => b.remove());
+                await current.waitForTimeout(350);
+              }
               const before = PNG.sync.read(await still(original));
               const after = PNG.sync.read(await still(current));
               const sameSize = before.width === after.width && before.height === after.height;
@@ -319,9 +346,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
               // Chromium can repaint antialiased edges differently even when
               // comparing HEAD with itself. Count a pixel once only when one
               // of its channels changes by more than 48; size changes always fail.
+              const scale = before.width / width;
               if (sameSize) for (let i = 0; i < before.data.length; i += 4) {
+                const row = Math.floor(i / 4 / before.width), col = (i / 4) % before.width;
+                // Only the footer's own column moves: the sidebar beside the
+                // list (at 1280) stays where it was.
+                const shifted = addedFooter && row >= Math.floor(addedFooter.y * scale)
+                  && col >= Math.floor(addedFooter.x * scale) && col < Math.ceil((addedFooter.x + addedFooter.width) * scale)
+                  ? Math.round(addedFooter.height * scale) : 0;
+                // Both images retain their real viewport size. The added
+                // footer pushes this last slice below the current viewport.
+                if (row + shifted >= after.height) continue;
+                const j = i + shifted * after.width * 4;
                 for (let channel = 0; channel < 4; channel++) {
-                  if (Math.abs(before.data[i + channel] - after.data[i + channel]) > 48) {
+                  if (Math.abs(before.data[i + channel] - after.data[j + channel]) > 48) {
                     changedPixels++;
                     break;
                   }

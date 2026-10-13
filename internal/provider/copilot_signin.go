@@ -63,7 +63,7 @@ func startCopilotSignIn(s *signInFlow) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(s.via(context.Background()))
 	var dc struct {
 		DeviceCode string `json:"device_code"`
 		UserCode   string `json:"user_code"`

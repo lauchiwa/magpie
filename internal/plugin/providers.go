@@ -71,6 +71,11 @@ type Model struct {
 	// ImageSaid is whether the plugin (or models.dev) said if it takes
 	// images: Image false without it is not known
 	ImageSaid bool `json:"imageSaid"`
+	// Inputs and Outputs are the kinds capabilities.input and .output say
+	// the model takes and gives (text, image, audio, video, pdf), in
+	// OpenCode's order: not image alone (#1595)
+	Inputs  []string `json:"inputs,omitempty"`
+	Outputs []string `json:"outputs,omitempty"`
 	// Fast is set by the plugin on a model it runs in its vendor's fast
 	// mode when the request says service_tier "priority" (m.fast: Cursor's
 	// plugin from 0.2.2, for a model Cursor has a fast variant of)
@@ -413,11 +418,41 @@ var refreshing sync.WaitGroup
 // host left running: for tests that watch the providers' list on disk.
 func Refreshed() { refreshing.Wait() }
 
-// Settle waits for Cached's refreshes to end, then stops the host: for
-// tests, whose folders the host runs in go when they end. Each ask is
-// bounded and the retries are few, so this waits a bounded time even for
-// a host that never answers.
+// Told waits for the hooks told of a change or a sign-in (OnChange,
+// OnSignIn) to end: for tests, so that a change one test made is not told
+// in the next, nor written into its folder as it goes.
+func Told() {
+	telling.Lock()
+	for telling.n > 0 {
+		telling.Wait()
+	}
+	telling.Unlock()
+}
+
+// Answered is whether what Cached gives now is the plugins' own answer,
+// rather than what was kept from before they were last asked. A page that
+// would otherwise read "signs in to nothing" out of an empty list can say
+// so only when this holds: an empty list before the answer arrives means
+// "not asked yet", not "none" (#1112).
+func Answered() bool {
+	provMu.Lock()
+	defer provMu.Unlock()
+	return provGood
+}
+
+// Settle waits for Cached's refreshes to end, stops the host, waits for
+// the hooks told of a change (Told) and forgets the plugins (UseCached
+// nil): for tests, whose folders the host runs in go when they end, so
+// the next test starts with nothing of this one's running or seen. Each
+// ask is bounded and the retries are few, so this waits a bounded time
+// even for a host that never answers.
 func Settle() {
+	refreshing.Wait()
+	Restart()
+	// what the host said of a sign-in is written before the folder goes
+	// (#1935); a hook that read the providers to know the account's
+	// started a host again, which goes too
+	Told()
 	refreshing.Wait()
 	Restart()
 	// and no host goes on finishing its calls in a folder going away
@@ -430,6 +465,12 @@ func Settle() {
 	for _, h := range hs {
 		h.stop()
 	}
+	// nor is the restart, or a sign-in a host saved, told in the next test
+	Told()
+	// and the plugins go with the folder: the next test's, in a folder of
+	// its own, are not taken for the plugins changed (checkList), nor
+	// answered with these
+	UseCached(nil)
 }
 
 // Cached is the plugins' providers as last asked, without starting the
@@ -577,7 +618,7 @@ func SignedIn(provider string) bool {
 
 // Prompt is a question a sign-in method asks before it starts.
 type Prompt struct {
-	Type        string `json:"type"` // text, select
+	Type        string `json:"type"` // text, select, password (text typed unseen, #1982)
 	Key         string `json:"key"`
 	Message     string `json:"message"`
 	Placeholder string `json:"placeholder,omitempty"`
@@ -628,10 +669,12 @@ type Authorization struct {
 // already signed in replaces that one's instead.
 const NewAccount = "new"
 
-// Authorize begins an OAuth sign-in to account (a key, or NewAccount).
+// Authorize begins an OAuth sign-in to account (a key, or NewAccount),
+// through the proxy ctx names (netproxy.With): the plugin's requests for
+// it, there and in Finish, go through that one (#1663).
 func Authorize(ctx context.Context, provider string, method int, inputs map[string]string, account string) (Authorization, error) {
 	var a Authorization
-	err := Call(ctx, "authorize", map[string]any{"provider": provider, "method": method, "inputs": inputs, "account": account}, &a)
+	err := Call(ctx, "authorize", map[string]any{"provider": provider, "method": method, "inputs": inputs, "account": account, "proxy": proxyOf(ctx)}, &a)
 	return a, err
 }
 
@@ -654,8 +697,8 @@ func failure(why string) error {
 }
 
 // Finish waits for an OAuth sign-in to finish: an "auto" one on its own,
-// a "code" one with the code pasted back. It gives where the sign-in was
-// saved.
+// a "code" one with the code pasted back, through the proxy Authorize was
+// given. It gives where the sign-in was saved.
 func Finish(ctx context.Context, session, code string) (Saved, error) {
 	var r struct {
 		OK    bool   `json:"ok"`
@@ -672,14 +715,14 @@ func Finish(ctx context.Context, session, code string) (Saved, error) {
 }
 
 // APIKey signs in to account (a key, or NewAccount) with a key, as an
-// "api" method does.
+// "api" method does, through the proxy ctx names.
 func APIKey(ctx context.Context, provider string, method int, inputs map[string]string, key, account string) (Saved, error) {
 	var r struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
 		Saved
 	}
-	if err := Call(ctx, "apiKey", map[string]any{"provider": provider, "method": method, "inputs": inputs, "key": key, "account": account}, &r); err != nil {
+	if err := Call(ctx, "apiKey", map[string]any{"provider": provider, "method": method, "inputs": inputs, "key": key, "account": account, "proxy": proxyOf(ctx)}, &r); err != nil {
 		return Saved{}, err
 	}
 	if !r.OK {
@@ -877,6 +920,11 @@ type UsageWindow struct {
 	Models    []string `json:"models"`
 	NotModels []string `json:"notModels"`
 	Aside     bool     `json:"aside"`
+	// RunsOutAt (RFC 3339) is when the soonest credits left in the window
+	// are lost, and RunsOut how many, when the vendor's credits expire
+	// apart from the window's reset (WorkBuddy's packages)
+	RunsOutAt string  `json:"runsOutAt"`
+	RunsOut   float64 `json:"runsOut"`
 }
 
 // Checkin is what came of an account's daily check-in, as the plugin's

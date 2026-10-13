@@ -82,11 +82,24 @@ func TestNPMInfoDeadline(t *testing.T) {
 		}
 		npmAnswer(w, r)
 	})
-	npmAll = 300 * time.Millisecond
-	start := time.Now()
-	got := Info(context.Background(), []string{"fast-one", "slow-one", "fast-two"})
-	if took := time.Since(start); took > 2*time.Second {
-		t.Fatalf("took %v: the slow package held it", took)
+	// registered after fakeNPM, so it runs before the fake's Close, which
+	// waits for every handler: a check below that fails doesn't leave the
+	// slow one held and the package hung until -timeout (#1808)
+	let := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(let)
+	// The slow one is held until the test lets it go and each package is
+	// waited on for an hour, so Info coming back at all is npmAll at work,
+	// with no wall-clock bound a loaded machine can pass; the minute only
+	// turns a wait into a FAIL. npmAll is the quick ones' time to answer,
+	// room enough on a loaded machine.
+	npmEach, npmAll = time.Hour, 5*time.Second
+	answered := make(chan map[string]NPM, 1)
+	go func() { answered <- Info(context.Background(), []string{"fast-one", "slow-one", "fast-two"}) }()
+	var got map[string]NPM
+	select {
+	case got = <-answered:
+	case <-time.After(time.Minute):
+		t.Fatal("Info waited for the slow package")
 	}
 	if got["fast-one"].Version != "1.2.3" || got["fast-two"].Version != "1.2.3" {
 		t.Fatalf("the quick ones: %+v", got)
@@ -94,8 +107,8 @@ func TestNPMInfoDeadline(t *testing.T) {
 	if _, ok := got["slow-one"]; ok {
 		t.Fatalf("the slow one before it answered: %+v", got["slow-one"])
 	}
-	close(release)
-	deadline := time.Now().Add(3 * time.Second)
+	let()
+	deadline := time.Now().Add(30 * time.Second)
 	for InfoCached([]string{"slow-one"})["slow-one"].Version == "" {
 		if time.Now().After(deadline) {
 			t.Fatal("the slow one's answer wasn't kept")

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"testing"
 )
@@ -63,5 +64,70 @@ func TestTrayMenuOpenFrameIsWails(t *testing.T) {
 	}
 	if !regexp.MustCompile(`(?s)case "opened":\s*if s\.parent\.clickHandler != nil \{\s*s\.parent\.clickHandler\(\)`).Match(fn) {
 		t.Fatalf("Wails' Event no longer calls the click handler on \"opened\"; see menuOpening:\n%s", fn)
+	}
+}
+
+// fakeTray is the shape clickIn reads in Wails' SystemTray: impl, an
+// interface holding a pointer to the platform's tray.
+type fakeTray struct{ impl any }
+
+type fakeLinuxTray struct {
+	label                  string
+	lastClickX, lastClickY int
+}
+
+// niri places the panel by where the tray host said the icon was clicked,
+// which Wails keeps from Activate(x, y) and gives the click handler no way
+// to ask for (#1670).
+func TestTrayClickIn(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		tray fakeTray
+		x    int
+		ok   bool
+	}{
+		{"clicked", fakeTray{&fakeLinuxTray{lastClickX: 1490, lastClickY: 14}}, 1490, true},
+		{"clicked at the bar's left end", fakeTray{&fakeLinuxTray{lastClickX: 0, lastClickY: 14}}, 0, true},
+		{"no coordinates from the host", fakeTray{&fakeLinuxTray{}}, 0, false},
+		{"no tray yet", fakeTray{}, 0, false},
+		{"fields gone in a later Wails", fakeTray{&struct{ lastClickX string }{"x"}}, 0, false},
+		{"not a pointer", fakeTray{fakeLinuxTray{lastClickX: 5}}, 0, false},
+	} {
+		x, ok := clickIn(reflect.ValueOf(&c.tray).Elem())
+		if x != c.x || ok != c.ok {
+			t.Errorf("%s: %d %v, want %d %v", c.name, x, ok, c.x, c.ok)
+		}
+	}
+}
+
+// clickIn reads the fields Wails' Activate fills before it calls the click
+// handler; an upgrade that renames them or stops keeping the click fails
+// here.
+func TestTrayClickIsWails(t *testing.T) {
+	out, err := exec.Command("go", "mod", "download", "-json", "github.com/wailsapp/wails/v3").Output()
+	if err != nil {
+		t.Skip("go mod download:", err)
+	}
+	var mod struct{ Dir string }
+	if err := json.Unmarshal(out, &mod); err != nil || mod.Dir == "" {
+		t.Fatalf("go mod download named no folder: %s", out)
+	}
+	app := filepath.Join(mod.Dir, "pkg", "application")
+	src, err := os.ReadFile(filepath.Join(app, "systemtray_linux.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?s)type linuxSystemTray struct \{.*?\n\s*lastClickX int\n\s*lastClickY int\n`).Match(src) {
+		t.Fatal("Wails' linuxSystemTray has no lastClickX, lastClickY int; see clickIn")
+	}
+	if !regexp.MustCompile(`(?s)func \(s \*linuxSystemTray\) Activate\(x int32, y int32\) \(err \*dbus\.Error\) \{\s*s\.lastClickX = int\(x\)\s*s\.lastClickY = int\(y\).*?s\.parent\.clickHandler\(\)`).Match(src) {
+		t.Fatal("Wails' Activate no longer keeps the click before calling the click handler; see clickIn")
+	}
+	src, err = os.ReadFile(filepath.Join(app, "systemtray.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?s)type SystemTray struct \{.*?\n\s*impl\s+systemTrayImpl\n`).Match(src) {
+		t.Fatal("Wails' SystemTray keeps its platform tray in no impl; see trayImpl")
 	}
 }

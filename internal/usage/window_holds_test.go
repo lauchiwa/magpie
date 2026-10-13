@@ -140,19 +140,19 @@ func TestWindowHoldsNeedsTheWholeWindowLogged(t *testing.T) {
 		}
 	}
 	priceOf := func(Record) *catalog.Price { return nil }
-	if got := windowHolds(qs, now, now.Add(-2*24*time.Hour), priceOf, nil, read); got[0].Windows[0].Holds != nil {
+	if got := windowHolds(qs, now, now.Add(-2*24*time.Hour), priceOf, nil, nil, read); got[0].Windows[0].Holds != nil {
 		t.Fatalf("the log began 2 days into the week, and the week was reckoned: %+v", got[0].Windows[0].Holds)
 	}
-	got := windowHolds(qs, now, now.Add(-30*24*time.Hour), priceOf, nil, read)
+	got := windowHolds(qs, now, now.Add(-30*24*time.Hour), priceOf, nil, nil, read)
 	if h := got[0].Windows[0].Holds; h == nil || h.Tokens != 500 || h.Priced {
 		t.Fatalf("logged since before the week: %+v, want 500 tokens, unpriced", h)
 	}
-	if got := windowHolds(qs, now, now.Add(-30*24*time.Hour), priceOf, nil, func(func(Record)) {}); got[0].Windows[0].Holds != nil {
+	if got := windowHolds(qs, now, now.Add(-30*24*time.Hour), priceOf, nil, nil, func(func(Record)) {}); got[0].Windows[0].Holds != nil {
 		t.Fatalf("nothing routed, and the week was reckoned: %+v", got[0].Windows[0].Holds)
 	}
 	// a provider since renamed: its calls under the old id are the account's
 	recs[0].Provider = "claude-old"
-	if got := windowHolds(qs, now, now.Add(-30*24*time.Hour), priceOf, map[string]string{"claude-old": "claude"}, read); got[0].Windows[0].Holds == nil {
+	if got := windowHolds(qs, now, now.Add(-30*24*time.Hour), priceOf, map[string]string{"claude-old": "claude"}, nil, read); got[0].Windows[0].Holds == nil {
 		t.Fatal("a call under the provider's old id wasn't counted")
 	}
 }
@@ -165,5 +165,74 @@ func TestWindowBoundsOfAMonth(t *testing.T) {
 	start, end, ok := w.Bounds(reset.Add(-time.Hour))
 	if !ok || !start.Equal(time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)) || !end.Equal(reset) {
 		t.Fatalf("bounds %v – %v (%v), want Oct 1 – Nov 1", start, end, ok)
+	}
+}
+
+// #2010 (NorethSea): once a Codex account's window read none left, the
+// calls ChatGPT still answered were paid from credits, and with the
+// credits since spent the card has no Balance to set it aside. A window
+// with such a call in it isn't reckoned: not the 5 hours that ran dry,
+// nor the week the same calls fell in. Calls in a dry run that the vendor
+// turned away leave it reckoned, and so does a run before the window began.
+func TestWindowHoldsLeavesOutCallsPaidOtherwise(t *testing.T) {
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	readAt := now.Add(-time.Minute)
+	at := func(d time.Duration) *time.Time { x := now.Add(d); return &x }
+	card := func(fiveUsed float64, fiveReset time.Duration) []provider.SubscriptionQuota {
+		return []provider.SubscriptionQuota{{Provider: "codex", User: "sample@example.com", ReadAt: &readAt, Windows: []provider.QuotaWindow{
+			{Name: "5 hours", Used: fiveUsed, ResetsAt: at(fiveReset), Span: 5 * time.Hour},
+			{Name: "7 days", Used: 50, ResetsAt: at(3 * 24 * time.Hour), Span: 7 * 24 * time.Hour},
+		}}}
+	}
+	call := func(ago time.Duration, in int) Record {
+		return Record{Time: now.Add(-ago), Agent: "codex", Provider: "codex", ProviderAccount: "sample@example.com", Model: "gpt-5.5", Input: in, Status: 200}
+	}
+	subscription, credits := call(2*time.Hour, 100000), call(time.Hour, 900000)
+	reads := func(recs ...Record) func(func(Record)) {
+		return func(fn func(Record)) {
+			for _, r := range recs {
+				fn(r)
+			}
+		}
+	}
+	priceOf := func(Record) *catalog.Price { return nil }
+	first := now.Add(-30 * 24 * time.Hour)
+	hist := func(five ...provider.QuotaPoint) []provider.QuotaHistory {
+		return []provider.QuotaHistory{{Provider: "codex", User: "sample@example.com", Lines: []provider.QuotaLine{{Name: "5 hours", Points: five}}}}
+	}
+	pt := func(ago time.Duration, left float64) provider.QuotaPoint {
+		return provider.QuotaPoint{At: now.Add(-ago), Left: left}
+	}
+	holds := func(qs []provider.SubscriptionQuota, h []provider.QuotaHistory, recs ...Record) (five, week *provider.WindowHolds) {
+		got := windowHolds(qs, now, first, priceOf, nil, dryRuns(qs, h, now), reads(recs...))
+		return got[0].Windows[0].Holds, got[0].Windows[1].Holds
+	}
+
+	// the report's case: the 5 hours at 100%, no reading of when it ran dry
+	if five, week := holds(card(100, time.Hour), nil, subscription, credits); five != nil || week != nil {
+		t.Fatalf("a window ran dry at an unknown time and was reckoned: 5 hours %+v, week %+v", five, week)
+	}
+	// read dry 90 minutes ago, some left 3 hours ago: the call an hour ago was credits
+	dry := hist(pt(3*time.Hour, 40), pt(90*time.Minute, 0))
+	if five, week := holds(card(100, time.Hour), dry, subscription, credits); five != nil || week != nil {
+		t.Fatalf("a call answered after the 5 hours read none left was reckoned: 5 hours %+v, week %+v", five, week)
+	}
+	// nothing answered after it ran dry (no credits: turned away): the calls were the windows'
+	five, week := holds(card(100, time.Hour), dry, subscription)
+	if five == nil || five.Routed.Tokens != 100000 || week == nil || week.Tokens != 200000 {
+		t.Fatalf("no call paid otherwise: 5 hours %+v, week %+v, want 100000 and 200000", five, week)
+	}
+	// a run dry earlier in the week, refilled since: the 5 hours since are
+	// reckoned, the week holding its credits call isn't
+	earlier := call(7*time.Hour, 900000)
+	refilled := hist(pt(10*time.Hour, 40), pt(8*time.Hour, 0), pt(6*time.Hour, 100), pt(90*time.Minute, 80))
+	five, week = holds(card(20, 3*time.Hour), refilled, subscription, earlier)
+	if five == nil || five.Routed.Tokens != 100000 || week != nil {
+		t.Fatalf("after a dry run refilled: 5 hours %+v (want 100000 routed), week %+v (want none)", five, week)
+	}
+	// the same run before the week began leaves the week reckoned
+	before := hist(pt(9*24*time.Hour, 40), pt(8*24*time.Hour, 0), pt(8*24*time.Hour-time.Hour, 100))
+	if _, week = holds(card(20, 3*time.Hour), before, subscription, call(8*24*time.Hour-30*time.Minute, 900000)); week == nil || week.Routed.Tokens != 100000 {
+		t.Fatalf("a dry run before the week: week %+v, want 100000 routed", week)
 	}
 }

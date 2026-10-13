@@ -244,13 +244,27 @@ func ompAt(at place, dir string, entry func() ompProviderEntry) *Agent {
 	// the config is on magpie; while something is (a fallback chain, another
 	// role), it writes it afresh instead, so a role set off magpie — applying
 	// again what Check found — mends the wiring that is left.
+	// The plain entries of enabledModels on magpie, which magpie adds there
+	// (omp_scope.go), don't count: once nothing else is on magpie they go
+	// with its provider (#1769). Those scoped to folders are the user's, and
+	// count.
 	dropMagpie := func() error {
-		used, err := onMagpie()
+		used := false
+		err := edit.EditYAMLStrings(path, slices.DeleteFunc(slices.Clone(ompRefKeys), func(k string) bool { return k == "enabledModels" }), func(v string) string {
+			ompRefs(v, func(m string) string { used = used || usesMagpie(m); return m })
+			return v
+		})
+		if err == nil && !used {
+			used, err = ompScopeFoldersOnMagpie(path)
+		}
 		switch {
 		case err != nil:
 			return err
 		case used:
 			return writeMagpie()
+		}
+		if err := ompScopeWithout(path); err != nil {
+			return err
 		}
 		return edit.DelYAML(pick("models"), "providers."+magpieID)
 	}
@@ -372,6 +386,20 @@ func ompAt(at place, dir string, entry func() ompProviderEntry) *Agent {
 		role("tiny", "tiny", "tiny", true),
 		role("memory", "memory", "memory", true),
 	}
+	// the default role's model is what a new session starts on only while
+	// enabledModels takes it in, so a model picked for it joins the list
+	// there is (omp_scope.go, #1769); a reset puts back what the user had,
+	// which is theirs to have scoped or not
+	setDefault := roles[0].Set
+	roles[0].Set = func(v string) error {
+		if err := setDefault(v); err != nil || v == "" {
+			return err
+		}
+		if model, _, one := ompSplit(roleGet("default")()); one && model != "" {
+			return ompScopeWith(path, model)
+		}
+		return nil
+	}
 	// each role but the default one has a thinking level of its own, the
 	// ":level" omp reads off the end of the role's model
 	// (splitThinkingSuffix, resolveModelRoleValue): #1397, the slow role at
@@ -447,6 +475,9 @@ func ompAt(at place, dir string, entry func() ompProviderEntry) *Agent {
 			}); err != nil {
 				return moved, err
 			}
+			if err := ompScopeOnce(path); err != nil {
+				return moved, err
+			}
 			for _, w := range was {
 				s := stashLoad()[w]
 				ns := move(s)
@@ -476,8 +507,18 @@ func ompAt(at place, dir string, entry func() ompProviderEntry) *Agent {
 				return ""
 			}
 			models := pick("models")
-			return wiringOff("omp", models, func(k string) (string, bool) { return edit.GetYAML(models, "providers."+magpieID+"."+k) },
-				"baseUrl", at.v1())
+			if d := wiringOff("omp", models, func(k string) (string, bool) { return edit.GetYAML(models, "providers."+magpieID+"."+k) },
+				"baseUrl", at.v1()); d != "" {
+				return d
+			}
+			// a default role on magpie that enabledModels leaves out never
+			// starts; setting it again adds it there (#1769)
+			if def := roleGet("default")(); ompOnMagpie(def) {
+				if m := ompScopeLeavesOut(path, def); m != "" {
+					return "omp's enabledModels (" + filepath.Base(path) + ") leaves out " + m + ", so new sessions start on another of its models"
+				}
+			}
+			return ""
 		},
 		Fields: append(fields, Field{
 			// the thinking level sessions start with, as omp's settings save

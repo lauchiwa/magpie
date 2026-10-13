@@ -75,6 +75,39 @@ func SetKeepLogin(id string, keep bool) error {
 	return nil
 }
 
+// SetSwitchOnly has magpie only move Codex's own sign-in between its
+// accounts (Provider.SwitchOnly), its requests never sent through the
+// gateway for account failover, or lets failover go through it again.
+func SetSwitchOnly(id string, on bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	if p.Account == nil || p.Account.Agent != p.ID || p.ID != "codex" {
+		return fmt.Errorf("magpie doesn't route %s's own requests for account failover", p.Name)
+	}
+	p.SwitchOnly = on
+	return Save(*p)
+}
+
+// SwitchOnly reports whether magpie only moves agent's own sign-in between
+// its accounts, sending none of its requests through the gateway for
+// account failover (Provider.SwitchOnly). While providers.json can't be
+// read the user's choice is unknown, and failover, magpie's own idea, is
+// not taken up on it.
+func SwitchOnly(agent string) bool {
+	f, err := read()
+	if err != nil {
+		return true
+	}
+	for _, p := range f.Providers {
+		if p.ID == agent {
+			return p.SwitchOnly
+		}
+	}
+	return false
+}
+
 // SetAffinity changes how long a provider's conversations stay with the key
 // or account that answered them.
 func SetAffinity(id, affinity string) error {
@@ -131,6 +164,9 @@ type Limit struct {
 	// again — at Restarts, which routing takes for the window's renewal
 	// when it is the sooner. Zero when none will be spent so.
 	ResetRunsOut time.Time
+	// RunsOut is when the soonest of what the window has left is lost,
+	// apart from its reset (QuotaWindow.RunsOutAt): zero when not known.
+	RunsOut time.Time
 }
 
 // Restarts is when an auto-used reset starts the account's windows again,
@@ -210,6 +246,29 @@ func (a Allowance) For(model string, now time.Time) (used float64, renews []time
 	return used, renews
 }
 
+// Fullest is when the window For's share is of renews: the fullest that
+// counts model, the later of those as full. A display pairs the two, so
+// it names one window: a Factory account 32% into its week and 16% into
+// its month is 32% used, renewing with the week, not the month (#1778).
+// Zero when that window's reset isn't known, or has passed (it is empty
+// again then, its next reset not known).
+func (a Allowance) Fullest(model string, now time.Time) time.Time {
+	model = strings.ToLower(model)
+	used, at := -1.0, time.Time{}
+	for _, l := range a {
+		if !l.applies(model) {
+			continue
+		}
+		if !l.Resets.IsZero() && !l.Resets.After(now) {
+			l.Used, l.Resets = 0, time.Time{}
+		}
+		if l.Used > used || l.Used == used && l.Resets.After(at) {
+			used, at = l.Used, l.Resets
+		}
+	}
+	return at
+}
+
 // Count is the count of the window For's share is of — the fullest that
 // counts model — when the vendor counts it (WorkBuddy's credits): how much
 // of of is used, in unit; of is zero when it isn't counted so. A window
@@ -234,7 +293,11 @@ func (a Allowance) Count(model string, now time.Time) (amount, of float64, unit 
 // Renewal is For's renews as routing ranks them: a window not started,
 // or whose reset has passed, that says how long it runs is taken to
 // renew that long from now — a five hours not started renews within five
-// hours, the soonest of an account that has nothing longer (#576).
+// hours, the soonest of an account that has nothing longer (#576). One
+// whose credits left run out before it renews (Limit.RunsOut) renews
+// then, as what is left is lost then all the same: WorkBuddy's accounts,
+// whose credits have no reset, go by the package that ends first
+// (cdredfox on X).
 func (a Allowance) Renewal(model string, now time.Time) []time.Time {
 	model = strings.ToLower(model)
 	restart := a.Restarts(now)
@@ -248,6 +311,9 @@ func (a Allowance) Renewal(model string, now time.Time) []time.Time {
 			if l.Span > 0 {
 				l.Resets = now.Add(l.Span)
 			}
+		}
+		if l.RunsOut.After(now) && (l.Resets.IsZero() || l.RunsOut.Before(l.Resets)) {
+			l.Resets = l.RunsOut
 		}
 		l.Resets = restarted(l.Resets, restart)
 		ls = append(ls, l)
@@ -677,6 +743,9 @@ func allowanceOf(ws []QuotaWindow, now time.Time) Allowance {
 			l.Resets = *w.ResetsAt
 		case w.ResetSecs > 0:
 			l.Resets = now.Add(time.Duration(w.ResetSecs) * time.Second)
+		}
+		if w.RunsOutAt != nil {
+			l.RunsOut = *w.RunsOutAt
 		}
 		a = append(a, l)
 	}

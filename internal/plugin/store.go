@@ -406,6 +406,8 @@ func add(ctx context.Context, spec, version string) (Entry, error) {
 		return x.Spec == spec || n == name
 	}); i >= 0 {
 		e.Options = l.Plugins[i].Options
+		// whether they turned it off, which an add never changes
+		e.Off = l.Plugins[i].Off
 		// a provider id the user picked it for stays its (another version,
 		// or its package from a git repository in place of npm's)
 		for id, s := range l.Prefer {
@@ -624,9 +626,10 @@ func SetOptions(name string, opts map[string]any) error {
 
 // ShortName is a package's name without its scope and the words every
 // package of its kind has: model-map for @magpie-community/middleware-model-map,
-// zed for @magpie-community/opencode-zed-auth.
+// zed for @magpie-community/opencode-zed-auth. A plugin added from a folder
+// is named by its path, which on Windows ends after a backslash.
 func ShortName(pkg string) string {
-	if i := strings.LastIndex(pkg, "/"); i >= 0 {
+	if i := strings.LastIndexAny(pkg, `/\`); i >= 0 {
 		pkg = pkg[i+1:]
 	}
 	pkg = strings.TrimPrefix(strings.TrimPrefix(pkg, "middleware-"), "opencode-")
@@ -651,7 +654,10 @@ func install(ctx context.Context, spec string) error {
 	}
 	out, err := bunCommand(ctx, bun, Dir(), "add", "--ignore-scripts", spec).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("bun add %s: %v: %s", spec, err, lastLines(string(out), 6))
+		if hint := missingLibs(string(out)); hint != "" {
+			return fmt.Errorf("bun add %s: %s: %w", spec, hint, err)
+		}
+		return fmt.Errorf("bun add %s: %v: %s", spec, cantStart(bun, err), lastLines(string(out), 6))
 	}
 	return nil
 }
@@ -817,7 +823,10 @@ func reinstall(ctx context.Context, spec string) error {
 	}
 	out, err := bunCommand(ctx, bun, Dir(), "update", "--ignore-scripts", name).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("bun update %s: %v: %s", name, err, lastLines(string(out), 6))
+		if hint := missingLibs(string(out)); hint != "" {
+			return fmt.Errorf("bun update %s: %s: %w", name, hint, err)
+		}
+		return fmt.Errorf("bun update %s: %v: %s", name, cantStart(bun, err), lastLines(string(out), 6))
 	}
 	return nil
 }

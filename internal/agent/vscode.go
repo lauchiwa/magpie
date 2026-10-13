@@ -31,7 +31,6 @@ package agent
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -40,7 +39,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
-	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/proc"
 )
 
 // vscodeDefault is chat.defaultModel, a key with a dot in it, escaped for
@@ -109,9 +108,9 @@ var (
 // as it always was.
 func (k vscodeKind) token() string {
 	if k.ua != nil {
-		return gateway.Token
+		return hereKey()
 	}
-	return gateway.TokenFor(k.id)
+	return agentKey(k.id)
 }
 
 // VS Code keeps its User folder under Application Support on macOS, Roaming
@@ -216,7 +215,7 @@ func vscodeKindAt(k vscodeKind, dir string) *Agent {
 			if isDir(dir) {
 				return true
 			}
-			bin, err := exec.LookPath(k.bin)
+			bin, err := proc.Look(k.bin)
 			return err == nil && vscodeCodeBinary(bin)
 		},
 		Notice: func() string {

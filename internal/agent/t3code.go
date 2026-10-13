@@ -97,7 +97,7 @@ func t3App(home string) bool {
 	if runtime.GOOS != "darwin" {
 		return false
 	}
-	for _, d := range []string{"/Applications", filepath.Join(home, "Applications")} {
+	for _, d := range macAppFolders(home) {
 		for _, n := range []string{"T3 Code (Alpha).app", "T3 Code.app"} {
 			if _, err := os.Stat(filepath.Join(d, n)); err == nil {
 				return true
@@ -134,13 +134,20 @@ func t3InstanceJSON(path, gw string) map[string]any {
 			config[k] = v
 		}
 	}
+	environment := []map[string]any{
+		{"name": "ANTHROPIC_BASE_URL", "value": gw, "sensitive": false},
+		{"name": "ANTHROPIC_AUTH_TOKEN", "value": keyAt(gw), "sensitive": false},
+	}
+	// auto mode's review off while no model it lists is one Anthropic
+	// reviews, as for Claude Code itself (claudeReviewEnv); a value in the
+	// user's ~/.claude settings comes after it
+	if !claudeReviewed([]string{"t3code"}) {
+		environment = append(environment, map[string]any{"name": claudeReviewEnv, "value": "0", "sensitive": false})
+	}
 	return map[string]any{
 		"driver": "claudeAgent", "displayName": "magpie", "enabled": true,
-		"environment": []map[string]any{
-			{"name": "ANTHROPIC_BASE_URL", "value": gw, "sensitive": false},
-			{"name": "ANTHROPIC_AUTH_TOKEN", "value": gateway.Token, "sensitive": false},
-		},
-		"config": config,
+		"environment": environment,
+		"config":      config,
 	}
 }
 

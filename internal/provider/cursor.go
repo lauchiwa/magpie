@@ -22,7 +22,6 @@ import (
 	"errors"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -41,7 +40,7 @@ import (
 // CursorExecutable finds the cursor-agent CLI; a var so tests can fake it.
 var CursorExecutable = func() string {
 	for _, name := range []string{"cursor-agent", "agent"} {
-		if p, err := exec.LookPath(name); err == nil && (name == "cursor-agent" || isCursorAgent(p)) {
+		if p, err := proc.LookPath(name); err == nil && (name == "cursor-agent" || isCursorAgent(p)) {
 			return p
 		}
 	}

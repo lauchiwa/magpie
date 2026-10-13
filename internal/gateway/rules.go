@@ -82,7 +82,10 @@ type Classified struct {
 	Sure    float64  `json:"sure,omitempty"`   // how confident it was of the intent, 0 to 1
 	Cached  bool     `json:"cached,omitempty"` // said before, for the same message
 	Ms      int      `json:"ms,omitempty"`     // how long asking it took
-	Error   string   `json:"error,omitempty"`  // why it couldn't say: no intent matches then
+	Error   string   `json:"error,omitempty"`  // why it couldn't say: no intent matches then, unless Fallback
+	// Fallback: "previous" when it couldn't say and the turn keeps the
+	// intent the turn before had (After), rather than none
+	Fallback string `json:"fallback,omitempty"`
 
 	// AfterEffort: the reasoning picked for the turn before, which it was told
 	AfterEffort string `json:"afterEffort,omitempty"`
@@ -116,11 +119,24 @@ func ruleKey(g provider.Group, in http.Header, req *Request) string {
 }
 
 // firstWords tells an agent's subagents from it: they share its session
-// but not what they were asked. Only the words are taken — not how the
-// agent marked them for caching — as they stay the same for the
-// conversation's whole life.
+// but not what they were asked. Only what the user said is taken (userSaid,
+// the first user message that has any) — not how the agent marked it for
+// caching, nor what it put in beside it (instruction files, reminders,
+// Codex's context), which an agent such as ZCode changes as the
+// conversation goes on — so it stays the same for the conversation's
+// whole life. A conversation the user said nothing in yet goes by its
+// first user message's text.
 func firstWords(req *Request) string {
 	h := sha256.New()
+	for _, m := range req.Messages {
+		if m.Role != "user" {
+			continue
+		}
+		if said := userSaid(m); said != "" {
+			h.Write([]byte(said))
+			return hex.EncodeToString(h.Sum(nil)[:12])
+		}
+	}
 	for _, m := range req.Messages {
 		if m.Role != "user" {
 			continue
@@ -167,7 +183,7 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 	if had && tr.input > q.Tokens {
 		q.Tokens = tr.input // what the vendor counted last, a floor: the conversation only grew since
 	}
-	if slices.ContainsFunc(g.Rules, func(r provider.Rule) bool { return len(r.Folders) > 0 }) {
+	if slices.ContainsFunc(g.Rules, provider.Rule.ByFolder) {
 		q.Folder = workDir(req)
 	}
 	hit := &RuleHit{Turn: turn, Tokens: q.Tokens, Images: q.Images, Effort: q.Effort, Folder: q.Folder, Bare: len(g.Rules) == 0}
@@ -271,6 +287,13 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 			}
 			if err != nil {
 				c.Error = err.Error()
+				if c.After != "" {
+					// timed out, failed or resting: the intent the turn
+					// before had, still one of this turn's, is a better
+					// guess than none, which sends the turn to the
+					// group's first member whatever it is (#1826)
+					c.Intent, c.Fallback = c.After, "previous"
+				}
 			}
 		}
 		q.Intent = c.Intent
@@ -426,15 +449,10 @@ func (s *Server) nestedRules(at string, req *Request, agent string, ask classifi
 		h := ruleFor(at, sub, subMs, req, agent, ask)
 		keys = append(keys, at)
 		out = append(out, NestedRule{Group: sub.ID, Name: sub.Name, Rule: h})
-		if h == nil || h.Use == "" || h.Held && aff != nil && aff.Kept {
+		if h == nil || h.Use == "" {
 			continue
 		}
-		was := cands[0]
-		var ok bool
-		cands, pl, ok = applyRule(h, subMs, cands, pl)
-		if ok && aff != nil && aff.Kept && cands[0].rest != was.rest {
-			aff.Kept, aff.Why = false, "rule"
-		}
+		cands, pl = ruleOver(h, subMs, cands, pl, aff)
 	}
 	return out, keys, cands, pl
 }
@@ -528,6 +546,65 @@ func ruleFirst(ms []provider.Member, cs []candidate, pl planned) (out []candidat
 	}
 	pl.order = order
 	return out, pl, lead
+}
+
+// ruleOver puts a rule's members first, over whoever answered the
+// conversation last as a turn begins. Within the turn the rule held (#1946),
+// the one the turn stays on stays first while it is of the rule's member
+// that goes first — the one it names or, that resting, the one a rule after
+// it does — and the rule's other members follow it, ahead of the group's
+// others, so a failure fails over within the member the rule chose before
+// going outside it. One kept outside it, which took over when it failed,
+// isn't held there: the turn goes back to the rule's member once one of it
+// is ready again, its rest over.
+func ruleOver(hit *RuleHit, ms []provider.Member, cs []candidate, pl planned, aff *Affinity) ([]candidate, planned) {
+	kept := aff != nil && aff.Kept
+	if hit.Held && kept && len(cs) > 1 {
+		ordered := ruleOrder(hit, ms)
+		place := func(i int) int { // which of the rule's members cs[i] is of: 0 its own, then the Then's
+			for _, m := range ordered {
+				if !ofMember(cs[i], m) {
+					continue
+				}
+				if named(m, hit.Use) {
+					return 0
+				}
+				for j, id := range hit.Then {
+					if named(m, id) {
+						return j + 1
+					}
+				}
+			}
+			return -1
+		}
+		best := -1
+		for i := range cs {
+			if p := place(i); p >= 0 && pl.order[i].Rest == nil && (best < 0 || p < best) {
+				best = p
+			}
+		}
+		if p := place(0); best < 0 || p == best {
+			// it stays: the rule's members after it, then the group's
+			sub := pl
+			sub.order = pl.order[1:]
+			rest, sub, _ := ruleFirst(ordered, cs[1:], sub)
+			cs = append([]candidate{cs[0]}, rest...)
+			pl.order = append([]Weighed{pl.order[0]}, sub.order...)
+			if p >= 0 {
+				hit.Unready = p > 0
+				if p > 0 {
+					hit.Instead = hit.Then[p-1]
+				}
+			}
+			return cs, pl
+		}
+	}
+	was := cs[0]
+	cs, pl, ok := applyRule(hit, ms, cs, pl)
+	if ok && kept && cs[0].rest != was.rest {
+		aff.Kept, aff.Why = false, "rule"
+	}
+	return cs, pl
 }
 
 // applyRule puts a rule's members first (ruleOrder) and says in the hit

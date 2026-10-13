@@ -45,6 +45,7 @@ func TestSharedGroupRoundTrip(t *testing.T) {
 			{Use: "a/x:high", Tokens: 50000, Agents: []string{"codex"}},
 			{Use: "b/x", Time: &TimeWindow{From: "22:00", To: "08:00", Days: []string{"fri"}}},
 			{Use: "a/small", Folders: []string{"~/work/acme-secret"}},
+			{Use: "a/small", Pause: true, ExceptFolders: []string{"~/work/big-secret"}},
 		}}
 	if err := SaveGroup(g); err != nil {
 		t.Fatal(err)
@@ -53,7 +54,7 @@ func TestSharedGroupRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(text, secret) || strings.Contains(text, "127.0.0.1") || strings.Contains(text, "acme-secret") {
+	if strings.Contains(text, secret) || strings.Contains(text, "127.0.0.1") || strings.Contains(text, "acme-secret") || strings.Contains(text, "big-secret") {
 		t.Fatalf("the shared text carries a provider's key or address, or the sharer's folder: %s", text)
 	}
 	if !strings.Contains(text, `"magpie":"routing-group"`) || !strings.Contains(text, `"version":1`) {
@@ -73,8 +74,8 @@ func TestSharedGroupRoundTrip(t *testing.T) {
 		got.Routing != src.Routing || got.Affinity != src.Affinity || got.Patience != src.Patience || got.Classifier != src.Classifier {
 		t.Fatalf("imported %+v\nfrom %+v", got, src)
 	}
-	// all but the rule by the sharer's folder
-	a, _ := json.Marshal(src.Rules[:len(src.Rules)-1])
+	// all but the rules by the sharer's folders
+	a, _ := json.Marshal(src.Rules[:len(src.Rules)-2])
 	b, _ := json.Marshal(got.Rules)
 	if string(a) != string(b) {
 		t.Fatalf("rules %s, want %s", b, a)
@@ -98,6 +99,7 @@ func TestSharedGroupMissingMembers(t *testing.T) {
 			{Use: "relay/x", Agents: []string{"claude"}},
 			{Use: "relay/x", Intent: "hard"},
 			{Use: "relay/x", Folders: []string{"/home/them/proj"}},
+			{Use: "relay/x", Pause: true, ExceptFolders: []string{"/home/them/big"}},
 		},
 	}})
 	res, err := ImportGroup(string(text))
@@ -110,8 +112,8 @@ func TestSharedGroupMissingMembers(t *testing.T) {
 	if want := []string{"relay/x → mine/x"}; !slices.Equal(res.Instead, want) {
 		t.Errorf("instead %v, want %v", res.Instead, want)
 	}
-	if res.Rules != 3 {
-		t.Errorf("rules left out %d, want 3: the one to gone/y, the one by intent and the one by their folder", res.Rules)
+	if res.Rules != 4 {
+		t.Errorf("rules left out %d, want 4: the one to gone/y, the one by intent and the two by their folders", res.Rules)
 	}
 	g := sharedAt(t, res.ID)
 	if !slices.Equal(g.Members, []string{"mine/x"}) || len(g.Off) != 0 || g.Classifier != "" || len(g.Rules) != 1 || g.Rules[0].Use != "mine/x" {

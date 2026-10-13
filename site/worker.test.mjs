@@ -2,7 +2,7 @@
 // (freecss on Discord). GitHub and the edge cache are stood in for.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import worker, { served, goTarget } from "./worker.js";
+import worker, { served, goTarget, sponsorTarget } from "./worker.js";
 
 const EN = "### Features\n\n- One thing (#1)\n\n### Install\n\nDownload it.";
 const ZH = "### 新功能\n\n- 一件事 (#1)";
@@ -441,4 +441,52 @@ test("icon proxy passes on a picture and nothing of the asker", async () => {
   } finally {
     globalThis.fetch = was;
   }
+});
+
+test("sponsors: /go/<id>/home and /readme send the browser to the sponsor's own link, counted per place", async () => {
+  const { SPONSORS } = await import("./sponsors.js");
+  const list = [{ id: "acme", home: "https://acme.example/r/HOME", readme: "https://acme.example/r/README?x=1" }, { id: "solo", home: "https://solo.example/" }];
+  assert.equal(sponsorTarget(list, "acme", "home"), "https://acme.example/r/HOME");
+  assert.equal(sponsorTarget(list, "acme", "readme"), "https://acme.example/r/README?x=1");
+  for (const [id, where] of [["solo", "readme"], ["acme", "keys"], ["acme", "id"], ["nobody", "home"]])
+    assert.equal(sponsorTarget(list, id, where), "", id + " " + where);
+  for (const s of SPONSORS) {
+    for (const where of ["home", "readme"]) {
+      if (!s[where]) continue;
+      assert.equal(new URL(s[where]).protocol, "https:");
+      captured.length = 0;
+      const res = await worker.fetch(new Request(`https://usemagpie.ai/go/${s.id}/${where}`), {}, ctx);
+      assert.equal(res.status, 302);
+      assert.equal(res.headers.get("Location"), s[where]);
+      await Promise.resolve();
+      assert.equal(captured.length, 1);
+      assert.equal(captured[0].event, "magpie sponsor go");
+      assert.equal(captured[0].properties.id, s.id);
+      assert.equal(captured[0].properties.where, where);
+      // a HEAD goes on but isn't counted
+      captured.length = 0;
+      assert.equal((await worker.fetch(new Request(`https://usemagpie.ai/go/${s.id}/${where}`, { method: "HEAD" }), {}, ctx)).status, 302);
+      assert.deepEqual(captured, []);
+    }
+    assert.equal((await ask(`/go/${s.id}/home/x`)).status, 404);
+  }
+  assert.equal((await ask("/go/nobody-at-all/home")).status, 404);
+});
+
+test("sponsors: the home page and the READMEs link every sponsor through /go", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { SPONSORS } = await import("./sponsors.js");
+  const pages = { home: [new URL("./public/index.html", import.meta.url)], readme: [new URL("../README.md", import.meta.url), new URL("../README.zh-CN.md", import.meta.url)] };
+  for (const [where, files] of Object.entries(pages))
+    for (const f of files) {
+      const text = readFileSync(f, "utf8");
+      for (const s of SPONSORS) {
+        if (s[where]) assert.equal(text.includes(s[where]), false, `${f.pathname} links ${s.id} directly`);
+        // the home page links its own /go; a README, on GitHub, the site's
+        const go = (where === "home" ? "" : "https://usemagpie.ai") + `/go/${s.id}/${where}`;
+        if (text.includes(`/go/${s.id}/`)) assert.ok(s[where] && text.includes(`href="${go}"`), `${f.pathname}: ${go}`);
+      }
+    }
+  const home = readFileSync(pages.home[0], "utf8");
+  for (const s of SPONSORS.filter((s) => s.home)) assert.ok(home.includes(`href="/go/${s.id}/home"`), s.id);
 });

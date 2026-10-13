@@ -65,7 +65,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", server("en", seen, held));
       await page.goto("http://magpie.test/");
       await page.locator('[data-view="usage"]').first().click();
-      await page.locator("#usageTab .opt").nth(1).click();
+      await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       // the tab's opening reads, let go so the page is drawn
       await settle(page, seen, 2);
       held.splice(0).forEach((go) => go());

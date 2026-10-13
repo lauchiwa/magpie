@@ -52,6 +52,8 @@ var Vars = []string{
 	"QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR",
 	// Grok: its home, and where its CLI is installed
 	"GROK_HOME", "GROK_BIN_DIR",
+	// Grok App's data folder (its agent-home/config.toml), else the OS's app-data one
+	"GROK_APP_HOME",
 	// Kimi Code and its shared folder
 	"KIMI_CODE_HOME", "KIMI_SHARE_DIR",
 	// Qwen Code's home, ~/.qwen without it
@@ -65,10 +67,16 @@ var Vars = []string{
 	// MiMo Code, MiniMax Code, OpenHanako, Hermes, dsh, WorkBuddy, CodeBuddy Code
 	"MIMOCODE_HOME", "MINIMAX_DATA_DIR", "HANA_HOME", "HERMES_HOME", "DSH_HOME",
 	"WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR",
+	// DevEco Code's extra config folder, read after ~/.config/deveco
+	"DEVECO_CONFIG_DIR",
 	// alma-server's data folder (Alma without a desktop, on Linux)
 	"ALMA_DATA_DIR",
 	// Reasonix Studio and its native CLI share this config home
 	"REASONIX_HOME",
+	// Reasonix's state folder, where it reads REASONIX.md
+	"REASONIX_STATE_HOME",
+	// PI-Desktop's data folder, where Sessions reads its chat titles
+	"PI_DESKTOP_DATA_DIR",
 	// Mister Morph's config file
 	"MISTER_MORPH_CONFIG",
 	// T3 Code's base folder (its settings in userdata/)

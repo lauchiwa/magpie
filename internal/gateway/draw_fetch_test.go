@@ -155,7 +155,45 @@ func TestVendorThatStopsMidAnswerIsSaid(t *testing.T) {
 		}
 	})
 	code, _, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"relay/gpt-image-2.5-sunburst","prompt":"a 4K city"}`)
-	if code != 504 || !strings.Contains(raw, "Relay began answering after 0s (200 OK) but hadn't sent all of its answer in 300ms") {
+	if code != 504 || !strings.Contains(raw, "Relay began answering after 0s (200 OK) but hadn't sent all of its answer in 300ms: what came doesn't yet say whether the image was coming as a url or as b64_json; 21 B had come") {
 		t.Fatalf("%d %s", code, raw)
+	}
+}
+
+// david-zdw's relay (#1576) answered 2048x1152 on one domain with a 3 MB
+// b64_json body that took 380 s, and on another with a 416 B url. Which of
+// the two stalled is said, with how much had come.
+func TestStalledAnswerSaysUrlOrB64(t *testing.T) {
+	was := drawTimeout
+	drawTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { drawTimeout = was })
+	for _, c := range []struct {
+		name, sent, want string
+	}{
+		{"b64_json", `{"created":1,"data":[{"b64_json":"iVBORw0KGgo` + strings.Repeat("A", 3000) + `"`, "it was sending the image itself as b64_json; 3.0 KB had come, and nothing more for the last "},
+		{"url", `{"created":1,"data":[{"url":"https://files.example/a.png"}]`, "it was answering with the image's url, not the image; 59 B had come"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, _ := relayed(t, func(w http.ResponseWriter, r *http.Request) {
+				io.WriteString(w, c.sent)
+				w.(http.Flusher).Flush()
+				select {
+				case <-r.Context().Done():
+				case <-time.After(5 * time.Second):
+				}
+			})
+			code, _, raw := postImages(t, s, "/v1/images/generations", "application/json", `{"model":"relay/gpt-image-2.5-sunburst","prompt":"a 2K city","size":"2048x1152"}`)
+			if code != 504 || !strings.Contains(raw, c.want) {
+				t.Fatalf("%d %s", code, raw)
+			}
+		})
+	}
+}
+
+func TestSizeOf(t *testing.T) {
+	for n, want := range map[int]string{386: "386 B", 12400: "12.4 KB", 3_000_000: "3.0 MB", 19_700_000: "19.7 MB"} {
+		if got := sizeOf(n); got != want {
+			t.Errorf("sizeOf(%d) = %q, want %q", n, got, want)
+		}
 	}
 }

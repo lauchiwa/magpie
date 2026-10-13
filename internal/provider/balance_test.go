@@ -71,7 +71,7 @@ func TestReadBalancePath(t *testing.T) {
 			t.Errorf("%q: %q %v, want %q", path, got, err, want)
 		}
 	}
-	for _, path := range []string{";", "5h: windowLimits.hour.used; $credits.monthlyCredits", "week:"} {
+	for _, path := range []string{";", "5h: windowLimits.hour.used; week: windowLimits.weekly.used / 0", "week:"} {
 		if got, err := readBalancePath(cc, path); err == nil {
 			t.Errorf("%q: read %q, want an error", path, got)
 		}
@@ -80,6 +80,86 @@ func TestReadBalancePath(t *testing.T) {
 		if got, err := readBalancePath(body, path); err == nil {
 			t.Errorf("%q: read %q, want an error", path, got)
 		}
+	}
+}
+
+// A relay's subscriptions are a list: a balance path sums, or takes the
+// max of, every item's or those that match (#1993, RicardoWYP's
+// /api/subscription/self, as pasted), and one amount of several that the
+// reply hasn't (a second subscription that isn't there, a weekly cap of 0)
+// is "—" while the others still show.
+func TestBalancePathLists(t *testing.T) {
+	one := []byte(`{
+  "data": {
+    "subscriptions": [
+      { "subscription": { "status": "active", "amount_total": 50000000, "amount_used": 31593277, "weekly_amount_total": 0, "weekly_amount_used": 0 } }
+    ],
+    "all_subscriptions": [ { "subscription": { "status": "expired", "...": "..." } } ]
+  }
+}`)
+	two := []byte(`{"data":{"subscriptions":[
+  {"subscription":{"status":"active","amount_total":50000000,"amount_used":31593277,"weekly_amount_total":0,"weekly_amount_used":0}},
+  {"subscription":{"status":"active","amount_total":"10000000","amount_used":5000000,"weekly_amount_total":4000000,"weekly_amount_used":1000000}},
+  {"subscription":{"status":"expired","amount_total":90000000,"amount_used":90000000,"weekly_amount_total":1000000,"weekly_amount_used":1000000}}]}}`)
+	const (
+		used  = "sum(data.subscriptions[subscription.status=active].subscription.amount_used) / sum(data.subscriptions[subscription.status=active].subscription.amount_total) %"
+		week  = "max(data.subscriptions[subscription.status=active].subscription.weekly_amount_used / data.subscriptions[subscription.status=active].subscription.weekly_amount_total) %"
+		count = "count(data.subscriptions.*.subscription[status='active'])"
+	)
+	for _, c := range []struct {
+		body []byte
+		path string
+		want string
+	}{
+		{one, used, "63.2%"},
+		{two, used, "61%"},
+		{one, "$ sum(data.subscriptions.*.subscription.amount_used) / 500000", "$63.19"},
+		{two, "max(data.subscriptions.*.subscription.amount_used)", "90000000.00"},
+		{two, "min(data.subscriptions.*.subscription.amount_used)", "5000000.00"},
+		{two, "count(data.subscriptions[subscription.status!=active])", "1.00"},
+		{one, "sum(data.all_subscriptions.*.subscription.amount_used)", "0.00"},
+		{two, week, "25%"},
+		{two, count, "2.00"},
+		{two, "sum(data.subscriptions.*.subscription[status=active].amount_total) / 1000000", "60.00"},
+		{two, "max(data.subscriptions.*.subscription.weekly_amount_used / data.subscriptions.*.subscription.weekly_amount_total) %", "100%"},
+		{two, "sum(data.subscriptions[subscription.status=active].subscription.amount_used) * 2 / 1000000", "73.19"},
+		// all of a list's items, as they are
+		{[]byte(`[{"left":1},{"left":2.5}]`), "sum(*.left)", "3.50"},
+		{[]byte(`{"a":{"x":{"n":1},"y":{"n":4}}}`), "max(a.*.n)", "4.00"},
+		// one amount the reply hasn't is "—", the others still show
+		{one, "used: " + used + "; week: " + week, "used 63.2% · week —"},
+		{one, "first: data.subscriptions.0.subscription.amount_used; second: data.subscriptions.1.subscription.amount_used", "first 31593277.00 · second —"},
+		{one, "all: data.subscriptions.0.subscription.amount_used + data.subscriptions.1.subscription.amount_used; used: " + used, "all — · used 63.2%"},
+	} {
+		if got, err := readBalancePath(c.body, c.path); err != nil || got != c.want {
+			t.Errorf("%q: %q %v, want %q", c.path, got, err, c.want)
+		}
+	}
+	for _, path := range []string{
+		// several values where one is wanted: a sum, not a guess
+		"data.subscriptions.*.subscription.amount_used",
+		"data.subscriptions[subscription.status=active].subscription.amount_used / 2",
+		"data.subscriptions.*.subscription.amount_used %",
+		// a max of nothing, a list beside one of another length
+		"max(data.all_subscriptions.*.subscription.amount_used)",
+		// one alone that can't be read still fails, as does every one of several
+		week,
+		"week: " + week + "; second: data.subscriptions.1.subscription.amount_used",
+		"sum(data.subscriptions.*.subscription.amount_used",
+		"sum(data.subscriptions[status.amount_used)",
+		"sum(data.subscriptions[status].amount_used)",
+	} {
+		if got, err := readBalancePath(one, path); err == nil {
+			t.Errorf("%q: read %q, want an error", path, got)
+		}
+	}
+	if got, err := readBalancePath(two, "sum(data.subscriptions.*.subscription.amount_used + data.subscriptions[subscription.status=active].subscription.amount_total)"); err == nil {
+		t.Errorf("lists of 3 and 2 put together: read %q, want an error", got)
+	}
+	// the card's amount says why it is "—"
+	parts, err := readBalanceParts(one, "used: "+used+"; week: "+week)
+	if err != nil || len(parts) != 2 || parts[1].Text != "—" || !strings.Contains(parts[1].Error, "nothing to take it of") || parts[0].Error != "" {
+		t.Errorf("parts: %+v %v", parts, err)
 	}
 }
 
@@ -92,6 +172,8 @@ func TestBalanceSourceByHost(t *testing.T) {
 		"https://api.commandcode.ai/provider/v1": "https://api.commandcode.ai/alpha/billing/credits",
 		"https://api.stepfun.com/step_plan/v1":   "https://api.stepfun.com/v1/accounts",
 		"https://api.stepfun.ai/v1":              "https://api.stepfun.ai/v1/accounts",
+		"https://ollama.com/v1":                  "https://ollama.com/api/balance",
+		"http://localhost:11434/v1":              "",
 		"https://relay.example.com/v1":           "",
 		"https://api.deepseek.com.evil/":         "",
 	} {

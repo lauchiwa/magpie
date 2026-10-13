@@ -27,7 +27,7 @@ const fixture = (off) => ({
   servers: [
     { name: "filesystem", transport: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", HOME], agents: ["claude", "codex", "cursor", "goose"], ...(off.length ? { disabledTools: off } : {}) },
     { name: "bare", transport: "stdio", command: "bare-mcp", agents: ["claude"] },
-    ...Array.from({ length: 6 }, (_, i) => ({ name: "more" + i, transport: "stdio", command: "more-mcp", agents: [] })),
+    ...Array.from({ length: 6 }, (_, i) => ({ name: "more" + i, transport: "stdio", command: "more-mcp", agents: ["claude"] })),
   ],
 });
 const tools = [
@@ -108,10 +108,28 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // the agents that can't follow them are named; those that can aren't
         assert.equal(await list.locator(".lib-toolcant").textContent(), w.cant);
 
-        // scrolled a little, as the reader would, before the clicks
+        // scrolled a little, as the reader would, before the clicks, with
+        // every switch in sight below the library's stuck head. Clicking the
+        // pill can scroll it into view first (WebKit, now and then), which
+        // left read_text_file under the head and the click on the head
         await page.mouse.move(Math.min(490, width / 2), 250);
         await page.mouse.wheel(0, 40);
         await page.waitForFunction(() => document.querySelector("#view-library").scrollTop > 0);
+        const placed = () => page.evaluate(() => {
+          const v = document.querySelector("#view-library").getBoundingClientRect();
+          const head = document.querySelector("#view-library .lib-head").getBoundingClientRect();
+          const sws = [...document.querySelectorAll('#view-library .lib-tools[data-server="filesystem"] .lib-switch')].map((b) => b.getBoundingClientRect());
+          if (sws.some((r) => r.top < head.bottom)) return -1;
+          if (sws.some((r) => r.bottom > v.bottom)) return 1;
+          return 0;
+        });
+        for (let i = 0; i < 30; i++) {
+          await page.waitForTimeout(150);
+          const p = await placed();
+          if (!p) break;
+          await page.mouse.wheel(0, 40 * p);
+        }
+        assert.equal(await placed(), 0, "the switches in sight");
         await page.waitForTimeout(400);
         const scrollTop = () => page.evaluate(() => document.querySelector("#view-library").scrollTop);
         const where = () => sw(tools[2].name).evaluate((b) => b.getBoundingClientRect().top);

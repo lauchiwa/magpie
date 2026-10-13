@@ -130,7 +130,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // the Usage page's requests: the switch at the top right of their list
       await page.locator('[data-view="usage"]').first().click();
-      await page.locator("#usageTab .opt").nth(1).click();
+      await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       await page.locator(".led tbody tr.led-row").first().waitFor();
       const sw = page.locator("#ledArchive .led-arch-sw");
       await sw.waitFor();

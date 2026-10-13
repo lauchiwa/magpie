@@ -29,16 +29,20 @@ const (
 // for 750k calls, on every refresh and filter of the Requests page.
 
 type logSnapshot struct {
-	bytes        int64
-	settled      bool
-	path         string
-	info         os.FileInfo
-	off          int64
-	hash         string // SHA-256 of the log's first off bytes, the ones parsed
-	digest       []byte // the hash's running state, which the next parse continues
-	version      uint64
-	blocks       []*rowChunk
-	first        time.Time
+	bytes   int64
+	settled bool
+	path    string
+	info    os.FileInfo
+	off     int64
+	hash    string // SHA-256 of the log's first off bytes, the ones parsed
+	digest  []byte // the hash's running state, which the next parse continues
+	version uint64
+	blocks  []*rowChunk
+	first   time.Time
+	// firstOwn is the first call magpie carried itself, leaving out what
+	// apps reported (#1874): a backfill reaching back doesn't make the log
+	// reach back to a subscription window's start.
+	firstOwn     time.Time
 	keyProviders map[string]bool
 }
 
@@ -60,6 +64,9 @@ var logAppends struct {
 }
 
 func readLogSnapshot() *logSnapshot {
+	// the clients the user counts as agents, read once for the pass the
+	// snapshot is read for (#1958)
+	readClientAgents()
 	logIndex.Lock()
 	defer logIndex.Unlock()
 	path := Path()
@@ -102,7 +109,7 @@ func readLogSnapshot() *logSnapshot {
 	// the old snapshot's hash when it continues its blocks.
 	sum := sha256.New()
 	if continued && resumeLogHash(sum, old.digest) {
-		next.off, next.first = old.off, old.first
+		next.off, next.first, next.firstOwn = old.off, old.first, old.firstOwn
 		next.blocks = slices.Clone(old.blocks)
 		next.keyProviders = maps.Clone(old.keyProviders)
 	}
@@ -140,10 +147,13 @@ func readLogSnapshot() *logSnapshot {
 			tail = &rowChunk{}
 		}
 		routes.handedOn(tail, &r)
-		tail.add(Row{Record: r}, "", next.off, false)
+		tail.add(Row{Record: r, Source: r.Source}, "", next.off, false)
 		routes.seen(tail, len(tail.Rows)-1)
 		if !r.IsRejected() && (next.first.IsZero() || r.Time.Before(next.first)) {
 			next.first = r.Time
+		}
+		if !r.IsRejected() && !r.IsReported() && (next.firstOwn.IsZero() || r.Time.Before(next.firstOwn)) {
+			next.firstOwn = r.Time
 		}
 		if r.ProviderKeyID != "" {
 			next.keyProviders[r.Provider] = true

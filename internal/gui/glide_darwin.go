@@ -98,7 +98,6 @@ static int tintPanel(void *w, int r, int g, int b, int a, int ms) {
 
 // A Dock icon is the Regular activation policy, none is Accessory.
 static int appRegular(void) { return [NSApp activationPolicy] == NSApplicationActivationPolicyRegular; }
-static int appActive(void) { return [NSApp isActive]; }
 static void setRegular(int on) {
 	[NSApp setActivationPolicy:on ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
 }
@@ -189,7 +188,7 @@ func dockPolicy(on bool) application.ActivationPolicy {
 // is shown by an app already in the Dock.
 func setDock(on, front bool) {
 	application.InvokeSync(func() {
-		m := dockStep(C.appRegular() != 0, on, C.appActive() != 0, front)
+		m := dockStep(C.appRegular() != 0, on, front)
 		if !m.policy {
 			return
 		}

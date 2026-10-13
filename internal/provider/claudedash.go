@@ -14,14 +14,15 @@ import (
 // settings.json names the model by id or by "opus" (misteer_ti. on
 // Discord). So a served Claude model with a dotted version is given to
 // Claude Code with dashes (ClaudeSpelled), and the gateway takes that
-// spelling back to the served id (ClaudeUndashed). Other vendors' ids are
-// never respelled.
+// spelling back to the served id (ClaudeUndashed). Mythos too: Claude Code
+// matches claude-mythos-5-1 by substring, so claude-mythos-5.1 would read
+// as Mythos 5. Other vendors' ids are never respelled.
 
 // claudeDotted is a Claude model's version written with a dot.
-var claudeDotted = regexp.MustCompile(`(?i)claude-(?:opus|sonnet|haiku|fable)-\d+(?:\.\d+)+`)
+var claudeDotted = regexp.MustCompile(`(?i)claude-(?:opus|sonnet|haiku|fable|mythos)-\d+(?:\.\d+)+`)
 
 // claudeDashedish is an id that could be a dotted one respelled.
-var claudeDashedish = regexp.MustCompile(`(?i)claude-(?:opus|sonnet|haiku|fable)-\d+-\d`)
+var claudeDashedish = regexp.MustCompile(`(?i)claude-(?:opus|sonnet|haiku|fable|mythos)-\d+-\d`)
 
 // ClaudeDashed is id with each dot of a Claude model's version a dash:
 // relay/claude-opus-4.6-us[1m] is relay/claude-opus-4-6-us[1m]. Any other

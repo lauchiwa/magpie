@@ -17,6 +17,7 @@ func TestClaudeDashedOnlyClaudeVersions(t *testing.T) {
 		"anthropic/claude-3.7-sonnet":   "anthropic/claude-3.7-sonnet",
 		"relay/claude-opus-4.6:high":    "relay/claude-opus-4-6:high",
 		"deepseek-v3.2-claude-opus-4.1": "deepseek-v3.2-claude-opus-4-1",
+		"claude-mythos-5.1":             "claude-mythos-5-1",
 	} {
 		if got := ClaudeDashed(in); got != want {
 			t.Errorf("ClaudeDashed(%q) = %q, want %q", in, got, want)

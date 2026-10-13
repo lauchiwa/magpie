@@ -90,7 +90,9 @@ var state = struct {
 func slot(keyID string) string { return usage.Path() + "\x00" + keyID }
 
 // counts reports whether r is a call a key's budget counts.
-func counts(r usage.Record) bool { return !r.IsRejected() && r.Computer == "" }
+// A call an app reported itself (#1874) never counts: it didn't go through
+// magpie, and may be a backfill of calls long past.
+func counts(r usage.Record) bool { return !r.IsRejected() && !r.IsReported() && r.Computer == "" }
 
 // sumsFor is keyID's sums for the window starting at start, read from
 // usage.jsonl the first time. Called with state held.

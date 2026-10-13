@@ -251,7 +251,7 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 	}
 	// the sessions, the latest first
 	slices.SortFunc(order, func(a, b string) int { return sess[b].Last.Compare(sess[a].Last) })
-	var codexIDs []string
+	var codexIDs, desktopIDs, piIDs []string
 	for _, sk := range order {
 		s := sess[sk]
 		if acc := agents[s.Agent]; acc != nil && s.Requests > 1 {
@@ -262,8 +262,13 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 				s.Points = s.Points[len(s.Points)-ctxPoints:]
 			}
 			out.Sessions = append(out.Sessions, *s)
-			if s.Agent == "codex" {
+			switch s.Agent {
+			case "codex":
 				codexIDs = append(codexIDs, s.Key)
+			case "claude-desktop":
+				desktopIDs = append(desktopIDs, s.Key)
+			case "pi-desktop", "pi":
+				piIDs = append(piIDs, s.Key)
 			}
 		}
 	}
@@ -271,6 +276,26 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 		titles := sessions.CodexTitles(codexIDs)
 		for i := range out.Sessions {
 			if out.Sessions[i].Agent == "codex" {
+				out.Sessions[i].Title = titles[out.Sessions[i].Key]
+			}
+		}
+	}
+	// Claude Desktop's go by the name Desktop saved, which a session with
+	// no transcript on this computer has too (#1675)
+	if len(desktopIDs) > 0 {
+		titles := sessions.DesktopTitles(desktopIDs)
+		for i := range out.Sessions {
+			if out.Sessions[i].Agent == "claude-desktop" {
+				out.Sessions[i].Title = titles[out.Sessions[i].Key]
+			}
+		}
+	}
+	// PI-Desktop's by the name it keeps in pi.sqlite, which no file of the
+	// chat has (#1967); Pi's own sessions find none there and go on below
+	if len(piIDs) > 0 {
+		titles := sessions.PIDesktopTitles(piIDs)
+		for i := range out.Sessions {
+			if a := out.Sessions[i].Agent; (a == "pi-desktop" || a == "pi") && out.Sessions[i].Title == "" {
 				out.Sessions[i].Title = titles[out.Sessions[i].Key]
 			}
 		}

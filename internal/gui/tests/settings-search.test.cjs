@@ -109,12 +109,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // a row's own words, in the language shown: that row alone, under
         // its part's name, the tabs set aside
-        await page.locator("#setTab-usage").click();
+        await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
         await type(page, await tr("Appearance"));
         let s = await state(page);
         assert.deepEqual([s.parts, s.tabs, s.none], [["general"], false, ""]);
         assert(await seen(page, "#themeSegs"), "Appearance's row shows");
-        assert.equal(await seen(page, "#langSegs"), false, "Language's row doesn't");
+        assert.equal(await seen(page, "#langPick"), false, "Language's row doesn't");
         assert.equal(await page.locator("#setPage-general").getAttribute("data-part"), await tr("General"));
         assert.equal(await page.locator("#setPage-general").evaluate((p) => getComputedStyle(p, "::before").content), JSON.stringify(await tr("General")));
         assert.deepEqual(await overflow(page), []);
@@ -152,7 +152,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForTimeout(100);
         assert.equal(await q.inputValue(), "");
         assert.deepEqual(await state(page), { parts: ["usage"], tabs: true, none: "", misses: 0 });
-        assert.equal(await page.locator("#setTab-usage").getAttribute("aria-selected"), "true");
+        assert.equal(await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").getAttribute("aria-selected"), "true");
         assert(await seen(page, "#warmTabs"), "the warm-ups' tabs back");
         assert(await seen(page, "#trayUsagePick"), "every row back");
         // so does clearing it by hand

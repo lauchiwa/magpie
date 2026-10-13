@@ -8,16 +8,18 @@ type dockMove struct {
 }
 
 // dockStep: what setDock does for magpie in the Dock (regular) or not, to
-// be in it (on) or not, magpie active or not, brought to the front or not.
-// Nothing when it is where it should be. Leaving deactivates the app, so
-// with front it is activated after. Joining while active, as it is when the
-// quick panel opens the window or the Settings page puts it there, it is
-// activated again by way of the Dock: an app activated out of the Dock that
-// joins it stays last in Command-Tab's order, and one Command-Tab away
-// couldn't come back to the window (#1381).
-func dockStep(regular, on, active, front bool) dockMove {
+// be in it (on) or not, brought to the front or not. Nothing when it is
+// where it should be. Leaving deactivates the app, so with front it is
+// activated after. Joining to the front, it is activated by way of the Dock:
+// an app activated out of the Dock that joins it stays last in Command-Tab's
+// order, and one Command-Tab away couldn't come back to the window (#1381).
+// That is so whether or not NSApp says it is active yet: the Mac makes it
+// the front app at once, and NSApp says so only once the main thread has
+// taken the activation in, which on a busy Mac comes after the join (#1651).
+// Not active at all, the Dock's turn in front changes nothing.
+func dockStep(regular, on, front bool) dockMove {
 	if regular == on {
 		return dockMove{}
 	}
-	return dockMove{policy: true, again: on && front && active, front: front}
+	return dockMove{policy: true, again: on && front, front: front}
 }

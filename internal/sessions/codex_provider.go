@@ -19,6 +19,7 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/tidwall/gjson"
 
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/steady"
 )
@@ -99,11 +100,16 @@ type codexConfig struct {
 	} `toml:"profiles"`
 }
 
+// readCodexConfig is the folder's codexConfig, parsed again only when
+// config.toml changes: a config.toml holding a table for each of ten
+// thousand projects took ~0.15s of CPU to parse, on each visit to Sessions
+// (#1665). What it gives is shared and must not be changed.
 func readCodexConfig(home string) codexConfig {
-	var c codexConfig
-	if b, err := os.ReadFile(filepath.Join(home, "config.toml")); err == nil {
+	c, _ := filememo.Read("sessions codex config", filepath.Join(home, "config.toml"), func(b []byte) (codexConfig, error) {
+		var c codexConfig
 		toml.Unmarshal(b, &c)
-	}
+		return c, nil
+	})
 	return c
 }
 

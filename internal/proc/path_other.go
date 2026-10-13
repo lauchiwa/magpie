@@ -43,11 +43,15 @@ func UserPath() {
 	go func() {
 		defer close(done)
 		p, vars := shellEnv()
-		setUnset(vars)
+		agents := make(map[string]string, len(agentenv.Vars))
+		for _, v := range agentenv.Vars {
+			agents[v] = vars[v]
+		}
+		setUnset(agents)
 		if p != "" {
 			addPath(filepath.SplitList(p))
 			login.Lock()
-			login.dirs, login.at = filepath.SplitList(p), time.Now()
+			login.dirs, login.vars, login.at = filepath.SplitList(p), vars, time.Now()
 			login.Unlock()
 		}
 	}()
@@ -74,6 +78,7 @@ func setUnset(vars map[string]string) {
 var login struct {
 	sync.Mutex
 	dirs []string
+	vars map[string]string
 	at   time.Time
 }
 
@@ -87,12 +92,36 @@ func LoginPath() []string {
 	if login.dirs != nil && time.Since(login.at) < time.Minute {
 		return login.dirs
 	}
-	p, _ := shellEnv()
+	p, vars := shellEnv()
 	if p == "" {
 		return nil
 	}
-	login.dirs, login.at = filepath.SplitList(p), time.Now()
+	login.dirs, login.vars, login.at = filepath.SplitList(p), vars, time.Now()
 	return login.dirs
+}
+
+// ProxyVars are the proxy variables the login shell is asked for beside
+// agentenv.Vars. An agent run in a terminal has the ones its profile sets,
+// and so does one the ChatGPT app starts (it takes the login shell's
+// environment as it opens), while magpie opened from the Dock doesn't: a
+// NO_PROXY=127.0.0.1 in .zshrc keeps Codex's requests for magpie off a
+// proxy that magpie, reading its own environment, thought they went
+// through (liu_dyj on X). They are only read (LoginEnv), never set in
+// magpie's environment: magpie's own requests take their proxy from
+// netproxy.
+var ProxyVars = []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"}
+
+// shellVars are the variables shellProbe asks for, in its order.
+var shellVars = slices.Concat(agentenv.Vars, ProxyVars)
+
+// LoginEnv is the value a terminal opened now has for k, one of
+// agentenv.Vars or ProxyVars: the login shell's, asked as LoginPath asks
+// and with it; "" when the shell has none for it or doesn't say.
+func LoginEnv(k string) string {
+	LoginPath()
+	login.Lock()
+	defer login.Unlock()
+	return login.vars[k]
 }
 
 // UserBinDirs are the folders a user's command-line tools are installed in
@@ -167,7 +196,7 @@ func npmPrefix(home string) string {
 }
 
 // shellEnv asks the user's login shell for its PATH and the values it has
-// for agentenv.Vars ("" for one it hasn't); "" and nil when it can't say
+// for agentenv.Vars and ProxyVars ("" for one it hasn't); "" and nil when it can't say
 // within a few seconds.
 //
 // fish and nushell are asked too, when they are installed and set up here
@@ -356,8 +385,9 @@ func ShellPath(sh string) []string {
 const shellMark = "__magpie_path__"
 
 // shellProbe is the command the login shell sh runs to print its PATH and
-// agentenv.Vars, between two marks. A NUL (which no variable can hold)
-// parts the values: PATH first, then each of agentenv.Vars in order.
+// agentenv.Vars and ProxyVars (shellVars), between two marks. A NUL (which
+// no variable can hold) parts the values: PATH first, then each of
+// shellVars in order.
 //
 // A POSIX shell (zsh, bash) expands "$PATH" itself, and so does fish:
 // PATH, as each variable whose name ends in PATH, is a path variable there,
@@ -375,7 +405,7 @@ const shellMark = "__magpie_path__"
 // where \0 reaches printf as it is.
 func shellProbe(sh string) string {
 	format, args := shellMark+"%s", ` "$PATH"`
-	for _, v := range agentenv.Vars {
+	for _, v := range shellVars {
 		format += `\0%s`
 		args += ` "$` + v + `"`
 	}
@@ -386,7 +416,7 @@ func shellProbe(sh string) string {
 }
 
 // parseShellEnv reads shellEnv's answer out of what the shell printed. The
-// variables are nil when their count isn't agentenv.Vars' (a printf that
+// variables are nil when their count isn't shellVars' (a printf that
 // doesn't know \0); PATH alone is still taken then. A value that is the
 // variable's own reference ("$CODEX_HOME") is a shell that printed the
 // text instead of expanding it (nushell before shellProbe knew it; a shell
@@ -406,14 +436,14 @@ func parseShellEnv(s, mark string) (string, map[string]string) {
 	if f[0] == "$PATH" {
 		f[0] = ""
 	}
-	if len(f) != len(agentenv.Vars)+1 {
+	if len(f) != len(shellVars)+1 {
 		if len(f) == 1 {
 			return f[0], nil
 		}
 		return "", nil
 	}
-	vars := make(map[string]string, len(agentenv.Vars))
-	for k, v := range agentenv.Vars {
+	vars := make(map[string]string, len(shellVars))
+	for k, v := range shellVars {
 		if f[k+1] == "$"+v {
 			f[k+1] = ""
 		}

@@ -7,7 +7,9 @@
 // of and has none either; one magpie put in has Undo. Drawn before the
 // gateway has read anything, in Chromium and WebKit, at a phone's width and
 // a desk's, in every language, none of it wider than the page. Each row
-// draws what every setting would have spent past the advice.
+// draws what every setting would have spent past the advice. The advice is
+// named "Fewest tokens", and a window it would change says it is a token
+// estimate that doesn't weigh what a compaction loses of the task (#1854).
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -17,7 +19,7 @@ const { chromium, webkit } = require("playwright");
 const assets = path.resolve(__dirname, "../assets");
 const curve = (lo, hi, best) => {
   const pts = [];
-  for (let v = lo; v <= hi; v += 10000) pts.push({ value: v, cost: 1e9 + Math.abs(v - best) * 3000 });
+  for (let v = lo; v <= hi; v += 10000) pts.push({ value: v, cost: 1e9 + Math.abs(v - best) * 3000, compacts: Math.round(9e6 / v) });
   return pts;
 };
 const facts = { calls: 4100, streams: 60, compacts: 813, peak: 166000, after: 57000, growth: 1000, rework: 4700, quick: 0.95, pause: 0.045, away: 0.005, hour: 0.9 };
@@ -76,6 +78,14 @@ function serve(lang, posts) {
   };
 }
 
+const fewest = { en: "Fewest tokens", zh: "最省 Token", "zh-TW": "最省 Token", ja: "トークン最少", de: "Wenigste Tokens" };
+const caveat = {
+  en: "A token estimate only: it doesn't measure how well the agent keeps the task after a compaction. The lower the window, the more often it compacts.",
+  zh: "只是 Token 估算：没有衡量压缩后 Agent 还能多好地接着做任务。阈值越低，压缩越频繁。",
+  "zh-TW": "只是 Token 估算：沒有衡量壓縮後 Agent 還能多好地接著做任務。閾值越低，壓縮越頻繁。",
+  ja: "トークンの見積もりだけです。コンパクトのあとエージェントが作業をどれだけ保てるかは測っていません。しきい値が低いほどコンパクトの回数は増えます。",
+  de: "Nur eine Token-Schätzung: Wie gut der Agent die Aufgabe nach einer Kompaktierung behält, misst sie nicht. Je niedriger die Schwelle, desto öfter wird kompaktiert.",
+};
 const heading = { en: "Tuned for you", zh: "为你调优", "zh-TW": "為你調校", ja: "あなた向けの調整", de: "Für dich abgestimmt" };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -102,10 +112,22 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // Codex had too few calls: no card for it
         assert.equal(await page.locator(".ctx-tune").count(), 1);
         assert.equal(await rows.count(), 4);
-        // only the window a change saves on has a button; the locked one says why
+        // only the window a change saves on has a Use button; the locked one
+        // says why; each window has a picker of its own (#1860), the cache
+        // lifetimes none
         const buttons = page.locator(".ctx-tune-row button");
-        assert.equal(await buttons.count(), 1);
+        assert.equal(await page.locator(".ctx-tune-row button.primary").count(), 1);
+        assert.equal(await rows.nth(0).locator(".ctx-tune-pick").count(), 1);
+        assert.equal(await rows.nth(1).locator(".ctx-tune-pick").count(), 1, "a window already the leanest can still be changed");
+        assert.equal(await page.locator(".ctx-tune-pick").count(), 2);
         assert.match(await rows.nth(0).locator(".ctx-tune-val.best b").innerText(), /160K/);
+        // the advice is named for tokens and says what it doesn't weigh
+        // (#1854): on a window it would change, not on one already the
+        // leanest, nor on a cache lifetime
+        assert.equal(await rows.nth(0).locator(".ctx-tune-val.best .ctx-k").textContent(), fewest[lang]);
+        assert.equal(await rows.nth(0).locator(".ctx-tune-caveat").innerText(), caveat[lang]);
+        assert.ok(await rows.nth(0).locator(".ctx-tune-caveat").isVisible());
+        for (const i of [1, 2, 3]) assert.equal(await rows.nth(i).locator(".ctx-tune-caveat").count(), 0, `row ${i} has no caveat`);
         assert.match(await rows.nth(2).locator(".ctx-tune-src").innerText(), /CLAUDE_CODE_PROMPT_CACHE_TTL/);
         assert.equal(await rows.nth(1).locator(".ctx-tune-val.best").count(), 0, "a window already the leanest shows no other");
         // the curve is what each setting spends past the advice: the window
@@ -185,5 +207,137 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await page.waitForTimeout(300);
     assert.equal(await page.evaluate(() => window.drawn), charts, "after a setting was put in");
     assert.deepEqual(errors, []);
+  });
+}
+
+// A window of the reader's own (#1860, MrMengJ: 200K put in, and 250K or
+// 300K wanted for fewer compactions): each window's picker lists every
+// value the replay tried, with what it spends past the leanest and about
+// how many compactions it would have made, in the app's own menu (no native
+// select), inside a phone's width; a pick puts it in and Undo stays. The
+// row already at the advice keeps its picker. No click scrolls the page.
+const pickHead = { en: "Compact at · estimated from your calls of the range", zh: "压缩阈值 · 按这段时间你的调用估算", "zh-TW": "壓縮閾值 · 依這段時間你的呼叫估算", ja: "コンパクトする値 · この期間の呼び出しからの見積もり", de: "Kompaktieren bei · geschätzt aus deinen Aufrufen im Zeitraum" };
+const note250 = { en: "+270M tokens (+27%) · about 36 compactions", zh: "多花 270M Token（+27%） · 约压缩 36 次", "zh-TW": "多花 270M Token（+27%） · 約壓縮 36 次", ja: "270M トークン多い（+27%） · コンパクト約 36 回", de: "+270M Tokens (+27%) · etwa 36 Kompaktierungen" };
+const note160 = { en: "Fewest tokens · about 56 compactions", zh: "最省 Token · 约压缩 56 次", "zh-TW": "最省 Token · 約壓縮 56 次", ja: "トークン最少 · コンパクト約 56 回", de: "Wenigste Tokens · etwa 56 Kompaktierungen" };
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(`${engine}: a window of the reader's own, with what it costs`, async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    const errors = [];
+    t.after(() => browser.close());
+    for (const lang of Object.keys(heading)) for (const [width, height] of [[360, 760], [1100, 760]]) {
+      await t.test(`${lang}, ${width}x${height}`, async () => {
+        const ctx = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" });
+        await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
+        const page = await ctx.newPage();
+        page.setDefaultTimeout(5000);
+        page.on("pageerror", (e) => errors.push(e.message));
+        const posts = [];
+        await page.route("**/*", serve(lang, posts));
+        await page.goto("http://magpie.test/?view=usage");
+        const row = page.locator(".ctx-tune-row").nth(0);
+        await row.locator(".ctx-tune-pick").waitFor();
+        await page.locator(".ctx-none").waitFor(); // the history has answered: the pane is its full length
+        // the reader scrolls to the picker, as a wheel does
+        await page.mouse.move(width / 2, 300);
+        for (let i = 0; i < 20 && (await row.locator(".ctx-tune-pick").boundingBox()).y > height * 0.6; i++) {
+          await page.mouse.wheel(0, 120);
+          await page.waitForTimeout(60);
+        }
+        await page.waitForTimeout(200);
+        assert.equal(await page.locator("select").count(), 0, "no native select");
+        const y = await page.evaluate(() => document.querySelector("#view-usage").scrollTop + scrollY);
+        await row.locator(".ctx-tune-pick").click();
+        const menu = page.locator(".proto-menu.ctx-tune-menu");
+        await menu.waitFor();
+        assert.equal(await menu.locator(".pm-head").innerText(), pickHead[lang]);
+        // every value the replay tried, 110K to 300K; the one set now ticked
+        assert.equal(await menu.locator(".pm-item").count(), 20);
+        const item = (v) => menu.locator(".pm-item", { has: page.locator(".pm-name", { hasText: new RegExp("^" + v + "$") }) });
+        assert.match(await item("300K").getAttribute("class"), /\bon\b/);
+        assert.equal(await item("250K").locator(".pm-note").innerText(), note250[lang]);
+        assert.equal(await item("160K").locator(".pm-note").innerText(), note160[lang]);
+        const box = await menu.boundingBox();
+        assert.ok(box.x >= 0 && box.x + box.width <= width + 1, `the menu is inside the window: ${JSON.stringify(box)}`);
+        await item("250K").click();
+        await page.locator(".ctx-tune-row").nth(0).locator("button", { hasText: { en: "Undo", zh: "撤销", "zh-TW": "復原", ja: "取り消す", de: "Rückgängig" }[lang] }).waitFor();
+        assert.deepEqual(posts, [{ path: "/api/tune/apply", agent: "claude", knob: "compact", model: "claude-opus-5-5", value: "250000" }]);
+        assert.equal(await page.evaluate(() => document.querySelector("#view-usage").scrollTop + scrollY), y, "no click scrolled the page");
+        // now 250K: the advice and its Use button stand beside it, the
+        // picker ticks 250K
+        assert.match(await page.locator(".ctx-tune-row").nth(0).locator(".ctx-tune-val.now b").innerText(), /250K/);
+        assert.equal(await page.locator(".ctx-tune-row").nth(0).locator("button.primary").count(), 1);
+        await page.locator(".ctx-tune-row").nth(0).locator(".ctx-tune-pick").click();
+        await menu.waitFor();
+        assert.match(await item("250K").getAttribute("class"), /\bon\b/);
+        await page.keyboard.press("Escape");
+        assert.equal(posts.length, 1, "closing the menu puts nothing in");
+        await ctx.close();
+      });
+    }
+    assert.deepEqual(errors, []);
+  });
+}
+
+// a value the advice or the setting now sits on, close to an end of the
+// range, keeps its label and the end's is left off, so no two labels are
+// drawn over each other (#1549, Ti800: the leanest 170K one step from the
+// axis's 160K read as "1170K"), at a phone's width and a desk's
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(`${engine}: the curve's axis labels and tags never overlap`, async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    t.after(() => browser.close());
+    const close = {
+      days: 7,
+      agents: [{ agent: "claude", calls: 4300, advice: [
+        { knob: "compact", model: "claude-opus-5-5", setting: { value: "400000", source: "env", locked: "CLAUDE_CODE_AUTO_COMPACT_WINDOW" },
+          compact: { model: "claude-opus-5-5", current: 400000, best: 170000, cost: 1.9e9, low: 1.46e9, curve: curve(160000, 1000000, 170000), facts } },
+        { knob: "compact", model: "claude-sonnet-5", setting: {},
+          compact: { model: "claude-sonnet-5", current: 990000, best: 500000, cost: 1.9e9, low: 1.46e9, curve: curve(160000, 1000000, 500000), facts } },
+        // the setting now one step from the advice: its "+3%" tag would sit
+        // on "Leanest"
+        { knob: "compact", model: "claude-haiku-4-5", setting: {},
+          compact: { model: "claude-haiku-4-5", current: 180000, best: 170000, cost: 1.9e9, low: 1.46e9, curve: curve(160000, 1000000, 170000), facts } },
+      ] }],
+    };
+    // German's "Sparsamste" is the widest "Leanest"
+    for (const lang of ["en", "de"]) for (const [width, height] of [[360, 760], [1100, 760]]) {
+      const ctx = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" });
+      await ctx.addInitScript(() => { try { localStorage.setItem("magpie.usageTab", "context"); } catch {} });
+      const page = await ctx.newPage();
+      page.setDefaultTimeout(5000);
+      const errors = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+      const base = serve(lang, []);
+      await page.route("**/*", (r) => new URL(r.request().url()).pathname === "/api/tune" ? r.fulfill({ json: close }) : base(r));
+      await page.goto("http://magpie.test/?view=usage");
+      await page.locator(".ctx-tune-chart").nth(2).waitFor();
+      const axes = await page.locator(".ctx-tc-x").evaluateAll((all) => all.map((a) => [...a.children].map((s) => {
+        const r = s.getBoundingClientRect();
+        return { text: s.textContent, cls: s.className, left: r.left, right: r.right };
+      })));
+      for (const ticks of axes) {
+        for (let i = 0; i < ticks.length; i++) for (let j = i + 1; j < ticks.length; j++) {
+          const [a, b] = [ticks[i], ticks[j]];
+          assert.ok(a.right <= b.left || b.right <= a.left, `${width}px: "${a.text}" (${Math.round(a.left)}–${Math.round(a.right)}) overlaps "${b.text}" (${Math.round(b.left)}–${Math.round(b.right)})`);
+        }
+      }
+      // nor the tags over the dots, and "Leanest" always keeps its own
+      const tags = await page.locator(".ctx-tune-chart").evaluateAll((all) => all.map((c) => [...c.querySelectorAll(".ctx-tc-tag")].map((s) => {
+        const r = s.getBoundingClientRect();
+        return { text: s.textContent, left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+      })));
+      for (const list of tags) {
+        assert.ok(list.some((s) => s.text === { en: "Leanest", de: "Sparsamste" }[lang]), `${lang} ${width}px: no "Leanest" tag`);
+        for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+          const [a, b] = [list[i], list[j]];
+          assert.ok(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top, `${lang} ${width}px: tag "${a.text}" overlaps "${b.text}"`);
+        }
+      }
+      // the advice's value and the one set now keep their labels
+      assert.deepEqual(axes[0].map((s) => s.text), ["170K", "400K", "1M"], lang + " " + width + "px");
+      assert.deepEqual(axes[1].map((s) => s.text), ["160K", "500K", "990K"], lang + " " + width + "px");
+      assert.deepEqual(errors, []);
+      await ctx.close();
+    }
   });
 }

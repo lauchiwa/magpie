@@ -89,7 +89,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         });
         await page.goto("http://magpie.test/?view=usage");
         const tr = (k, vars) => page.evaluate(([k, vars]) => t(k, vars), [k, vars || {}]);
-        await page.locator("#usageTab .opt").nth(1).click();
+        await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
         const rows = page.locator(".led tbody tr.led-row");
         await rows.nth(3).waitFor({ timeout: 15000 });
 
@@ -173,7 +173,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(await noHScroll(), "the page runs past the window");
 
         // the Usage page's overview counts the same way
-        await page.locator("#usageTab .opt").nth(0).click();
+        await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(0).click();
         const both = (await tr("{n} failed", { n: 1 })) + " · " + (await tr("{n} answered on a retry", { n: 1 }));
         await page.waitForFunction((s) => document.querySelector("#view-usage").textContent.includes(s), both);
         assert.deepEqual(errors, []);

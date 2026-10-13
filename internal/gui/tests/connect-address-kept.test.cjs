@@ -59,12 +59,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // Share on local network's address is kept the same way
         await page.locator("#prefs").click();
-        await page.locator("#setTab-network").click();
+        await page.locator(":is(#setTab-network, .nav-s[data-of=setTab-network]):visible").click();
         await page.locator("#lanList .lan-address-row").waitFor();
         await pick("#lanList .lan-interface", "10.0.0.10");
         await page.reload();
         await page.locator("#prefs").click();
-        await page.locator("#setTab-network").click();
+        await page.locator(":is(#setTab-network, .nav-s[data-of=setTab-network]):visible").click();
         await page.locator("#lanList .lan-address-row").waitFor();
         assert.match(await shown("#lanList .lan-interface"), /10\.0\.0\.10:3999/);
 

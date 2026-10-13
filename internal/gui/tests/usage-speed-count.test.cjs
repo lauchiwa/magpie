@@ -5,15 +5,24 @@
 // Codex turn its session file times) beside "260 requests", while Claude
 // Code, whose rows on the Requests tab say "≥100 tok/s" by the dozen, showed
 // none. A group with replies whose speed was measured now says that speed and
-// how many replies it is of, "125 tok/s (1)"; one with none, but floors, the
-// least they wrote at, "≥100 tok/s (30)"; one with both, both, the measured
-// first, "125 tok/s (1) · ≥50 tok/s (259)", and the Output speed card its
-// measured speed with the floor under it; one with neither, nothing. The
+// how many replies it is of, "62 tok/s · 2 timed replies"; one with none, but
+// floors, the least they wrote at, "≥100 tok/s · 30 replies"; one with both,
+// both, the one of more replies first, "≥50 tok/s · 259 replies; 125 tok/s ·
+// 1 timed reply", and the Output speed card that one as its figure, the other
+// under it and the wait for the first token on a line of its own with its
+// count; one with neither, nothing. Counts are words, never a bare "(2)". The
 // rows of the Requests tab say each one's the same way. Codex's rows tell a
 // floor too: a call in a turn of several, timed from what asked for it, its
 // output over that time; a turn of one call that reasoned, its answer over
-// the time after its first token. Every language, a wide window and a narrow
-// one; no backend, the API is faked.
+// the time after its first token. A Codex turn of one call is measured, and
+// its answer's floor told, only over a second or more after its first token
+// and 100 tokens or more; else it tells the least it wrote at over the whole
+// turn (Fallmonkey on Discord: a first token at 6.8 s, the model working,
+// and the rest 0.2 s later in one push, read as 1,900 tok/s), by the same
+// 1,000-token rule as Claude Code's whole-time floor (Fallmonkey again: an
+// 11-token astra answer in 2.75 s read ≥4 tok/s, while an 815-token Claude
+// Code reply said nothing). Every
+// language, a wide window and a narrow one; no backend, the API is faked.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -38,8 +47,20 @@ const ROWS = [
   // a short one tells nothing
   { ...CC, t: at(3), out: 300, ms: 20000 },
   // a sol turn of one call that reasoned: its 272 answer tokens came in the
-  // 827 ms after its first token, at least 329 tok/s (not its 496 tokens, 600)
+  // 827 ms after its first token, under a second, so the whole turn, and
+  // its 496 tokens are under 1,000: nothing (not 329 from the answer alone)
   { ...SOL, t: at(4), out: 496, reasoning: 224, ms: 11055, ttft_ms: 10228 },
+  // one that reasoned and wrote its 1,000-token answer over the 10 s after
+  // its first token: at least 100 tok/s (not its 1,200 tokens, 120)
+  { ...SOL, t: at(5), out: 1200, reasoning: 200, ms: 12000, ttft_ms: 2000 },
+  // Fallmonkey's: a first token at 6.8 s and its 380 tokens 0.2 s later, one
+  // push, not 1,900 tok/s, and under 1,000 over the whole turn: nothing
+  { ...SOL, t: at(6), out: 380, ms: 7000, ttft_ms: 6800 },
+  // Fallmonkey's astra answer: 11 tokens in 2.75 s, not ≥4 tok/s
+  { ...SOL, t: at(7), model: "gpt-6-astra", req: "gpt-6-astra", served: "gpt-6-astra", out: 11, ms: 2750, ttft_ms: 2600 },
+  // 1,200 tokens 0.5 s after a 9.5 s first token, one push: at least 1,200
+  // in the whole 10 s, 120 tok/s
+  { ...SOL, t: at(8), out: 1200, ms: 10000, ttft_ms: 9500 },
 ];
 // the groups as usage.Breakdown sums them (TestGroupSpeedSaysHowManyRepliesItIsOf)
 const G = {
@@ -100,30 +121,30 @@ function server(lang) {
 
 const L = {
   en: { speed: "Speed", kpi: "Output speed",
-    tok: (n, k) => `${n} tok/s (${k})`,
+    m: (n, k) => `${n} tok/s · ${k} timed ${k === 1 ? "reply" : "replies"}`, f: (n, k) => `≥${n} tok/s · ${k} replies`, join: "; ", timed: (k) => ` · ${k} timed replies`,
     measured: (k, others) => (k === 1 ? `Measured on ${k} reply, from its first token to its end` : `Measured on ${k} replies, from their first token to their end`) + (others ? "; the others tell no speed" : ""),
     floorTip: (k) => `At least: ${k} replies read from session files, which don't say when their answers began, so time before that is counted too`, row: "125 tok/s", rowFloor: "≥100 tok/s",
-    cx: "≥50 tok/s", luna: "≥329 tok/s", lunaTip: "At least: 272 answer tokens in " },
+    cx: "≥50 tok/s", answer: "≥100 tok/s", push: "≥120 tok/s", n1200: "1,200", turnTip: "the whole turn. What came after the first token (", answerTip: "At least: 1,000 answer tokens in " },
   zh: { speed: "速度", kpi: "输出速度",
-    tok: (n, k) => `${n} token/秒（${k} 次）`,
+    m: (n, k) => `${n} token/秒 · ${k} 次计时`, f: (n, k) => `≥${n} token/秒 · ${k} 次回复`, join: "；", timed: (k) => ` · ${k} 次计时`,
     measured: (k, others) => `实测 ${k} 次回复：从首字到结束` + (others ? "；其余请求测不出速度" : ""),
     floorTip: (k) => `下限：${k} 次读自会话文件的回复。会话文件不记录正文何时开始，之前的时间也算在里面`, row: "125 token/秒", rowFloor: "≥100 token/秒",
-    cx: "≥50 token/秒", luna: "≥329 token/秒", lunaTip: "输出 272 个正文 token，224 个推理 token 不计" },
+    cx: "≥50 token/秒", answer: "≥100 token/秒", push: "≥120 token/秒", n1200: "1,200", turnTip: "首字后只有 ", answerTip: "输出 1,000 个正文 token，200 个推理 token 不计" },
   "zh-TW": { speed: "速度", kpi: null,
-    tok: (n, k) => `${n} token/秒（${k} 次）`,
+    m: (n, k) => `${n} token/秒 · ${k} 次計時`, f: (n, k) => `≥${n} token/秒 · ${k} 次回覆`, join: "；", timed: (k) => ` · ${k} 次計時`,
     measured: (k, others) => `實測 ${k} 次回覆：從首字到結束` + (others ? "；其餘請求測不出速度" : ""),
     floorTip: (k) => `下限：${k} 次讀自會話檔案的回覆。會話檔案不記錄正文何時開始，之前的時間也算在裡面`, row: "125 token/秒", rowFloor: "≥100 token/秒",
-    cx: "≥50 token/秒", luna: "≥329 token/秒", lunaTip: "輸出 272 個正文 token，224 個推理 token 不計" },
+    cx: "≥50 token/秒", answer: "≥100 token/秒", push: "≥120 token/秒", n1200: "1,200", turnTip: "首字後只有 ", answerTip: "輸出 1,000 個正文 token，200 個推理 token 不計" },
   ja: { speed: null, kpi: null,
-    tok: (n, k) => `${n} トークン/秒（${k} 件）`,
+    m: (n, k) => `${n} トークン/秒 · 計測 ${k} 件`, f: (n, k) => `≥${n} トークン/秒 · 応答 ${k} 件`, join: "／", timed: (k) => ` · 計測 ${k} 件`,
     measured: (k, others) => `${k} 件の応答で実測：最初のトークンから終わりまで` + (others ? "。ほかのリクエストは速度を計れません" : ""),
     floorTip: (k) => `下限：セッションファイルから読んだ ${k} 件の応答。回答が始まった時刻がないため、その前の時間も含まれます`, row: "125 トークン/秒", rowFloor: "≥100 トークン/秒",
-    cx: "≥50 トークン/秒", luna: "≥329 トークン/秒", lunaTip: "で回答 272 トークン（推論 224 トークンは含めず）" },
+    cx: "≥50 トークン/秒", answer: "≥100 トークン/秒", push: "≥120 トークン/秒", n1200: "1,200", turnTip: "最初のトークン後は ", answerTip: "で回答 1,000 トークン（推論 200 トークンは含めず）" },
   de: { speed: null, kpi: null,
-    tok: (n, k) => `${n} Token/s (${k})`,
+    m: (n, k) => `${n} Token/s · ${k} gemessene ${k === 1 ? "Antwort" : "Antworten"}`, f: (n, k) => `≥${n} Token/s · ${k} Antworten`, join: "; ", timed: (k) => ` · ${k} gemessene Antworten`,
     measured: (k, others) => `Gemessen an ${k} ${k === 1 ? "Antwort" : "Antworten"}, vom ersten Token bis zum Ende` + (others ? "; die übrigen Anfragen zeigen kein Tempo" : ""),
     floorTip: (k) => `Mindestens: ${k} Antworten aus Sitzungsdateien. Sie sagen nicht, wann die Antworten begannen, also zählt die Zeit davor mit`, row: "125 Token/s", rowFloor: "≥100 Token/s",
-    cx: "≥50 Token/s", luna: "≥329 Token/s", lunaTip: "Mindestens: 272 Antwort-Token in " },
+    cx: "≥50 Token/s", answer: "≥100 Token/s", push: "≥120 Token/s", n1200: "1.200", turnTip: "der ganze Turn. Nach dem ersten Token kam nur ", answerTip: "Mindestens: 1.000 Antwort-Token in " },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -132,14 +153,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
     t.after(() => browser.close());
     for (const lang of Object.keys(L)) {
-      for (const width of [1400, 560]) {
+      // 983: five cards in a row, the Output speed one ~158px (#1623,
+      // fanbuz); 789: guzi171's window (#1634)
+      for (const width of [1400, 983, 789, 700, 560]) {
         const w = L[lang];
-        // sol: one measured at 125 and 259 floors at 50; astra: two measured
-        // at 62; Claude Code: 30 floors at 100; the period: three measured
-        // at 75 (1,492 tokens over 20 s), 289 floors at 54
-        const sol = w.tok(125, 1) + " · ≥" + w.tok(50, 259), solTip = w.measured(1, false) + "\n" + w.floorTip(259);
-        const astra = w.tok(62, 2), astraTip = w.measured(2, true);
-        const cc = "≥" + w.tok(100, 30), ccTip = w.floorTip(30);
+        // sol: one measured at 125 and 259 floors at 50, the floors first;
+        // astra: two measured at 62; Claude Code: 30 floors at 100; the
+        // period: three measured at 75 (1,492 tokens over 20 s), 289 floors
+        // at 54
+        const sol = w.f(50, 259) + w.join + w.m(125, 1), solTip = w.floorTip(259) + "\n" + w.measured(1, false);
+        const astra = w.m(62, 2), astraTip = w.measured(2, true);
+        const cc = w.f(100, 30), ccTip = w.floorTip(30);
         await t.test(lang + " " + width, async () => {
           const errors = [];
           const ctx = await browser.newContext({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
@@ -156,7 +180,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert((await codex.textContent()).includes(sol), "overview: " + (await codex.textContent()));
           assert(!(await p.locator("#usageAgents .row.stat").nth(1).locator(".sub").textContent()).includes("/"), "a group with no speed says none");
 
-          await p.locator("#usageTab .opt").nth(1).click();
+          await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
           await p.locator("#ledWrap .led tbody tr").first().waitFor();
           await p.waitForTimeout(200);
 
@@ -166,8 +190,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal((await cell(1).textContent()).trim(), w.cx);
           assert.equal((await cell(2).textContent()).trim(), w.rowFloor);
           assert.equal((await cell(3).textContent()).trim(), "—");
-          assert.equal((await cell(4).textContent()).trim(), w.luna);
-          assert((await cell(4).getAttribute("title")).includes(w.lunaTip), "the answer's floor says so: " + (await cell(4).getAttribute("title")));
+          assert.equal((await cell(4).textContent()).trim(), "—", "496 tokens over the whole turn tell nothing");
+          assert.equal((await cell(5).textContent()).trim(), w.answer);
+          assert((await cell(5).getAttribute("title")).includes(w.answerTip), "the answer's floor says so: " + (await cell(5).getAttribute("title")));
+          assert.equal((await cell(6).textContent()).trim(), "—", "Fallmonkey's 380 tokens over the whole turn tell nothing");
+          assert.equal((await cell(7).textContent()).trim(), "—", "Fallmonkey's 11-token astra answer tells nothing");
+          assert.equal((await cell(8).textContent()).trim(), w.push);
+          const pushTip = await cell(8).getAttribute("title");
+          assert(pushTip.includes(w.turnTip) && pushTip.includes(w.n1200), "the whole turn's floor says so: " + pushTip);
 
           // the ranking, by tokens: each group's speed beside its requests
           const rk = (id) => p.locator("#ledRank .rk").filter({ has: p.locator(".rk-nm", { hasText: id }) });
@@ -181,23 +211,49 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(await speedOf("gpt-6-astra"), astra);
           assert.equal(await rk("gpt-6-astra").locator(".rk-speed").getAttribute("title"), astraTip);
 
-          // the period's speed: the measured one, with its count, and the floor under it
+          // the period's speed: the 289 floors' as its figure, the three
+          // measured under it, and the wait for the first token on a line of
+          // its own with how many it is of
           const kpi = p.locator("#ledKpi .blk").nth(4);
-          assert.equal((await kpi.locator(".v").textContent()).trim(), w.tok(75, 3));
-          assert((await kpi.locator(".sub").textContent()).includes("≥" + w.tok(54, 289)), "the floor under it: " + (await kpi.locator(".sub").textContent()));
-          assert((await kpi.getAttribute("title")).startsWith(w.measured(3, false) + "\n" + w.floorTip(289)), "the card says what it is of");
+          // (in the card the count is a caption after the figure, no "·" to
+          // lead it when it wraps under the figure)
+          const card = (x) => x.replace(" · ", " ");
+          assert.equal((await kpi.locator(".v").textContent()).trim(), card(w.f(54, 289)));
+          assert.deepEqual(await kpi.locator(".v > span").allTextContents(), w.f(54, 289).split(" · "), "the speed, then its count");
+          const subs = kpi.locator(".sub");
+          assert.equal(await subs.count(), 2);
+          assert.equal((await subs.nth(0).textContent()).trim(), w.m(75, 3));
+          assert((await subs.nth(1).textContent()).endsWith(w.timed(3)), "the first token's line says its count: " + (await subs.nth(1).textContent()));
+          assert(!(await subs.nth(1).textContent()).includes("/"), "no speed on the first token's line");
+          assert(await subs.nth(1).evaluate((e) => e.scrollWidth <= e.clientWidth + 1), "the first token's count is read whole");
+          const [b0, b1] = [await subs.nth(0).boundingBox(), await subs.nth(1).boundingBox()];
+          assert(b1.y >= b0.y + b0.height - 1, "the first token's line is under the other speed");
+          assert((await kpi.getAttribute("title")).startsWith(w.floorTip(289) + "\n" + w.measured(3, false)), "the card says what it is of");
+          // no count is a bare number in parentheses
+          assert(!/[(（]\d+[^)）]*[)）]/.test(await kpi.textContent()), "no parenthesised count: " + (await kpi.textContent()));
           if (w.kpi) assert.equal((await kpi.locator(".k").textContent()).trim(), w.kpi);
-          assert(await kpi.locator(".v").evaluate((v) => v.scrollWidth <= v.clientWidth + 1), "the card's figure is read whole");
+          // every card's figure, and each part of it, stays inside its card
+          // (#1623: "48 token/秒（781 次）" ran 32px past it at 983px), the
+          // reply count going under the speed when the two don't fit
+          const outside = await p.evaluate(() => [...document.querySelectorAll(".led-strip .v")].filter((v) => v.offsetParent).flatMap((v) => {
+            const box = v.closest(".blk").getBoundingClientRect();
+            // the text's own box, not its element's: a block's box keeps to
+            // the card while its unwrapped text runs past it
+            const ink = (e) => { const r = document.createRange(); r.selectNodeContents(e); return r.getBoundingClientRect(); };
+            return [v, ...v.querySelectorAll("*")].filter((e) => { const r = ink(e); return r.left < box.left - 0.5 || r.right > box.right + 0.5; }).map((e) => e.textContent);
+          }));
+          assert.deepEqual(outside, [], "the card's figure is read whole");
+          assert(await p.evaluate(() => { const v = document.querySelector("#view-usage"); return v.scrollWidth <= v.clientWidth + 1; }), "the page doesn't scroll sideways under the cards");
 
           // the ranking by speed: what each row says, ordered by it, the floor's bar its floor
           await reader.click(p, p.locator("#ledMetric .opt").nth(3));
           await p.waitForTimeout(150);
           const vals = await p.locator("#ledRank .rk").evaluateAll((bs) => bs.map((b) => [b.querySelector(".rk-nm").textContent, b.querySelector(".rk-val").textContent.trim(), b.querySelector(".rk-val").title]));
-          assert.deepEqual(vals, [["gpt-6.1-sol", sol, solTip], ["claude-opus-5-5", cc, ccTip], ["gpt-6-astra", astra, astraTip], ["glm-5", "—", ""]]);
+          assert.deepEqual(vals, [["claude-opus-5-5", cc, ccTip], ["gpt-6-astra", astra, astraTip], ["gpt-6.1-sol", sol, solTip], ["glm-5", "—", ""]]);
           const bar = async (i) => p.locator("#ledRank .rk").nth(i).locator(".rk-bar i").evaluate((e) => parseFloat(e.style.width));
           assert.equal(await bar(0), 100);
-          assert.equal(await bar(1), 80, "≥100 against 125");
-          assert.equal(await bar(2), 49.6, "62 against 125: sol, with both, orders and bars by its measured speed");
+          assert.equal(await bar(1), 62, "62 against ≥100");
+          assert.equal(await bar(2), 50, "sol, with both, orders and bars by the figure it shows first, its 259 floors' ≥50");
           const clipped = await p.locator("#ledRank .rk-val").evaluateAll((vs) => vs.filter((v) => v.scrollWidth > v.clientWidth + 1).length);
           assert.equal(clipped, 0, "every figure is read whole");
 
@@ -205,11 +261,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await reader.click(p, rk("claude-opus-5-5"));
           await p.waitForFunction(() => document.querySelectorAll(".led tbody tr.led-row").length === 2);
           await p.waitForTimeout(150);
-          assert.equal((await p.locator("#ledKpi .blk").nth(4).locator(".v").textContent()).trim(), cc);
+          assert.equal((await p.locator("#ledKpi .blk").nth(4).locator(".v").textContent()).trim(), cc.replace(" · ", " "));
           assert((await p.locator("#ledKpi .blk").nth(4).getAttribute("title")).startsWith(ccTip));
 
-          // no sideways scroll of the page
-          assert(await p.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), "no sideways scroll");
+          // no sideways scroll of the page: the view is what scrolls, not the document
+          const wide = await p.evaluate(() => { const v = document.querySelector("#view-usage"); return [v.scrollWidth, v.clientWidth, document.documentElement.scrollWidth, window.innerWidth]; });
+          assert(wide[0] <= wide[1] + 1 && wide[2] <= wide[3] + 1, "no sideways scroll: " + wide);
           assert.deepEqual(errors, []);
           await ctx.close();
         });

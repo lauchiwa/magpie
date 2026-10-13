@@ -20,8 +20,12 @@ package gateway
 
 import (
 	"html"
+	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/yetone/magpie/internal/provider"
 )
 
 var (
@@ -35,21 +39,62 @@ var (
 // workDir is the folder the request says its agent works in; "" when it
 // doesn't say.
 func workDir(req *Request) string {
+	dir, _ := workPlace(req)
+	return dir
+}
+
+// workPlace is the folder the request says its agent works in, and
+// whether that folder is in a git repository as the text that says the
+// folder says it: "yes", "no", or "" when it doesn't say.
+func workPlace(req *Request) (dir, git string) {
 	if req == nil {
-		return ""
+		return "", ""
 	}
-	dir := workDirIn(req.System, "")
+	look := func(text string) {
+		if d := workDirIn(text, ""); d != "" {
+			dir, git = d, provider.GitSaid(text)
+		}
+	}
+	look(req.System)
 	for _, m := range req.Messages {
 		if m.Role == "assistant" {
 			continue // the model's words, not the agent's
 		}
 		for _, p := range m.Parts {
 			if p.Kind == Text {
-				dir = workDirIn(p.Text, dir)
+				look(p.Text)
 			}
 		}
 	}
-	return dir
+	return dir, git
+}
+
+// tellWorkPlace puts on a request to a plugin's provider the folder its
+// agent works in (provider.WorkDirHeader, percent-encoded) and whether
+// it is in a git repository (provider.WorkGitHeader), as far as body, in
+// protocol to, says: a plugin that tells its vendor the user's
+// environment, as ZCode's Start Plan does, says the agent's own and not
+// magpie's (magpie-community/plugins#86). A folder not said leaves both
+// off: unknown. Whether it is a git repository is the agent's word, else
+// looked at on disk.
+func tellWorkPlace(h http.Header, to provider.Protocol, body []byte) {
+	h.Del(provider.WorkDirHeader)
+	h.Del(provider.WorkGitHeader)
+	req, err := parse(to, body)
+	if err != nil {
+		return
+	}
+	dir, git := workPlace(req)
+	if dir == "" {
+		return
+	}
+	if git == "" {
+		git = provider.GitOnDisk(dir)
+	}
+	h.Set(provider.WorkDirHeader, url.PathEscape(dir))
+	if git != "" {
+		h.Set(provider.WorkGitHeader, git)
+	}
 }
 
 // workDirIn is the last folder text says, else dir.

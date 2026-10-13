@@ -1,8 +1,10 @@
 package gui
 
 import (
+	"reflect"
 	"runtime"
 	"strings"
+	"unsafe"
 )
 
 // menuOpenFrame is the Wails function that tells the tray's click handler
@@ -38,4 +40,42 @@ func openedBy(callers []string) bool {
 		}
 	}
 	return false
+}
+
+// trayImpl is the struct behind a Wails SystemTray's impl, the platform's
+// tray (Linux's linuxSystemTray), given the SystemTray itself; not valid
+// once a Wails version keeps it elsewhere.
+func trayImpl(tray reflect.Value) (impl reflect.Value) {
+	defer func() {
+		if recover() != nil {
+			impl = reflect.Value{}
+		}
+	}()
+	i := tray.FieldByName("impl")
+	if !i.IsValid() || i.Kind() != reflect.Interface || i.IsNil() {
+		return reflect.Value{}
+	}
+	p := i.Elem()
+	if p.Kind() != reflect.Pointer || p.IsNil() || p.Elem().Kind() != reflect.Struct {
+		return reflect.Value{}
+	}
+	return p.Elem()
+}
+
+// clickIn reads the click Wails' Linux tray keeps from the tray host's
+// Activate(x, y), lastClickX and lastClickY, given the SystemTray. (0, 0)
+// is no click, as Wails reads it too: a host that passes no coordinates
+// sends that.
+func clickIn(tray reflect.Value) (x int, ok bool) {
+	impl := trayImpl(tray)
+	if !impl.IsValid() {
+		return 0, false
+	}
+	fx, fy := impl.FieldByName("lastClickX"), impl.FieldByName("lastClickY")
+	if !fx.IsValid() || !fy.IsValid() || fx.Kind() != reflect.Int || fy.Kind() != reflect.Int || !fx.CanAddr() {
+		return 0, false
+	}
+	x = *(*int)(unsafe.Pointer(fx.UnsafeAddr()))
+	y := *(*int)(unsafe.Pointer(fy.UnsafeAddr()))
+	return x, x != 0 || y != 0
 }

@@ -11,6 +11,10 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +23,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/settings"
+	"github.com/yetone/magpie/internal/steady"
 )
 
 // CodexAutoReset says whether the Codex account user spends a reset by
@@ -105,7 +110,7 @@ func AutoUseCodexReset(ctx context.Context, user string) (ResetOutcome, error) {
 			return nil, false, err
 		}
 		return weekUsedUp(windows, now), resets != nil && resets.Count > 0, nil
-	}, func() (ResetOutcome, error) { return UseCodexReset(ctx, who) })
+	}, func() (ResetOutcome, error) { return useCodexReset(ctx, who, ResetUsedWeek) })
 }
 
 // use spends one of user's resets by itself if look finds its week used
@@ -118,6 +123,9 @@ func (a *autoResets) use(user string, look func(now time.Time) (week *time.Time,
 	defer a.Unlock()
 	a.load()
 	now := time.Now()
+	if s, ok := a.spent[autoResetAny]; ok && now.Before(s.Until) {
+		return ResetOutcome{}, nil
+	}
 	if s, ok := a.spent[key]; ok {
 		if asked.Before(s.At) {
 			// asked while it was being spent, for the same week used up
@@ -160,22 +168,74 @@ func weekUsedUp(windows []QuotaWindow, now time.Time) *time.Time {
 	return nil
 }
 
-// load reads what was spent, once; a.Lock is held.
+// load reads what was spent, once; a.Lock is held. A file that can't be
+// read or doesn't parse is unknown, never none: read as none, the week's
+// auto-use would spend a second reset (#2017). What was spent is then
+// taken from codex-resets-used.json, which keeps every reset used for a
+// week used up, and when that can't be read either no account spends one
+// by itself for a week, the longest a spend the file held could still
+// count. A file that doesn't parse is copied aside, as noteResetUsed keeps
+// codex-resets-used.json's, and only then written over.
 func (a *autoResets) load() {
 	if a.path == a.where() {
 		return
 	}
 	a.path = a.where()
 	a.spent, a.next = map[string]autoResetSpent{}, map[string]time.Time{}
-	if b, err := os.ReadFile(a.path); err == nil {
-		_ = json.Unmarshal(b, &a.spent)
-		if a.spent == nil {
-			a.spent = map[string]autoResetSpent{}
+	b, err := os.ReadFile(a.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	kept := false
+	if err == nil {
+		if err = json.Unmarshal(b, &a.spent); err == nil {
+			if a.spent == nil {
+				a.spent = map[string]autoResetSpent{}
+			}
+			return
 		}
+		aside := a.path + ".bad-" + time.Now().UTC().Format("20060102T150405.000000000")
+		if werr := os.WriteFile(aside, b, 0o600); werr != nil {
+			err = fmt.Errorf("%w; keeping it aside: %v", err, werr)
+		} else {
+			kept = true
+			err = fmt.Errorf("%w; kept aside as %s", err, aside)
+		}
+	}
+	if a.spent == nil {
+		a.spent = map[string]autoResetSpent{}
+	}
+	now := time.Now()
+	uses, uerr := readResetsUsed()
+	if uerr != nil {
+		a.spent[autoResetAny] = autoResetSpent{Until: now.Add(autoResetWeek), At: now}
+		log.Printf("%s: %v; %v too, so no Codex account spends a reset by itself until %s", a.path, err, uerr, now.Add(autoResetWeek).Format(time.RFC3339))
+	} else {
+		for _, u := range uses {
+			key := strings.ToLower(u.User)
+			if u.Why != ResetUsedWeek || now.Sub(u.At) >= autoResetWeek || a.spent[key].At.After(u.At) {
+				continue
+			}
+			a.spent[key] = autoResetSpent{Until: u.At.Add(autoResetWeek), At: u.At, Out: ResetOutcome{Code: "reset", Windows: u.Windows}}
+		}
+		log.Printf("%s: %v; what was spent is taken from %s", a.path, err, resetsUsedPath())
+	}
+	if kept {
+		a.save()
 	}
 }
 
-// save writes it; a.Lock is held.
+// autoResetAny stands for every account in spent, when what was spent
+// isn't known; autoResetWeek is the longest a spend counts for.
+const (
+	autoResetAny  = "*"
+	autoResetWeek = 7 * 24 * time.Hour
+)
+
+// save writes it; a.Lock is held. Through steady.WriteFile, as every write
+// of magpie's own state is (#1505): a crash mid-write left logins.json and
+// plugin-auth.json zeroed at full length, and one here would read as no
+// reset spent this week, so the next look spent a second one.
 func (a *autoResets) save() {
 	now := time.Now()
 	for k, s := range a.spent { // weeks gone by say nothing any more
@@ -185,5 +245,7 @@ func (a *autoResets) save() {
 	}
 	b, _ := json.MarshalIndent(a.spent, "", "  ")
 	_ = os.MkdirAll(settings.Dir(), 0o755)
-	_ = os.WriteFile(a.path, append(b, '\n'), 0o644)
+	if err := steady.WriteFile(a.path, append(b, '\n'), 0o644); err != nil {
+		log.Printf("writing what a week's auto-use spent to %s: %v", a.path, err)
+	}
 }

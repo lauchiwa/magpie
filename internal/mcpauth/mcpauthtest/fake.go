@@ -53,7 +53,20 @@ type Fake struct {
 	// another is refused (RFC 7591's invalid_client_metadata), and a client
 	// registered for a secret is given one and has to send it as it said
 	AuthMethods []string
+	// RefuseRegistration turns every registration away as Figma's
+	// authorization server does a client it doesn't list: 403, a JSON
+	// content type and the bare body "Forbidden" (#1619)
+	RefuseRegistration bool
+	// NoRegistration leaves the registration endpoint out of the metadata,
+	// as GitHub's does: only an app made beforehand (AddApp) signs in
+	NoRegistration bool
+	// Assign is a server that registers the client for another of the
+	// methods it supports than the one asked for, as RFC 7591's
+	// registration response lets it: the token endpoint takes it as
+	// registered
+	Assign string
 
+	refuse  bool // RefuseTokens
 	codes   map[string]codeGrant
 	secrets map[string]string // client id → secret, of those that have one
 	methods map[string]string // client id → its token_endpoint_auth_method
@@ -96,6 +109,9 @@ func New(t *testing.T) *Fake {
 			"registration_endpoint": issuer + "/register", "code_challenge_methods_supported": []string{"S256"},
 			"token_endpoint_auth_methods_supported": methods(),
 		}
+		if f.NoRegistration {
+			delete(m, "registration_endpoint")
+		}
 		if f.OpenID {
 			m["scopes_supported"] = []string{"openid", "email", "offline_access", "profile"}
 			m["grant_types_supported"] = []string{"authorization_code", "refresh_token"}
@@ -106,12 +122,23 @@ func New(t *testing.T) *Fake {
 		var reg map[string]any
 		json.NewDecoder(r.Body).Decode(&reg)
 		method, _ := reg["token_endpoint_auth_method"].(string)
+		if f.Assign != "" {
+			method = f.Assign
+		}
 		f.mu.Lock()
+		if f.RefuseRegistration {
+			f.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusForbidden)
+			io.WriteString(w, "Forbidden")
+			return
+		}
 		f.Registered = append(f.Registered, reg)
 		id := fmt.Sprintf("client-%d", len(f.Registered))
 		// private_key_jwt and tls_client_auth need a key set or a
 		// certificate the registration didn't give
-		ok := slices.Contains(methods(), method) && method != "private_key_jwt" && method != "tls_client_auth"
+		// (a method the server assigns is one it supports, listed or not)
+		ok := (f.Assign != "" || slices.Contains(methods(), method)) && method != "private_key_jwt" && method != "tls_client_auth"
 		out := map[string]any{"client_id": id, "redirect_uris": reg["redirect_uris"], "token_endpoint_auth_method": method}
 		if ok && method != "none" {
 			f.secrets[id] = "secret-" + id
@@ -220,7 +247,7 @@ func New(t *testing.T) *Fake {
 func (f *Fake) mcp(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	f.mu.Lock()
-	ok := f.valid[tok]
+	ok := f.valid[tok] && !f.refuse
 	f.mu.Unlock()
 	if !ok {
 		meta := f.Server.URL + "/.well-known/oauth-protected-resource/mcp"
@@ -311,6 +338,27 @@ func SignIn(t *testing.T, name, u string) mcpauth.State {
 		t.Fatalf("sign-in %s: %s (%s)", got.State, got.Error, b)
 	}
 	return got
+}
+
+// RefuseTokens turns every token away at the MCP endpoint, one just
+// renewed too, as a server that no longer takes the sign-in does while
+// its token endpoint still renews it.
+func (f *Fake) RefuseTokens() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refuse = true
+}
+
+// AddApp makes an OAuth app the user signs in as, made with the server's
+// vendor rather than registered by magpie: with a secret, it gives it in
+// the token request's form.
+func (f *Fake) AddApp(id, secret string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.methods[id] = "none"
+	if secret != "" {
+		f.methods[id], f.secrets[id] = "client_secret_post", secret
+	}
 }
 
 // ForgetRefresh makes every refresh token given out so far unusable.

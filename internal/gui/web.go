@@ -90,7 +90,7 @@ func StartWeb(addr, version string) (*Web, error) {
 	quit := func() { once.Do(func() { close(w.quit) }) }
 	w.Link = "http://" + net.JoinHostPort(host, port) + "/?k=" + url.QueryEscape(key)
 	w.srv = &http.Server{
-		Handler:           webHandler(port, key, keep, Handler(webHost{quit}, startBackend())),
+		Handler:           gateway.AllowGuard(webHandler(port, key, keep, Handler(webHost{quit}, startBackend()))),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 	go w.srv.Serve(ln)

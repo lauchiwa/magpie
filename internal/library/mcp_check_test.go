@@ -35,6 +35,19 @@ func TestFakeMCPServer(t *testing.T) {
 		fmt.Fprintf(l, "%d\n", os.Getpid())
 		l.Close()
 	}
+	if f := os.Getenv("MAGPIE_FAKE_MCP_CWD"); f != "" {
+		wd, _ := os.Getwd()
+		os.WriteFile(f, []byte(wd+"\n"+os.Getenv("PWD")), 0o644)
+	}
+	if mode == "needcwd" {
+		// A server that writes into its working directory on start (the
+		// doris-mcp-server shape in #1727). Fail loudly if "." is not writable.
+		if err := os.MkdirAll(filepath.Join(".", "logs"), 0o755); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+		mode = "ok"
+	}
 	switch mode {
 	case "sleep":
 		time.Sleep(time.Minute)
@@ -124,6 +137,58 @@ func TestCheckStdio(t *testing.T) {
 		h := CheckServer(context.Background(), &Server{Name: "x", Transport: "stdio", Command: "magpie-no-such-mcp-server"})
 		if h.State != "error" || h.Why != "notfound" || h.Detail != "magpie-no-such-mcp-server" {
 			t.Fatalf("got %+v, want notfound", h)
+		}
+	})
+	// a home of the subtest's own, so what a server writes there goes with
+	// it, and a process cwd that isn't home (#1727)
+	ownHome := func(t *testing.T, cwd string) string {
+		h := t.TempDir()
+		t.Setenv("HOME", h)
+		t.Setenv("USERPROFILE", h)
+		t.Chdir(cwd)
+		return h
+	}
+	t.Run("starts in the home directory", func(t *testing.T) {
+		// Without cmd.Dir=home, the check inherits whatever cwd the process
+		// has (on Windows Start-menu launches, often an unwritable system
+		// dir); the child must report home instead.
+		work := t.TempDir()
+		h := ownHome(t, work)
+		cwdFile := filepath.Join(t.TempDir(), "cwd")
+		got := CheckServer(context.Background(), fakeStdio(t, "ok", map[string]string{"MAGPIE_FAKE_MCP_CWD": cwdFile}))
+		if got.State != "ok" {
+			t.Fatalf("got %+v, want ok", got)
+		}
+		b, _ := os.ReadFile(cwdFile)
+		wd, pwd, _ := strings.Cut(string(b), "\n")
+		// the same folder, however it is spelled (/var is /private/var on macOS)
+		a, errA := os.Stat(wd)
+		hi, errH := os.Stat(h)
+		if errA != nil || errH != nil || !os.SameFile(a, hi) {
+			t.Fatalf("check started the server in %q, want home %q (process cwd was %q)", wd, h, work)
+		}
+		// and PWD says so, as it would for a server an agent starts there
+		if runtime.GOOS != "windows" && pwd != h {
+			t.Fatalf("the server's PWD is %q, want home %q", pwd, h)
+		}
+	})
+	t.Run("writable home when process cwd is not", func(t *testing.T) {
+		// Read-only process cwd: a server that makes ./logs fails unless
+		// the check pins Dir to home (#1727). Windows doesn't enforce a
+		// folder's read-only bit, so there it is ./logs landing in home that
+		// shows where the server ran.
+		ro := filepath.Join(t.TempDir(), "ro")
+		if err := os.Mkdir(ro, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(ro, 0o755) })
+		h := ownHome(t, ro)
+		got := CheckServer(context.Background(), fakeStdio(t, "needcwd", nil))
+		if got.State != "ok" || got.Tools != 3 {
+			t.Fatalf("got %+v, want ok with 3 tools (server must not inherit the read-only cwd)", got)
+		}
+		if _, err := os.Stat(filepath.Join(h, "logs")); err != nil {
+			t.Fatalf("the server's ./logs isn't in home: %v", err)
 		}
 	})
 	t.Run("timeout ends the tree", func(t *testing.T) {

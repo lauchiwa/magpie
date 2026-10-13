@@ -31,8 +31,12 @@ func (group) join(*exec.Cmd) {}
 // is still in the group, and the group keeps its id while any of it lives,
 // so the group is signalled again until none of it is left. Its leader,
 // killed and not yet waited for, counts until it is: hence behind the
-// caller, which waits for it next.
-func (group) kill(cmd *exec.Cmd) {
+// caller, which waits for it next. The channel closes once none of the group
+// is left, or killFor has passed: magpie exiting or putting a new version in
+// its place waits for it, since an exit ends the loop with what it missed
+// still running (#1278).
+func (group) kill(cmd *exec.Cmd) <-chan struct{} {
+	gone := make(chan struct{})
 	pgid := cmd.Process.Pid
 	// the one kill function for the whole kill, taken once: the loop below
 	// outlives the caller, and a test swapping signalGroup for its own and
@@ -40,9 +44,11 @@ func (group) kill(cmd *exec.Cmd) {
 	// data race TestProbeKillEndsWhatTheSignalMissed went red under).
 	signal := signalGroup
 	if signal(pgid) != nil {
-		return // none of it is left
+		close(gone) // none of it is left
+		return gone
 	}
 	go func() {
+		defer close(gone)
 		for end := time.Now().Add(killFor); time.Now().Before(end); {
 			time.Sleep(5 * time.Millisecond)
 			if signal(pgid) != nil {
@@ -50,6 +56,7 @@ func (group) kill(cmd *exec.Cmd) {
 			}
 		}
 	}()
+	return gone
 }
 
 // signalGroup kills the group pgid leads; a var so a test can have it miss.
@@ -61,4 +68,4 @@ var killFor = 10 * time.Second
 
 // sweep ends what is left of the group once its leader is gone: the group
 // keeps the leader's pid while any of it runs, so none else has it.
-func (g group) sweep(cmd *exec.Cmd) { g.kill(cmd) }
+func (g group) sweep(cmd *exec.Cmd) { _ = g.kill(cmd) }

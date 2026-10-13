@@ -178,25 +178,43 @@ func TestCursorOnDemandKeepsTheAccount(t *testing.T) {
 			t.Fatalf("on-demand resets %v", ws[2].ResetsAt)
 		}
 	})
-	t.Run("a team with a hard limit and none of the member's never runs out", func(t *testing.T) {
-		for i, c := range []struct {
-			spend map[string]any
-			hard  any
-		}{
-			{map[string]any{"individualUsed": 900, "limitType": "team"}, map[string]any{"hardLimit": 2000, "perUserMonthlyLimitDollars": 0}},
-			{map[string]any{"individualUsed": 900, "limitType": "team", "pooledLimit": "100000"}, map[string]any{"hardLimit": 2000}},
-			// GetHardLimit unread: the team's pooled limit says it is allowed
-			{map[string]any{"individualUsed": 900, "limitType": "team", "pooledLimit": "100000"}, 500},
-		} {
-			ws := run(t, c.spend, c.hard)
-			for _, w := range ws {
-				if !w.Aside {
-					t.Errorf("%d: %s not aside: %+v", i, w.Name, shape(ws))
-				}
+	t.Run("a team with a hard limit, no pool and none of the member's never runs out", func(t *testing.T) {
+		ws := run(t, map[string]any{"individualUsed": 900, "limitType": "team"}, map[string]any{"hardLimit": 2000, "perUserMonthlyLimitDollars": 0})
+		for _, w := range ws {
+			if !w.Aside {
+				t.Errorf("%s not aside: %+v", w.Name, shape(ws))
 			}
-			if len(ws) != 4 || ws[2].Name != "On-demand" || ws[2].Display != "$9.00" || usedUp(ws) {
-				t.Errorf("%d: windows = %+v", i, shape(ws))
+		}
+		if len(ws) != 4 || ws[2].Name != "On-demand" || ws[2].Display != "$9.00" || usedUp(ws) {
+			t.Errorf("windows = %+v", shape(ws))
+		}
+	})
+	// #1868 (PaSSw0rds, a real Team account whose on-demand is turned on for
+	// the whole organization, in #1476): spendLimitUsage has no
+	// individualLimit at all, the pool's limit and remainder are int64
+	// strings and its spend a number, and GetHardLimit answers the pool's
+	// limit in dollars with or without a team id. The pool is what runs
+	// out, for the whole team.
+	t.Run("a team's org-wide on-demand pool is the allowance", func(t *testing.T) {
+		pool := func(used int, remaining string) map[string]any {
+			return map[string]any{"totalSpend": 6334270, "pooledLimit": "45120000", "pooledUsed": used, "pooledRemaining": remaining, "individualUsed": 19855, "limitType": "team"}
+		}
+		for i, hard := range []any{map[string]any{"hardLimit": 451200}, map[string]any{"hardLimit": 451200, "isDynamicTeamLimit": true}, 500} {
+			ws := run(t, pool(6334270, "38785730"), hard)
+			want := []win{{"Cursor Models", 100, "", true}, {"Other Models", 100, "", true}, {"On-demand", 100 * 6334270.0 / 45120000, "$63,342.70 / $451,200.00 (you: $198.55)", false}, {"Total", 100, "", true}}
+			if got := shape(ws); fmt.Sprint(got) != fmt.Sprint(want) || usedUp(ws) {
+				t.Errorf("%d: windows = %+v, used up %v\nwant %+v", i, got, usedUp(ws), want)
 			}
+		}
+		// the pool spent: the account is used up, though the member spent little of it
+		ws := run(t, pool(45120000, "0"), map[string]any{"hardLimit": 451200})
+		if got := shape(ws)[2]; got != (win{"On-demand", 100, "$451,200.00 / $451,200.00 (you: $198.55)", false}) || !usedUp(ws) {
+			t.Errorf("spent: %+v, used up %v", shape(ws), usedUp(ws))
+		}
+		// nothing spent from the pool yet: Connect JSON leaves pooledUsed out
+		ws = run(t, map[string]any{"individualUsed": 900, "limitType": "team", "pooledLimit": "100000"}, 500)
+		if got := shape(ws)[2]; got != (win{"On-demand", 0, "$0.00 / $1,000.00 (you: $9.00)", false}) || usedUp(ws) {
+			t.Errorf("none spent: %+v, used up %v", shape(ws), usedUp(ws))
 		}
 	})
 	t.Run("a personal hard limit is the on-demand limit; the top int32 is none", func(t *testing.T) {

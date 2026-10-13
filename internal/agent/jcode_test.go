@@ -284,6 +284,7 @@ X-Team = "mine"
 // the file while jcode still starts on it is said.
 func TestJcodeHome(t *testing.T) {
 	home, _ := jcodeHome(t, "")
+	t.Setenv("PATH", t.TempDir()) // no jcode on PATH: only its folder tells (#1646)
 	dir := filepath.Join(home, "elsewhere")
 	t.Setenv("JCODE_HOME", dir)
 	a := jcode(home)

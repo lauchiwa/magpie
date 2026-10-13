@@ -608,7 +608,7 @@
       pre.append(document.createTextNode(text.slice(at, at + TEXT_STEP)));
       at = Math.min(text.length, at + TEXT_STEP);
       more.hidden = at >= text.length;
-      more.textContent = t("Show more · {n} characters left", { n: (text.length - at).toLocaleString() });
+      more.textContent = t("Show more · {n} characters left", { n: (text.length - at).toLocaleString(intlLang()) });
     };
     more.onclick = (e) => { e.stopPropagation(); step(); };
     step();
@@ -624,9 +624,9 @@
     if (pc.text) head.append(copyBtn(pc.text, pc.name || t(ROLE_NAMES[pc.role] || "Text")));
     box.append(head);
     if (pc.role === "image") box.append(el("div", "ctx-piece-note", t("An image: magpie doesn't show it here")));
-    else if (pc.role === "sealed") box.append(el("div", "ctx-piece-note", t("Sealed by the vendor, {n} bytes: only the vendor can read it", { n: (pc.size || 0).toLocaleString() })));
+    else if (pc.role === "sealed") box.append(el("div", "ctx-piece-note", t("Sealed by the vendor, {n} bytes: only the vendor can read it", { n: (pc.size || 0).toLocaleString(intlLang()) })));
     else {
-      if (pc.size) box.append(el("div", "ctx-piece-note", t("Sealed by the vendor, {n} bytes: only the vendor can read it", { n: pc.size.toLocaleString() })));
+      if (pc.size) box.append(el("div", "ctx-piece-note", t("Sealed by the vendor, {n} bytes: only the vendor can read it", { n: pc.size.toLocaleString(intlLang()) })));
       if (pc.text) box.append(longText(pc.text));
       else if (!pc.size) box.append(el("div", "ctx-piece-note", t("Empty")));
     }
@@ -920,6 +920,9 @@
   // tokens it spends past the advice: the area over the advice's level is
   // what the others waste, and the one set now says how much
   let chartN = 0;
+  // how far apart, as a share of the axis, two of its labels must sit: a
+  // label is about 30px wide, the narrowest card's axis about 280px
+  const TICK_GAP = 0.16;
   function chart(pts, current, best, show) {
     if (pts.length < 2) return null;
     const near = (v) => pts.reduce((a, p) => Math.abs(p.value - v) < Math.abs(a.value - v) ? p : a, pts[0]);
@@ -972,12 +975,36 @@
         : t("{value}: {tokens} more tokens over the range (+{pct})", { value: show(p.value), tokens: fmtK(extra(p)), pct: pct(extra(p) / low) });
       plot.append(dot);
     };
-    if (worst !== now && worst !== top) at(worst, "worst", "+" + pct(extra(worst) / low));
-    at(top, "best", t("Leanest"));
-    if (now && now !== top) at(now, "now", "+" + pct(extra(now) / low));
+    // the advice's value first, then the setting now, then the range's two
+    // ends: a value that sits too close to one before it is left off, so two
+    // labels are never drawn over each other (#1549, Ti800: 170K, the
+    // leanest, one step from the axis's 160K, read as "1170K")
+    const along = (p) => pts.indexOf(p) / (pts.length - 1);
+    // the tags over the dots the same way: "Leanest" first, then the setting
+    // now, then the costliest; one beside a tag that matters more and at
+    // about its height keeps its dot and tooltip but not its tag, so a
+    // setting one step from the advice doesn't print its "+3%" over
+    // "Leanest" (#1549)
+    const tagged = [];
+    const tag = (p, label) => {
+      if (tagged.some((k) => Math.abs(along(k) - along(p)) < TICK_GAP && Math.abs(Y(k) - Y(p)) < 20)) return "";
+      tagged.push(p);
+      return label;
+    };
+    const bestTag = tag(top, t("Leanest"));
+    const nowTag = now && now !== top ? tag(now, "+" + pct(extra(now) / low)) : "";
+    const worstTag = worst !== now && worst !== top ? tag(worst, "+" + pct(extra(worst) / low)) : "";
+    if (worst !== now && worst !== top) at(worst, "worst", worstTag);
+    at(top, "best", bestTag);
+    if (now && now !== top) at(now, "now", nowTag);
     const axis = el("div", "ctx-tc-x");
+    const kept = [];
+    for (const p of new Set([top, now, pts[0], pts[pts.length - 1]].filter(Boolean))) {
+      if (kept.every((k) => Math.abs(along(k) - along(p)) >= TICK_GAP)) kept.push(p);
+    }
     for (const p of new Set([pts[0], top, now, pts[pts.length - 1]].filter(Boolean))) {
       const i = pts.indexOf(p);
+      if (!kept.includes(p)) continue;
       const tick = el("span", (p === top ? "best" : p === now ? "now" : "") + (i === 0 ? " start" : i === pts.length - 1 ? " end" : ""), show(p.value));
       tick.style.left = (i / (pts.length - 1)) * 100 + "%";
       axis.append(tick);
@@ -1010,7 +1037,8 @@
       return f;
     };
     vals.append(val("Now", cur, "now"));
-    if (!same) vals.append(el("span", "ctx-tune-arrow", "→"), val("Best for you", best, "best"));
+    // named for what it is measured by, tokens alone, not "best" (#1854)
+    if (!same) vals.append(el("span", "ctx-tune-arrow", "→"), val("Fewest tokens", best, "best"));
     row.append(vals);
     const c = a.compact
       ? chart(a.compact.curve || [], r.current, r.best, show)
@@ -1027,6 +1055,9 @@
       why.textContent = t("{quick} of your calls came within 5 minutes of the one before, {pause} after a pause of 5 to 60 minutes.", { quick: pct(f.quick || 0), pause: pct(f.pause || 0) });
     }
     row.append(why);
+    // a window advised is weighed by tokens alone: what a compaction loses of
+    // the task isn't measured, and a smaller one compacts more often (#1854)
+    if (a.compact && !same) row.append(el("p", "ctx-tune-caveat", t("A token estimate only: it doesn't measure how well the agent keeps the task after a compaction. The lower the window, the more often it compacts.")));
 
     const foot = el("div", "ctx-tune-foot");
     const verdict = same || applied
@@ -1068,6 +1099,36 @@
       if (set.value && !set.ours) go.dataset.tt = t("Replaces your {value}; Undo puts it back", { value: show(set.value) });
       go.onclick = () => send("apply", best);
       foot.append(go);
+    }
+    // a window of the reader's own (#1860): one who would spend some tokens
+    // for fewer compactions picks it from the same replay the advice comes
+    // from, each value with what it spends past the leanest and how often
+    // it would have compacted in the range, both estimates
+    const pts = (a.compact && a.compact.curve) || [];
+    if (pts.length > 1 && !set.locked) {
+      const other = el("button", "text ctx-tune-pick", t("Other window…"));
+      other.type = "button";
+      other.disabled = tuneBusy === key;
+      other.setAttribute("aria-haspopup", "menu");
+      other.setAttribute("aria-expanded", "false");
+      other.onclick = (e) => {
+        e.stopPropagation();
+        const base = (pts.find((p) => p.value === best) || {}).cost ?? r.low;
+        const now = set.ours && set.value != null ? +set.value : cur;
+        const near = pts.reduce((x, p) => Math.abs(p.value - now) < Math.abs(x.value - now) ? p : x, pts[0]);
+        const opts = pts.map((p) => {
+          const extra = Math.max(0, p.cost - base);
+          const spend = p.value === best ? t("Fewest tokens")
+            : base > 0 && extra / base < 0.005 ? t("As few tokens")
+            : t("+{tokens} tokens (+{pct})", { tokens: fmtK(extra), pct: pct(base > 0 ? extra / base : 0) });
+          const often = p.compacts == null ? "" : p.compacts ? count(p.compacts, "about 1 compaction", "about {n} compactions") : t("no compaction");
+          return { v: String(p.value), name: show(p.value), literalName: true, note: [spend, often].filter(Boolean).join(" · ") };
+        });
+        openProtoMenu(other, opts, String(near.value), (v) => {
+          if (v !== String(now)) send("apply", v);
+        }, "Compact at · estimated from your calls of the range", "ctx-tune-menu");
+      };
+      foot.append(other);
     }
     row.append(foot);
     return row;
@@ -1124,14 +1185,14 @@
   function renderContext() {
     const pane = $("#contextPane");
     if (!pane) return;
-    const tools = el("div", "sess-tools ctx-tools");
-    tools.append(segs(CTX_RANGES.map(([id, n]) => [id, t(n)]), ctxDays, (id) => {
+    // the range sits in the Usage page's own head, where the other tabs keep
+    // theirs, so no row of its own stands empty above the pane
+    $("#ctxRange")?.replaceChildren(segs(CTX_RANGES.map(([id, n]) => [id, t(n)]), ctxDays, (id) => {
       ctxDays = id;
       try { localStorage.setItem("magpie.ctxDays", id); } catch {}
       loadContext();
     }));
-    tools.append(el("span", "grow"));
-    pane.replaceChildren(tools);
+    pane.replaceChildren();
     pane.classList.toggle("still", ctxDrawn && !!ctxData);
     pane.classList.toggle("tune-still", tuneDrawn && !!tuneData);
     ctxDrawn = !!ctxData, tuneDrawn = !!tuneData;

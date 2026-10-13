@@ -748,24 +748,35 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 		geminiChunk
 	}
 	if err := json.Unmarshal([]byte(data), &ch); err != nil {
+		// an error in a shape of its own is still the reply's end (#1933)
+		if e, ok := carriedError(data); ok {
+			emit(e)
+		}
 		return nil
 	}
 	if ch.Error != nil {
-		emit(Event{Kind: KError, Text: ch.Error.Message})
+		emit(Event{Kind: KError, Text: cmp.Or(ch.Error.Message, streamErrorText(data))})
 		return nil
 	}
 	c := ch.geminiChunk
 	if ch.Response != nil {
 		c = *ch.Response
 	}
-	if !d.started {
-		d.started = true
-		emit(Event{Kind: KStart, MsgID: c.ResponseID, Model: c.ModelVersion})
-	}
 	if c.UsageMetadata != nil {
 		u := c.UsageMetadata
 		d.usage = &Usage{Input: max(u.Prompt-u.Cached, 0), CacheRead: u.Cached,
 			Output: u.Candidates + u.Thoughts, Reasoning: u.Thoughts}
+	}
+	if !d.started {
+		d.started = true
+		// the prompt's count rides on the first chunk: told at the start,
+		// as Anthropic's message_start tells it, which Claude Code's
+		// context meter reads before the turn ends (#1887)
+		var prompt Usage
+		if d.usage != nil {
+			prompt = Usage{Input: d.usage.Input, CacheRead: d.usage.CacheRead}
+		}
+		emit(Event{Kind: KStart, MsgID: c.ResponseID, Model: c.ModelVersion, Usage: prompt})
 	}
 	for _, cand := range c.Candidates {
 		for _, p := range cand.Content.Parts {

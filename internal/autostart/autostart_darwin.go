@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+
+	"github.com/yetone/magpie/internal/edit"
 )
 
 const label = "com.yetone.magpie"
@@ -16,9 +18,14 @@ func record() string {
 	return filepath.Join(home, "Library", "LaunchAgents", label+".plist")
 }
 
+// launchd loads no job that names neither its own label nor a program to
+// run: a record a write left short of either sits in LaunchAgents, is
+// refused, and magpie never opens at login however long the file is there.
+var ourLabel = regexp.MustCompile(`<key>Label</key>\s*<string>` + regexp.QuoteMeta(label) + `</string>`)
+
 func enabled() bool {
-	_, err := os.Stat(record())
-	return err == nil
+	b, err := os.ReadFile(record())
+	return err == nil && ourLabel.Match(b) && program.Match(b)
 }
 
 // a launch agent the system loads at the next login: the app itself, run
@@ -28,7 +35,7 @@ func enable(exe string) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(p, plist(exe), 0o644)
+	return edit.WriteAtomic(p, plist(exe))
 }
 
 // plist is the launch agent for exe. AssociatedBundleIdentifiers names the
@@ -78,7 +85,9 @@ func associated(exe string) string {
 	return fmt.Sprintf("\t<key>AssociatedBundleIdentifiers</key>\n\t<array><string>%s</string></array>\n", html.EscapeString(html.UnescapeString(string(m[1]))))
 }
 
-var program = regexp.MustCompile(`<key>ProgramArguments</key>\s*<array><string>([^<]*)</string>`)
+// with a path in the first string: an empty one names nothing to run, and
+// launchd refuses the job
+var program = regexp.MustCompile(`<key>ProgramArguments</key>\s*<array><string>([^<]+)</string>`)
 
 // refresh writes a launch agent an older magpie wrote over as this one
 // would, for the program it names: the path stays the one the user turned
@@ -101,7 +110,7 @@ func refresh() error {
 	if bytes.Equal(b, want) {
 		return nil
 	}
-	return os.WriteFile(p, want, 0o644)
+	return edit.WriteAtomic(p, want)
 }
 
 func disable() error {

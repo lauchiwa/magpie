@@ -23,12 +23,17 @@ import (
 // which the agent picked as itself, keeps the retries passing gives the
 // last one left.
 
-// replanRounds is how many times the members are asked again, at most,
-// whatever the patience left; replanLongest is the longest pause between.
-const (
-	replanRounds  = 6
-	replanLongest = 30 * time.Second
-)
+// replanRounds is how many times the members are asked again, at most:
+// a backstop that never comes before the patience does. The pauses alone
+// (2s, 4s, 8s, 16s, then 30s each) add up to PatienceLongest in 11 rounds,
+// so a group set to wait 240s waits 240s; with 6 it gave up at 90s of
+// pauses, whatever it was set to (real-jacket on #1418: patience=240,
+// replan=6, ~103s in all).
+const replanRounds = 12
+
+// replanLongest is the longest pause between rounds: 30 times retryPause,
+// 30s.
+func replanLongest() time.Duration { return 30 * retryPause }
 
 // busyTry is a member that failed in a way that passes, and when it may
 // be asked again: now, or when its Retry-After says.
@@ -46,7 +51,7 @@ func busy(status int, body []byte) bool {
 	case 408, 500, 502, 503, 504, 529:
 		return failure(status, body) == failOther && !protectionRefused(status, body)
 	case 429:
-		return failure(status, body) == failRate && !creditWords.Match(body)
+		return failure(status, body) == failRate && !creditWords.Match(wordsOf(body))
 	}
 	return false
 }
@@ -70,7 +75,7 @@ func replan(list []busyTry, round int, by time.Time) ([]candidate, time.Duration
 		return nil, 0, false
 	}
 	now := time.Now()
-	wait := min(retryPause<<(round+1), replanLongest)
+	wait := min(retryPause<<(round+1), replanLongest())
 	soonest := list[0].ready
 	for _, b := range list[1:] {
 		soonest = minTime(soonest, b.ready)

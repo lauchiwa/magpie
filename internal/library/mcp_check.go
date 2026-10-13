@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,10 @@ type ServerHealth struct {
 	// OAuth is a refusal that named a sign-in (WWW-Authenticate), which
 	// magpie can do itself for a streamable HTTP server
 	OAuth bool `json:"oauth,omitempty"`
+	// SignIn is magpie's sign-in to a streamable HTTP server as the check
+	// left it: one whose renewed token the server refused has run out
+	// since, and the page's tag says so (新v学员 on Discord)
+	SignIn *mcpauth.Status `json:"signIn,omitempty"`
 	// Step is what a server that timed out was asked and didn't answer
 	// (initialize, notifications/initialized, tools/list, or connect: an
 	// SSE server's stream), and Waited how long it was waited for, in ms
@@ -144,6 +149,9 @@ func CheckServers(ctx context.Context, names []string, fresh bool) (map[string]S
 			slots <- struct{}{}
 			defer func() { <-slots }()
 			h := CheckServer(ctx, s)
+			// as the server is now: a sign-in the check found run out
+			// isn't one to check it again for
+			key := healthKey(s)
 			// a check cut short by the page going away isn't one, and a
 			// server that didn't answer in time is asked again next time:
 			// a slow server may answer then (#1467)
@@ -187,6 +195,12 @@ func CheckServer(ctx context.Context, s *Server) ServerHealth {
 		h = checkHTTP(ctx, s)
 	}
 	h.At = time.Now().UnixMilli()
+	if s.Transport == "http" {
+		// only a server magpie is signed in to has one to report
+		if st := mcpauth.StatusOf(s.Name, s.URL); st.SignedIn || st.Dead {
+			h.SignIn = &st
+		}
+	}
 	return h
 }
 
@@ -417,7 +431,20 @@ func checkStdio(ctx context.Context, s *Server) ServerHealth {
 		return failed("novar", strings.Join(unset, ", "))
 	}
 	cmd := proc.Command(s.Command, s.Args...)
+	// Agents start MCP servers from a project or home directory. A magpie
+	// launched from a shortcut (Windows Start menu) often has C:\Windows\system32
+	// as its own cwd, which is not writable; inherit that and a server that
+	// writes into "." dies as "exited (1)" with no log. Pin the check to HOME.
 	cmd.Env = os.Environ()
+	if d := home(); d != "" {
+		cmd.Dir = d
+		// and PWD with it, as exec does itself only when Env is nil: a
+		// shell-script server that reads $PWD would otherwise see magpie's
+		// own folder while it runs in home (Windows doesn't use PWD)
+		if runtime.GOOS != "windows" {
+			cmd.Env = append(cmd.Env, "PWD="+d)
+		}
+	}
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
@@ -595,6 +622,14 @@ func checkHTTP(ctx context.Context, s *Server) ServerHealth {
 	if bad != nil {
 		return *bad
 	}
+	// magpie's own token, when it is signed in: one the server refuses is
+	// renewed once and asked again with, as the gateway's relay does, and
+	// one refused just after it was renewed is a sign-in that has run out
+	tok := ""
+	if s.Transport == "http" && mcpauth.SignedIn(s.Name, s.URL) {
+		tok = strings.TrimPrefix(hdr.Get("Authorization"), "Bearer ")
+	}
+	renewed := false
 	session, version := "", mcpProtocol
 	post := func(body []byte) (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.URL, bytes.NewReader(body))
@@ -614,13 +649,29 @@ func checkHTTP(ctx context.Context, s *Server) ServerHealth {
 	}
 	// call posts a request and reads its reply, as JSON or from an event
 	// stream
-	call := func(id int, body []byte) (*rpcMsg, *ServerHealth) {
+	var call func(id int, body []byte) (*rpcMsg, *ServerHealth)
+	call = func(id int, body []byte) (*rpcMsg, *ServerHealth) {
 		res, err := post(body)
 		if err != nil {
 			h := netHealth(ctx, err)
 			return nil, &h
 		}
 		defer res.Body.Close()
+		if res.StatusCode == 401 && tok != "" {
+			if renewed {
+				mcpauth.Rejected(s.Name, tok)
+			} else {
+				renewed = true
+				io.Copy(io.Discard, io.LimitReader(res.Body, 1<<16))
+				fresh, err := mcpauth.Renew(ctx, s.Name, tok)
+				if err != nil {
+					return nil, &ServerHealth{State: "auth", Code: 401, OAuth: true, Detail: err.Error()}
+				}
+				tok = fresh
+				hdr.Set("Authorization", "Bearer "+fresh)
+				return call(id, body)
+			}
+		}
 		if res.StatusCode == 401 || res.StatusCode == 403 {
 			h := refused(res)
 			return nil, &h
