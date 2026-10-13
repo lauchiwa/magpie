@@ -94,6 +94,17 @@ fork's builds are installed from its own Releases page.
 Upstream's site also serves the JSON update feed its own builds ask
 (`usemagpie.ai/api/latest`). This fork does not use it; see below.
 
+A message that sends someone to download a build by hand (a new version
+Windows wouldn't start, `magpie update` from a build from source or from an
+app it can't replace) names this fork's Releases page (`update.Downloads`),
+not `usemagpie.ai`: a build from there is upstream's, which replaces this
+fork's and then updates from upstream.
+
+The container hint still names `ghcr.io/yetone/magpie:latest`, upstream's
+image. This fork's Docker workflow publishes `ghcr.io/lauchiwa/magpie`, but
+only as `edge` and per version: `latest` is tagged for a bare version, which
+this fork never publishes, so there is no fork tag for the hint to name yet.
+
 ## Signing
 
 Nothing is signed with a paid certificate. There is no Apple Developer

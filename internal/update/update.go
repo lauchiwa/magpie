@@ -37,9 +37,9 @@ import (
 	"github.com/yetone/magpie/internal/source"
 )
 
-// Site is upstream magpie's home. This fork has no site of its own, so it
-// is where a message sends someone to download a build by hand, and its
-// /api/latest is the update feed MAGPIE_UPDATE_FEED can point back at.
+// Site is upstream magpie's home. Its /api/latest is the update feed
+// MAGPIE_UPDATE_FEED can point back at; a build to download by hand is
+// this fork's, from Downloads, never upstream's from here.
 const Site = "https://usemagpie.ai"
 
 // Feed is where the newest release is described, when a JSON feed is used

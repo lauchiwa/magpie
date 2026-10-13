@@ -32,9 +32,9 @@ type BlockedError struct {
 
 func (e *BlockedError) Error() string {
 	if e.Policy() {
-		return "Windows didn't let the new version start (" + e.Err.Error() + "): Smart App Control or another application control policy blocks magpie's unsigned builds; download it from " + Site + " and run it yourself, or turn Smart App Control off, then check for updates again"
+		return "Windows didn't let the new version start (" + e.Err.Error() + "): Smart App Control or another application control policy blocks magpie's unsigned builds; download it from " + Downloads() + " and run it yourself, or turn Smart App Control off, then check for updates again"
 	}
-	return "the new version couldn't start: " + e.Err.Error() + "; download it from " + Site + " and run it yourself"
+	return "the new version couldn't start: " + e.Err.Error() + "; download it from " + Downloads() + " and run it yourself"
 }
 
 func (e *BlockedError) Unwrap() error { return e.Err }
