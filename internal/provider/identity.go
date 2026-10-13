@@ -32,11 +32,9 @@ import (
 
 // identityApplies says whether a profile bound to p would be sent. A
 // signed-in account and a plugin's provider sign their own requests, so
-// Sign never reaches the profile for them.
-func (p Provider) identityApplies() bool {
-	return p.Account == nil && !p.IsPlugin() && !p.IsOpenCode() && !p.IsCline() &&
-		!p.IsKilo() && !p.IsRemoteMagpie() && !p.DecideOnly()
-}
+// Sign never reaches the profile for them. It is IdentityApplies, so what
+// Sign does and what the editor says before a binding can't drift apart.
+func (p Provider) identityApplies() bool { return p.IdentityApplies() == "" }
 
 // identityListHeaders is p's model-list headers with its bound identity
 // profile presented, which the list fetches ask with (fetchOne). The list
