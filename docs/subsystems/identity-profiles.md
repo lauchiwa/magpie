@@ -59,6 +59,16 @@ profile imported or captured from a request is a candidate. Only `confirm`
 makes it usable, and binding requires a confirmed profile. A broken binding is
 an error (fail-closed), not a silent fallback to magpie's own User-Agent.
 
+`Sign` reads the store for every plain provider's request, bound or not, so
+an `identities.json` that can't be read would stop them all. One a crash left
+all zero or cut short is read from its last good generation
+(`internal/lastgood`): the file as it was before its last write, which loses
+that one change, and the GUI's recovery notice says so. Its next change keeps
+the bad file aside as `identities.json.bad-<time>`. With no good generation
+either, the store stays unknown and every plain provider's request fails with
+the file named, rather than reading it as "nothing bound". An empty file is
+no profiles.
+
 ## Lifecycle
 
 1. `magpie identity arm <provider> <codex_cli|claude_code>` arms a five-minute,
@@ -142,7 +152,10 @@ anchors rather than a long-lived fork of provider or gateway structures.
 ## Verification
 
 - `internal/identity` tests cover the closed projection, consistency checks,
-  candidate lifecycle, fail-closed store, copy isolation and one-shot capture.
+  candidate lifecycle, fail-closed store, copy isolation and one-shot capture,
+  and a zeroed store read from its last good generation, one with none that
+  fails closed, and an empty one. `TestAZeroedIdentityStoreLeavesProvidersSigning`
+  (`internal/provider`) signs an unbound provider over a zeroed real store.
 - `internal/gateway/identity_test.go` asserts that a capture armed over the
   control path is held by the gateway and projects the request it then
   forwards, that disarm revokes it, that another machine is refused with and
