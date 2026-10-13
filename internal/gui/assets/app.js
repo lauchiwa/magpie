@@ -116,7 +116,7 @@ async function api(path, body, heads, signal) {
   const text = await res.text();
   let data;
   try { data = text ? JSON.parse(text) : null; } catch {
-    throw new Error(text.trim().slice(0, 200) || `${res.status} ${res.statusText}`);
+    throw new Error(notJSON(res, text));
   }
   if (!res.ok) {
     const err = new Error(data?.error || `${res.status} ${res.statusText}`);
@@ -167,6 +167,23 @@ async function api(path, body, heads, signal) {
   // session's or a library's words aren't looked through
   if (data && typeof data === "object" && !/^(sessions|library|skills|plugins|market)/.test(path)) noteAccounts(data);
   return data;
+}
+
+// notJSON is what an answer that isn't magpie's JSON says. A web page is
+// a proxy's or a tunnel's own, not magpie's: magpie web behind Cloudflare
+// got its 524 page when an install outlasted Cloudflare's 100 seconds,
+// shown as "<!DOCTYPE html> <!--[if lt IE 7]>…" (precisionz, #2032). It is
+// said by its title, and a timeout says magpie may still be finishing.
+function notJSON(res, text) {
+  const body = text.trim();
+  const html = /text\/html/i.test(res.headers.get("content-type") || "") || /^<(!doctype|html|head|body)\b/i.test(body);
+  if (!html) return body.slice(0, 200) || `${res.status} ${res.statusText}`;
+  let title = "";
+  try { title = new DOMParser().parseFromString(body, "text/html").title.replace(/\s+/g, " ").trim(); } catch {}
+  const what = title || `${res.status} ${res.statusText}`.trim();
+  // 504 and Cloudflare's 524: it stopped waiting, magpie didn't stop
+  if (res.status === 504 || res.status === 524) return t("A proxy in front of magpie stopped waiting; magpie may still be finishing, check again in a minute ({what})", { what });
+  return t("A proxy in front of magpie answered, not magpie ({what})", { what });
 }
 
 function el(tag, cls, text) {
@@ -9213,6 +9230,10 @@ function drawEditor(p, presetID) {
   }
 
   if (p) ed.append(...field(t("Models"), renderModels(p), ""));
+  // Azure OpenAI's models are its deployments, which magpie lists with the
+  // key once the resource is added (#1995): said here, so no one takes the
+  // add page for one where they must type them
+  else if (pr?.id === "azure") ed.append(...field(t("Models"), el("div", "hint azure-models", t("No need to type them: once added, magpie lists the deployments this key can call. Type a deployment's name as a model id only if that list can't be fetched.")), ""));
   if (p?.drawIds?.length) ed.append(...renderDrawers(p));
   {
     // the window agents are told a model has, over what the vendor or
@@ -9340,7 +9361,7 @@ function drawEditor(p, presetID) {
       balPair.append(res);
       balPair.classList.add("wrap");
     }
-    inner.append(...field(t("Balance field"), balPair, t("Where the amount is in the reply, e.g. data.balance; it can be a sum with + - * / and brackets, e.g. data.total / 500000 or (1 - credits.used / 70) %; \"$\" in front adds the sign, \"%\" after it shows a percent, with a bar; several, each with a label, go apart by \";\", e.g. 5h: a.used / a.cap %; $credits.left")));
+    inner.append(...field(t("Balance field"), balPair, t("Where the amount is in the reply, e.g. data.balance; it can be a sum with + - * / and brackets, e.g. data.total / 500000 or (1 - credits.used / 70) %; \"$\" in front adds the sign, \"%\" after it shows a percent, with a bar; several, each with a label, go apart by \";\", e.g. 5h: a.used / a.cap %; $credits.left; a list's items are a.*.used, or a[status=active].used for those that match, put in sum(), max(), min() or count(); an amount the reply hasn't shows \"—\" and the others still show")));
     more.append(inner);
     ed.append(more);
   }
@@ -10322,6 +10343,15 @@ const servedIds = (p) => draft.chosen.length ? draft.chosen : draft.none ? [] : 
 // tall held, as app.css's .mchips max-height: min(132px, 28vh) says
 let modelsOpen = false;
 const MCHIPS_MAX = 132;
+// emptyModelsHint is what an empty model list says. Azure OpenAI's is its
+// deployments, asked for with the key after it is added (#1995): while that
+// is under way it says so, and after it says the deployments' names are
+// what to type; every other provider's is the vendor's list.
+function emptyModelsHint(p) {
+  if (p.preset !== "azure") return "The vendor's list is empty. Fetch models again, or type a model id.";
+  if (providers?.fetching && !p.fetched && !p.listError) return "Asking your resource for its deployments with this key…";
+  return "No deployments came back for this key. Fetch models again, or type a deployment's name as a model id.";
+}
 function renderModels(p) {
   // a chip's dot: how its model answered, when it has been asked
   const tested = (c, id) => {
@@ -10523,7 +10553,7 @@ function renderModels(p) {
       c.onclick = () => { draft.chosen = draft.chosen.filter((x) => x !== id); draft.none = true; draw(); };
       chips.append(c);
     }
-    if (!p.models.length && !draft.chosen.length) chips.append(el("span", "hint", t("The vendor's list is empty. Fetch models again, or type a model id.")));
+    if (!p.models.length && !draft.chosen.length) chips.append(el("span", "hint", t(emptyModelsHint(p))));
     // the list is of models agents chat with: image, embedding and speech
     // models are left out of it, and an image model is set in Settings
     else if (f && !chips.children.length) chips.append(el("span", "hint", t("No model here matches “{q}”. Image, embedding and speech models aren't listed, as agents can't chat with them: pick an image model in Settings → Images.", { q: q.value.trim() })));
@@ -16150,16 +16180,19 @@ function panelBalances(bals) {
     // the others each a quiet line, a percent a meter (#420)
     const parts = q.balanceParts?.length ? q.balanceParts : [{ text: q.balance }];
     for (const [i, p] of parts.entries()) {
-      if (!i && !p.label) card.append(el("b", "pq-amt", p.text));
+      let amount;
+      if (!i && !p.label) card.append(amount = el("b", "pq-amt", p.text));
       else if (!i) {
-        const lead = el("span", "pq-lead");
-        lead.append(el("b", "pq-amt", p.text), el("span", "", p.label));
-        card.append(lead);
+        amount = el("span", "pq-lead");
+        amount.append(el("b", "pq-amt", p.text), el("span", "", p.label));
+        card.append(amount);
       } else {
-        const line = el("span", "pq-sub pq-bp");
-        line.append(el("span", "", p.label || ""), el("b", "", p.text));
-        card.append(line);
+        amount = el("span", "pq-sub pq-bp");
+        amount.append(el("span", "", p.label || ""), el("b", "", p.text));
+        card.append(amount);
       }
+      // an amount the reply hadn't, "—": why, on hover (#1993)
+      if (p.error) amount.title = p.error;
       if (p.percent != null) card.append(balanceMeter(p.percent));
     }
     // standing in for a reading that failed just now: as of when
@@ -16859,6 +16892,8 @@ function balanceRow(sub, why, when = true) {
   for (const [i, p] of (parts || []).entries()) {
     const row = el("div", "bal-part" + (i ? "" : " lead"));
     row.append(el("span", "", p.label || (i ? "" : t("Balance"))), el("b", "", p.text));
+    // an amount the reply hadn't, "—": why, on hover (#1993)
+    if (p.error) row.title = p.error;
     if (p.percent != null) row.append(balanceMeter(p.percent));
     b.append(row);
   }

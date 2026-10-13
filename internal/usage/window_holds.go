@@ -10,6 +10,7 @@ package usage
 
 import (
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,7 +26,8 @@ func WithWindowHolds(qs []provider.SubscriptionQuota, now time.Time) []provider.
 		return qs
 	}
 	s := readLogSnapshot()
-	return windowHolds(qs, now, s.firstOwn, apiPricer(), provider.Renamed(), func(fn func(Record)) { s.visit(since, fn) })
+	dry := dryRuns(qs, provider.QuotaHistories(since, "", ""), now)
+	return windowHolds(qs, now, s.firstOwn, apiPricer(), provider.Renamed(), dry, func(fn func(Record)) { s.visit(since, fn) })
 }
 
 // holdsSince is the earliest start of a window that could be reckoned.
@@ -68,12 +70,77 @@ func holdsBounds(q provider.SubscriptionQuota, w provider.QuotaWindow, at time.T
 	return start, end, true
 }
 
+// dryRun is a stretch in which one of an account's windows had nothing
+// left (#2010, NorethSea): from the last reading that still had some (zero
+// when none is known) through the first that read none, to the first that
+// had some again (zero while none has). A call the vendor answered in it
+// may have been paid from credits (Codex) or extra usage (Claude), not
+// from the windows, and nothing in the log tells which.
+type dryRun struct{ lastLeft, firstDry, refilled time.Time }
+
+func (d dryRun) holds(t time.Time) bool {
+	return !t.Before(d.lastLeft) && (d.refilled.IsZero() || t.Before(d.refilled))
+}
+
+// dryRuns is each account's dry runs, by provider and lowercased user,
+// from its windows' kept readings and the card's own reading of them.
+func dryRuns(qs []provider.SubscriptionQuota, hist []provider.QuotaHistory, now time.Time) map[string][]dryRun {
+	out := map[string][]dryRun{}
+	lines := map[string][]provider.QuotaPoint{} // account and window → readings, oldest first
+	for _, h := range hist {
+		for _, l := range h.Lines {
+			lines[h.Provider+"\x00"+strings.ToLower(h.User)+"\x00"+l.Name] = l.Points
+		}
+	}
+	for _, q := range qs {
+		if q.User == "" {
+			continue
+		}
+		at := readAtOf(q, now)
+		for _, w := range q.Windows {
+			if w.Unlimited || w.Aside || w.Family != "" || math.IsNaN(w.Used) {
+				continue
+			}
+			k := q.Provider + "\x00" + strings.ToLower(q.User) + "\x00" + w.Name
+			pts := lines[k]
+			if n := len(pts); n == 0 || pts[n-1].At.Before(at) {
+				pts = append(append([]provider.QuotaPoint(nil), pts...), provider.QuotaPoint{At: at, Left: max(0, 100-w.Used)})
+			}
+			lines[k] = pts
+		}
+	}
+	for k, pts := range lines {
+		acct := k[:strings.LastIndex(k, "\x00")]
+		var run *dryRun
+		var lastLeft time.Time
+		for _, p := range pts {
+			switch {
+			case p.Left > 0 && run != nil:
+				run.refilled = p.At
+				out[acct] = append(out[acct], *run)
+				run, lastLeft = nil, p.At
+			case p.Left > 0:
+				lastLeft = p.At
+			case run == nil:
+				run = &dryRun{lastLeft: lastLeft, firstDry: p.At}
+			}
+		}
+		if run != nil {
+			out[acct] = append(out[acct], *run)
+		}
+	}
+	return out
+}
+
 // windowHolds fills in each window's Holds from the calls read gives: the
 // calls of the card's provider (by the id it has now) answered by its
 // account, to a model the window counts, from the window's start to when
 // its share was read. first is the log's first call: a window begun before
-// it has calls magpie can't see, and isn't reckoned.
-func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf func(Record) *catalog.Price, renamed map[string]string, read func(func(Record))) []provider.SubscriptionQuota {
+// it has calls magpie can't see, and isn't reckoned. Nor is a window with a
+// call in one of its account's dry runs that may have been paid otherwise:
+// one where the vendor answered a call after a reading of none left, or
+// where no reading with some left is known before it.
+func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf func(Record) *catalog.Price, renamed map[string]string, dry map[string][]dryRun, read func(func(Record))) []provider.SubscriptionQuota {
 	type slot struct{ q, w int }
 	type span struct{ start, end time.Time }
 	want := map[slot]span{}
@@ -95,6 +162,12 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 	}
 	sums := map[slot]*provider.WindowHolds{}
 	unpriced := map[slot]bool{}
+	type runKey struct {
+		account string
+		run     int
+	}
+	paidOtherwise := map[runKey]bool{} // the vendor answered a call after a reading of none left
+	inRun := map[slot][]runKey{}       // the dry runs a counted call fell in
 	read(func(r Record) {
 		if r.IsRejected() || r.IsReported() || r.Input+r.Output == 0 {
 			return
@@ -102,11 +175,24 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 		if next, ok := renamed[r.Provider]; ok {
 			r.Provider = next
 		}
-		for _, s := range byAccount[r.Provider+"\x00"+strings.ToLower(r.Account())] {
+		acct := r.Provider + "\x00" + strings.ToLower(r.Account())
+		var runs []runKey
+		for i, d := range dry[acct] {
+			if !d.holds(r.Time) {
+				continue
+			}
+			k := runKey{acct, i}
+			runs = append(runs, k)
+			if d.lastLeft.IsZero() || r.Status < 400 && !r.Time.Before(d.firstDry) {
+				paidOtherwise[k] = true
+			}
+		}
+		for _, s := range byAccount[acct] {
 			b := want[s]
 			if r.Time.Before(b.start) || r.Time.After(b.end) || !qs[s.q].Windows[s.w].Counts(r.Model) {
 				continue
 			}
+			inRun[s] = append(inRun[s], runs...)
 			h := sums[s]
 			if h == nil {
 				h = &provider.WindowHolds{Since: b.start}
@@ -130,7 +216,7 @@ func windowHolds(qs []provider.SubscriptionQuota, now, first time.Time, priceOf 
 	copy(out, qs)
 	cloned := map[int]bool{}
 	for s, h := range sums {
-		if h.Routed.Tokens <= 0 {
+		if h.Routed.Tokens <= 0 || slices.ContainsFunc(inRun[s], func(k runKey) bool { return paidOtherwise[k] }) {
 			continue
 		}
 		q := &out[s.q]

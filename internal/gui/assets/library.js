@@ -1914,7 +1914,9 @@
     i.spellcheck = false;
     i.autocomplete = "off";
     i.oninput = () => onInput(i.value);
-    i.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Escape") closeLibModal(); else if (e.key === "Enter" && modal?.save) { e.preventDefault(); modal.save(); } };
+    // an Enter or Escape that ends an input method's composition (a
+    // Chinese description, #2011) is the IME's, not a save or a close
+    i.onkeydown = (e) => { e.stopPropagation(); if (e.isComposing || e.keyCode === 229) return; if (e.key === "Escape") closeLibModal(); else if (e.key === "Enter" && modal?.save) { e.preventDefault(); modal.save(); } };
     return i;
   }
 
@@ -2233,7 +2235,10 @@
   function hookRow(h, all) {
     const row = el("div", "row lib-row click lib-hook");
     const who = el("div", "who");
-    who.append(el("div", "name mono", h.name), el("div", "sub lib-hookev", hookLine(h)));
+    who.append(el("div", "name mono", h.name));
+    // what it is for, in the user's own words (#2011)
+    if (h.description) who.append(el("div", "lib-hookdesc", h.description));
+    who.append(el("div", "sub lib-hookev", hookLine(h)));
     const cmd = el("div", "sub mono lib-hookcmd", h.command);
     cmd.title = h.command;
     who.append(cmd);
@@ -2247,8 +2252,8 @@
 
   function editHook(h) {
     const all = hookAgents();
-    const d = h ? { name: h.name, event: h.event, matcher: h.matcher || "", command: h.command, timeout: h.timeout || 0, agents: [...(h.agents || [])] }
-      : { name: "", event: "turn-end", matcher: "", command: "", timeout: 0, agents: [] };
+    const d = h ? { name: h.name, description: h.description || "", event: h.event, matcher: h.matcher || "", command: h.command, timeout: h.timeout || 0, agents: [...(h.agents || [])] }
+      : { name: "", description: "", event: "turn-end", matcher: "", command: "", timeout: 0, agents: [] };
     if (!h) d.agents = all.filter((a) => !hookBlocked(d)(a)).map((a) => a.id);
     const ed = el("div", "editor lib-editor lib-hookedit");
     const head = el("div", "ehead");
@@ -2257,6 +2262,10 @@
     const err = el("div", "editor-error");
     const name = field2(d.name, t("e.g. notify"), (v) => { d.name = v.trim(); });
     ed.append(...field(t("Name"), name, t("Letters, digits, - and _")));
+    const desc = field2(d.description, t("e.g. Tell me when a turn ends"), (v) => { d.description = v; });
+    desc.maxLength = 200;
+    desc.classList.add("lib-hookdescin");
+    ed.append(...field(t("Description"), desc, t("Optional: what it's for, in any language. Only the library keeps it")));
 
     // the event and the tools it is narrowed to: menus, never a <select>
     const evBtn = el("button", "sess-pick lib-menu lib-hookevent");
@@ -2329,7 +2338,7 @@
     const save = async () => {
       err.textContent = "";
       try {
-        const hook = { name: d.name, event: d.event, matcher: d.matcher, command: d.command, timeout: d.timeout, agents: d.agents.filter((id) => !hookBlocked(d)(agentOf(id) || { id })) };
+        const hook = { name: d.name, description: d.description.trim(), event: d.event, matcher: d.matcher, command: d.command, timeout: d.timeout, agents: d.agents.filter((id) => !hookBlocked(d)(agentOf(id) || { id })) };
         take(await api("library/hooks/save", { old: h ? h.name : "", hook }));
         report(lib.result, h ? t("{name} saved", { name: d.name }) : "");
         closeLibModal(true);

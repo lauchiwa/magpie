@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tidwall/gjson"
@@ -38,6 +39,10 @@ import (
 // Hook is a command the agents ticked for it run at Event.
 type Hook struct {
 	Name string `json:"name"`
+	// Description says what the hook is for, in any language (#2011):
+	// the name is letters, digits, - and _, which says little to someone
+	// who reads Chinese. Only the library keeps it; no agent is given it.
+	Description string `json:"description,omitempty"`
 	// Event is a portable event (HookEvents), or an agent's own,
 	// "<agent>:<Event>" as that agent names it
 	Event string `json:"event"`
@@ -181,12 +186,19 @@ func (sp *hookSpec) entry(h *Hook) json.RawMessage {
 	return b
 }
 
+// maxHookDescription is how long a hook's description can be, in
+// characters: a line that says what it is for, not a document.
+const maxHookDescription = 200
+
 func (h *Hook) check() error {
 	if err := checkName("hook", h.Name); err != nil {
 		return err
 	}
 	if strings.TrimSpace(h.Command) == "" {
 		return errors.New("a hook needs a command to run")
+	}
+	if utf8.RuneCountInString(h.Description) > maxHookDescription {
+		return fmt.Errorf("a hook's description is at most %d characters", maxHookDescription)
 	}
 	if h.Timeout < 0 || h.Timeout > 86400 {
 		return errors.New("a hook's timeout is between 0 (the agent's own) and 86400 seconds")
@@ -684,6 +696,7 @@ func hooksOff(t *Target, sp *hookSpec) bool {
 // SaveHook adds a hook, or replaces the one called old (renaming it). An
 // agent it can't be given is left out of it, said in the result.
 func SaveHook(old string, h Hook) (*Result, error) {
+	h.Description = strings.Join(strings.Fields(h.Description), " ")
 	if err := h.check(); err != nil {
 		return nil, err
 	}

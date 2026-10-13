@@ -241,3 +241,34 @@ func TestHooksOffSaid(t *testing.T) {
 		t.Errorf("claude's view: %+v", v.HookAgents)
 	}
 }
+
+// #2011 (emo172): a hook's name is letters, digits, - and _, so a hook
+// says what it is for in a description, in any language. The library
+// keeps it through a save, a rename and a change of agents, the page
+// reads it, and no agent's file is given it.
+func TestHookDescription(t *testing.T) {
+	h := sandbox(t)
+	ok(t)(SaveHook("", Hook{Name: "auto-format-queue", Description: "  编辑后\n格式化 ", Event: "after-tool", Matcher: "edit", Command: "fmtq", Agents: []string{"claude"}}))
+	if d := mustLoad(t).hook("auto-format-queue").Description; d != "编辑后 格式化" {
+		t.Errorf("kept %q, want the words on one line", d)
+	}
+	ok(t)(HookAgents("auto-format-queue", []string{"claude", "codex"}))
+	ok(t)(SaveHook("auto-format-queue", Hook{Name: "fmtq", Description: "编辑后格式化", Event: "after-tool", Matcher: "edit", Command: "fmtq", Agents: []string{"claude", "codex"}}))
+	v, err := Read(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Hooks) != 1 || v.Hooks[0].Name != "fmtq" || v.Hooks[0].Description != "编辑后格式化" {
+		t.Errorf("the page's hooks: %+v", v.Hooks)
+	}
+	for _, f := range []string{".claude/settings.json", ".codex/hooks.json"} {
+		if s := read(t, filepath.Join(h, f)); strings.Contains(s, "格式化") || strings.Contains(s, "description") {
+			t.Errorf("%s was given the description: %s", f, s)
+		}
+	}
+	// a line, not a document
+	if _, err := SaveHook("fmtq", Hook{Name: "fmtq", Description: strings.Repeat("格", 201), Event: "after-tool", Command: "fmtq"}); err == nil {
+		t.Error("a 201-character description was kept")
+	}
+	ok(t)(SaveHook("fmtq", Hook{Name: "fmtq", Description: strings.Repeat("格", 200), Event: "after-tool", Command: "fmtq"}))
+}

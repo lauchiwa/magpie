@@ -105,7 +105,10 @@ const providerUsage = `usage:
                                    (a new-api relay's whole account: its access token and user id, from its personal settings)
                                    (balance.path: where the amount is in the reply, or a sum of those with + - * / and
                                     brackets; $ or ¥ in front adds the sign, % after it shows a percent of 1;
-                                    several go apart by ; each with a label: '5h: a.used / a.cap %; $credits.left')
+                                    several go apart by ; each with a label: '5h: a.used / a.cap %; $credits.left';
+                                    a list's items are a.*.used, or a[status=active].used for those that match,
+                                    in sum() max() min() count(): 'sum(a.*.used) / sum(a.*.cap) %'; one the reply
+                                    hasn't shows — and the others still show)
        magpie provider set my-relay context=272k context.gpt-6=1m
                                    (context: how long a request agents are told the models take, over what the
                                     vendor or models.dev says; context.<model> for one of them; empty clears)

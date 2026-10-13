@@ -396,13 +396,24 @@ var presets = []PresetDef{
 	{ID: AzurePreset, Name: "Azure OpenAI", Icon: "azure-color", Kind: KindVendor, Catalog: "azure, openai", Hosts: true,
 		Note:         "your resource's endpoint and key",
 		Endpoint:     "https://<resource>.openai.azure.com",
-		EndpointHint: "Your resource's endpoint, from Keys and Endpoint in the Azure portal. magpie asks its v1 API; the model ids are your deployments' names.",
+		EndpointHint: "Your resource's endpoint, from Keys and Endpoint in the Azure portal. Once added, magpie asks the resource for its deployments with this key, over its v1 API; the deployments' names are the model ids.",
 		Website:      "https://ai.azure.com", KeysURL: "https://portal.azure.com/#view/Microsoft_Azure_ProjectOxford/CognitiveServicesHub/~/OpenAI"},
 	// Ollama's own hosted models: the local server's API, at ollama.com with a key
 	{ID: "ollama-cloud", Name: "Ollama Cloud", Icon: "ollama", Kind: KindVendor, Catalog: "ollama-cloud", Hosts: true,
 		Chat: "https://ollama.com/v1", Anthropic: "https://ollama.com",
 		Note:    "cloud models, with an API key",
 		Website: "https://docs.ollama.com/cloud", KeysURL: "https://ollama.com/settings/keys"},
+	// Nous Research's Nous Portal (#392): its own Hermes models and other
+	// makers', at inference-api.nousresearch.com/v1, OpenAI's chat
+	// completions with a Portal API key as a Bearer (Hermes Agent's
+	// nous-api provider, NOUS_API_KEY). Its /v1/messages serves only the
+	// anthropic/* models, so Claude Code's requests are translated to chat
+	// completions for every model. Model ids are vendor/model, as its
+	// /v1/models lists them.
+	{ID: "nous", Name: "Nous Portal", Icon: "nousresearch", Kind: KindVendor, Hosts: true,
+		Chat:    "https://inference-api.nousresearch.com/v1",
+		Note:    "Nous Research · Hermes and other models",
+		Website: "https://portal.nousresearch.com", KeysURL: "https://portal.nousresearch.com"},
 
 	{ID: "openrouter", Name: "OpenRouter", Icon: "openrouter", Kind: KindRelay, Catalog: "openrouter",
 		Chat: "https://openrouter.ai/api/v1", Anthropic: "https://openrouter.ai/api",

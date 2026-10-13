@@ -348,6 +348,15 @@ func pluginMarketState(ctx context.Context, w Windows) pluginMarketJSON {
 	return m
 }
 
+// addPlugin, removePlugin, updatePlugins and upgradePlugin are what
+// /api/plugins/{op} runs, for tests to stand in for.
+var (
+	addPlugin     = plugin.Add
+	removePlugin  = provider.RemovePlugin
+	updatePlugins = plugin.Update
+	upgradePlugin = plugin.Upgrade
+)
+
 func pluginRoutes(mux *http.ServeMux, w Windows) {
 	// the updates waiting for the reader, which put a dot on Plugins
 	mux.HandleFunc("GET /api/plugins/updates", func(rw http.ResponseWriter, r *http.Request) {
@@ -472,19 +481,22 @@ func pluginRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		// a first plugin downloads Bun, and npm installs it
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		// a first plugin downloads Bun, and npm installs it. It goes on
+		// though the page's connection goes: a proxy or tunnel in front of
+		// magpie web gives up first (Cloudflare after 100 seconds, #2032),
+		// and bun stopped halfway leaves plugins/ half-written
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Minute)
 		defer cancel()
 		var err error
 		switch r.PathValue("op") {
 		case "add":
-			_, err = plugin.Add(ctx, in.Spec)
+			_, err = addPlugin(ctx, in.Spec)
 		case "remove":
-			err = provider.RemovePlugin(ctx, in.Spec)
+			err = removePlugin(ctx, in.Spec)
 		case "update":
-			err = plugin.Update(ctx)
+			err = updatePlugins(ctx)
 		case "upgrade":
-			err = plugin.Upgrade(ctx, plugin.Name(in.Spec))
+			err = upgradePlugin(ctx, plugin.Name(in.Spec))
 		case "off":
 			err = provider.SetPluginOff(ctx, in.Spec, in.Off)
 		case "options":

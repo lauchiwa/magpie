@@ -11,6 +11,9 @@
 // Code · Notification) leaves only that agent's chip, and Save posts
 // hooks/save with what was picked. Select and the bar's chips post
 // hooks/agents-some; Remove all asks first and posts hooks/remove-all.
+// A hook's description (#2011, emo172) is its own words under its name:
+// the editor's Description field, saved with it, and an Enter that only
+// ends an input method's composition saves nothing.
 // At 440px wide in en, zh, zh-TW, ja and de: no sideways scroll, and what
 // each click pressed stays where it was on the screen.
 // No backend: the API is faked here.
@@ -23,7 +26,7 @@ const { chromium, webkit } = require("playwright");
 const assets = path.resolve(__dirname, "../assets");
 const HOME = "/Users/allen";
 const agent = (id, name, more = {}) => ({ id, name, icon: "", skills: `${HOME}/.${id}/skills`, mcp: `${HOME}/.${id}/mcp.json`, ...more });
-const hk = (name, event, matcher, command, agents) => ({ name, event, matcher, command, agents });
+const hk = (name, event, matcher, command, agents, description) => ({ name, event, matcher, command, agents, ...(description ? { description } : {}) });
 const HOOK_AGENTS = [
   { id: "claude", file: `${HOME}/.claude/settings.json`, events: ["PreToolUse", "PostToolUse", "Notification", "Stop"] },
   { id: "codex", file: `${HOME}/.codex/hooks.json`, events: ["PreToolUse", "PostToolUse", "Stop"] },
@@ -121,7 +124,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
       await t.test(lang, async () => {
         const w = (key, vars) => tr(lang, key, vars);
-        const state = { hooks: [hk("bark", "turn-end", "", "curl -s https://api.day.app/KEY/done", ["codex"]), hk("fmt", "after-tool", "edit", "prettier -w .", ["claude", "cursor"])] };
+        const state = { hooks: [hk("bark", "turn-end", "", "curl -s https://api.day.app/KEY/done", ["codex"]), hk("fmt", "after-tool", "edit", "prettier -w .", ["claude", "cursor"], "编辑文件后自动格式化")] };
         const posts = [], errors = [];
         const ctx = await browser.newContext({ viewport: { width: 440, height: 1000 }, reducedMotion: "reduce" });
         await ctx.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "hooks"); } catch {} });
@@ -144,6 +147,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal((await row("fmt").locator(".lib-hookev").textContent()).trim(), w("After a tool runs") + " · " + w("File edits"));
         assert.equal((await row("bark").locator(".lib-hookev").textContent()).trim(), w("When a turn ends"));
         assert.equal((await row("bark").locator(".lib-hookcmd").textContent()).trim(), "curl -s https://api.day.app/KEY/done");
+        // a description is said under the name; one without has none
+        assert.equal((await row("fmt").locator(".lib-hookdesc").textContent()).trim(), "编辑文件后自动格式化");
+        assert.equal(await row("bark").locator(".lib-hookdesc").count(), 0);
         // what an agent does with one given to it
         await v.locator(".lib-hooks-codex").filter({ hasText: w("Codex runs a new or changed hook only once you trust it: review it in Codex's /hooks.") }).waitFor();
         await v.locator(".lib-hooks-twice").filter({ hasText: w("Cursor runs Claude Code's hooks too: a hook given to both runs twice in Cursor.") }).waitFor();
@@ -175,6 +181,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal((await ed.locator(".ehead b").textContent()).trim(), w("New hook"));
         assert.equal((await ed.locator(".lib-hookevent").textContent()).trim(), w("When a turn ends"));
         await ed.locator("input").first().fill("notify");
+        const desc = ed.locator(".lib-hookdescin");
+        assert.equal(await desc.getAttribute("placeholder"), w("e.g. Tell me when a turn ends"));
+        await ed.locator(".hint", { hasText: w("Optional: what it's for, in any language. Only the library keeps it") }).first().waitFor();
+        await desc.fill("跑完命令就说一声");
+        // Enter choosing an input method's word is the IME's: nothing saved
+        await desc.evaluate((i) => i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, keyCode: 229, bubbles: true })));
+        await page.waitForTimeout(150);
+        assert.deepEqual(posts, [], "an IME's Enter saved the hook");
+        await ed.waitFor();
         // an agent's own event: only that agent can run it
         await ed.locator(".lib-hookevent").click();
         const menu = page.locator(".proto-menu");
@@ -206,8 +221,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(await sideways(page), [], "sideways scroll in the editor");
         await ed.locator(".bar button.primary").click();
         await ed.waitFor({ state: "detached" });
-        assert.deepEqual(posts.shift(), { what: "hooks/save", body: { old: "", hook: { name: "notify", event: "after-tool", matcher: "shell", command: "say done", timeout: 30, agents: ["claude", "codex"] } } });
+        assert.deepEqual(posts.shift(), { what: "hooks/save", body: { old: "", hook: { name: "notify", description: "跑完命令就说一声", event: "after-tool", matcher: "shell", command: "say done", timeout: 30, agents: ["claude", "codex"] } } });
         await row("notify").waitFor();
+        assert.equal((await row("notify").locator(".lib-hookdesc").textContent()).trim(), "跑完命令就说一声");
         assert.equal((await row("notify").locator(".lib-hookev").textContent()).trim(), w("After a tool runs") + " · " + w("Shell commands"));
 
         // Select: the bar's chips turn the ones picked on for an agent

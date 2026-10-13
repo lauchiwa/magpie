@@ -470,6 +470,7 @@ func set(a *agent.Agent, key, value string) error {
 		return err
 	}
 	before := f.Get()
+	wired := a.Wired()
 	if err := a.Apply(f.Key, value); err != nil {
 		return err
 	}
@@ -485,6 +486,13 @@ func set(a *agent.Agent, key, value string) error {
 		shown += " " + muted.Render("(unchanged)")
 	}
 	fmt.Println(green.Render("✓"), bold.Render(a.Name), muted.Render(f.Label), shown)
+	// a value that is the agent's own, not one of magpie's, takes magpie
+	// out: said, as Disconnect is, with the way back (#2000: magpie claude
+	// sonnet put Claude Code back on its DeepSeek endpoint, which refused
+	// Sonnet, and only "✓ Claude Code model sonnet" was printed)
+	if wired && now != "" && !a.Wired() {
+		fmt.Println(muted.Render(fmt.Sprintf("  disconnected from magpie: %s is %s's own, sent to the endpoint it had before magpie; magpie %s <model> with one of magpie's models connects it again", now, a.Name, a.ID)))
+	}
 	if a.Notice != nil {
 		if n := a.Notice(); n != "" {
 			fmt.Println(muted.Render("  ↻ " + n))
