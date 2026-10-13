@@ -121,7 +121,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // Installed: known by its package, at the commit installed, and
         // with the repository at that commit, nothing to update
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         const row = view.locator(".pm-row").first();
         await row.waitFor();
         for (let i = 0; i < 100 && !asked.some(([k]) => k === "git"); i++) await new Promise((r) => setTimeout(r, 20));

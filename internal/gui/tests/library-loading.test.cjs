@@ -44,7 +44,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
   test(engine + ": the Library while it loads", async (t) => {
     const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
     t.after(() => browser.close());
-    const ctx = await browser.newContext({ viewport: { width: 980, height: 800 } });
+    // under the sidebar's width: the tabs here are the page's own strip
+    const ctx = await browser.newContext({ viewport: { width: 860, height: 800 } });
     await ctx.addInitScript(() => { try { if (!sessionStorage.getItem("seeded")) { localStorage.setItem("magpie.libTab", "skills"); sessionStorage.setItem("seeded", "1"); } } catch {} });
     const page = await ctx.newPage();
     page.setDefaultTimeout(5000);
@@ -71,7 +72,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     assert.equal(await skel.getAttribute("aria-busy"), "true");
 
     const tabs = v.locator(".lib-head .lib-tabs .opt");
-    assert.deepEqual(await tabs.allTextContents(), ["Instructions", "MCP servers", "Skills", "RTK"]);
+    assert.deepEqual(await tabs.allTextContents(), ["Instructions", "MCP servers", "Skills", "Hooks", "RTK"]);
     assert.equal(await v.locator(".lib-tabs .opt.on").textContent(), "Skills");
     assert.ok(await v.locator(".lib-head .lib-more").isDisabled(), "the folder waits for the library");
     // Skills in outline: rows with a switch, no section heading
@@ -88,7 +89,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     open();
     await v.locator(".lib-head .lib-more:not([disabled])").waitFor();
     assert.equal(await v.locator(".lib-skel").count(), 0, "the outline goes");
-    assert.deepEqual(await v.locator(".lib-tabs .opt").allTextContents(), ["Instructions", "MCP servers · 1", "Skills · 1", "RTK"]);
+    assert.deepEqual(await v.locator(".lib-tabs .opt").allTextContents(), ["Instructions", "MCP servers · 1", "Skills · 1", "Hooks", "RTK"]);
     assert.equal(await v.locator(".lib-tabs .opt.on").textContent(), "Instructions");
     assert.equal(await v.locator(".lib-head .lib-more").getAttribute("title"), "~/.magpie/library");
     const after = await v.locator(".lib-tabs").boundingBox();

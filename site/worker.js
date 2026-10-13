@@ -12,6 +12,9 @@
 //                          their website and key links through /go
 //   /go/<id>/keys[/<region>], /go/<id>/site[/<region>]
 //                          a partner's key page or website, counted
+//   /go/<id>/home, /go/<id>/readme
+//                          a sponsor's link from the home page or the
+//                          READMEs (sponsors.js), counted
 //   /api/icon?url=<https URL>
 //                          a picture a plugin, market or import link names,
 //                          fetched here so its host sees Cloudflare, not the
@@ -31,6 +34,7 @@
 
 import { LANGS } from "./i18n.js";
 import { PARTNERS } from "./partners.js";
+import { SPONSORS } from "./sponsors.js";
 
 const REPO = "yetone/magpie-releases";
 const TTL = 300; // seconds the newest release is remembered
@@ -72,13 +76,14 @@ export default {
       return json({ partners: served(PARTNERS, now) }, 200, { "Cache-Control": "public, max-age=600" });
     }
     if (url.pathname.startsWith("/go/")) {
-      let id, what, region, to;
+      let id, what, region, to, counted;
       try {
         [, , id, what, region] = url.pathname.split("/").map(decodeURIComponent);
-        to = goTarget(PARTNERS, id, what, region);
+        if ((to = goTarget(PARTNERS, id, what, region))) counted = ["magpie partner go", { id, what, region: region || "" }];
+        else if (region === undefined && (to = sponsorTarget(SPONSORS, id, what))) counted = ["magpie sponsor go", { id, where: what }];
       } catch {}
       if (!to) return new Response("not found\n", { status: 404 });
-      if (req.method === "GET") ctx.waitUntil(capture("magpie partner go", { id, what, region: region || "", country: country(req) }));
+      if (req.method === "GET") ctx.waitUntil(capture(counted[0], { ...counted[1], country: country(req) }));
       return new Response(null, { status: 302, headers: { Location: to, "Cache-Control": "no-store" } });
     }
     if (url.pathname === "/api/notes") {
@@ -181,6 +186,15 @@ export function goTarget(list, id, what, region) {
   if (!region) return fromMagpie(p[field] || "");
   const r = (p.regions || []).find((x) => x.id === region);
   return r ? fromMagpie(r[field] || p[field] || "") : "";
+}
+
+// sponsorTarget is where a sponsor's /go link sends the browser: the link
+// sponsors.js has for that place, as it is (its own ref is how the sponsor
+// counts us).
+export function sponsorTarget(list, id, where) {
+  const s = list.find((x) => x.id === id);
+  if (!s || (where !== "home" && where !== "readme")) return "";
+  return s[where] || "";
 }
 
 function fromMagpie(to) {

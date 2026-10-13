@@ -122,7 +122,7 @@ func ListAgent(agent string) []Managed {
 	for _, fs := range groups {
 		s, _ := assemble(fs, price)
 		if s.Resume == "" && !s.ReadOnly {
-			s.Resume = resumeCommand(s.WSL, s.Agent, s.ID, s.Cwd)
+			s.Resume = resumeCommand(s.WSL, s.Agent, s.ID, s.Cwd, s.Path)
 		}
 		if s.Carry == nil {
 			s.Carry = carries(s)
@@ -224,6 +224,9 @@ func Delete(agent, id string) (Trashed, error) {
 	}
 	if len(fs) == 0 {
 		return Trashed{}, errors.New("no such session")
+	}
+	if s.ReadOnly {
+		return Trashed{}, errors.New("this session is read only")
 	}
 	paths := sessionPaths(agent, id, fs)
 	if len(paths) == 0 {

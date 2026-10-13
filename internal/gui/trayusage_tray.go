@@ -119,7 +119,7 @@ func (h *host) trayCellClick(id string) {
 		return
 	}
 	w, _ := h.panelWin()
-	if !w.IsVisible() {
+	if !windowOpen(w) {
 		w.ExecJS(panelQuotaJS(id))
 	}
 	h.togglePanel()

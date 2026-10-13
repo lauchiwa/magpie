@@ -33,6 +33,8 @@ func TestPlanQuotaSource(t *testing.T) {
 		{Provider{Chat: "https://api.minimaxi.com/v1", Anthropic: "https://api.minimaxi.com/anthropic"}, "https://api.minimaxi.com/v1/token_plan/remains", true, false},
 		{Provider{Anthropic: "https://api.minimax.io/anthropic"}, "https://api.minimax.io/v1/token_plan/remains", true, false},
 		{Provider{Chat: "https://api.deepseek.com"}, "", false, false},
+		{Provider{Chat: "https://ollama.com/v1", Anthropic: "https://ollama.com"}, "https://ollama.com/api/balance", true, false},
+		{Provider{Chat: "http://localhost:11434/v1"}, "", false, false}, // a local Ollama
 	} {
 		src, ok := planQuotaSourceOf(c.p)
 		if ok != c.ok || src.url != c.url || src.sure != c.sure {

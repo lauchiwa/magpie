@@ -1,7 +1,7 @@
 package provider
 
 // What is left on an API key, as the vendor's own balance endpoint tells
-// it: DeepSeek, Kimi, OpenRouter, SiliconFlow, StepFun, Command Code and AiHubMix are known by their hosts
+// it: DeepSeek, Kimi, OpenRouter, SiliconFlow, StepFun, Command Code, Ollama Cloud and AiHubMix are known by their hosts
 // (AiHubMix tells the whole account's to its access token, BalanceToken);
 // any other provider can name an endpoint and where the amount sits in its
 // reply (BalanceURL, BalancePath), the way a relay's own usage query does,
@@ -67,6 +67,9 @@ func balanceSourceOf(p Provider) (balanceSource, bool) {
 			return balanceSource{"https://api.stepfun.ai/v1/accounts", readStepFun("$"), "", nil}, true
 		case "api.commandcode.ai":
 			return balanceSource{"https://api.commandcode.ai/alpha/billing/credits", readCommandCode, "", nil}, true
+		case "ollama.com":
+			// the credits bought past the plan's allowance (#1888)
+			return balanceSource{ollamaBalanceURL, readOllamaCredits, "", nil}, true
 		case "aihubmix.com":
 			if p.BalanceToken != "" {
 				return balanceSource{"https://aihubmix.com/api/user/self", readAiHubMixAccount, p.BalanceToken, nil}, true
@@ -940,6 +943,9 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 				return
 			}
 			amount, parts, ws, _, err := balanceRead(ctx, j.p)
+			if errors.Is(err, errNoBalance) {
+				return // a reply with no balance for this key: no card
+			}
 			if err != nil {
 				q.Error = err.Error()
 			} else {
@@ -956,6 +962,7 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 		}()
 	}
 	wg.Wait()
+	out = slices.DeleteFunc(out, func(q SubscriptionQuota) bool { return q.Provider == "" })
 	if ctx.Err() == nil {
 		// each balance kept, and drawn over time with its runs-out
 		noteBalanceHistory(out, time.Now())

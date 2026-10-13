@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/libc"
 	"github.com/yetone/magpie/internal/proc"
 )
 
@@ -118,16 +119,6 @@ func Platform(goos, goarch string, musl bool) (string, error) {
 	return "", fmt.Errorf("Claude Code has no build for %s", goos)
 }
 
-// isMusl tells a musl Linux as Anthropic's installer does: by musl's loader.
-func isMusl() bool {
-	for _, p := range []string{"/lib/libc.musl-x86_64.so.1", "/lib/libc.musl-aarch64.so.1"} {
-		if _, err := os.Stat(p); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
 // Release is a build of Claude Code for this machine, as the manifest
 // names it.
 type Release struct {
@@ -141,7 +132,7 @@ type Release struct {
 // Latest asks for the newest release (the "latest" channel, Claude Code's
 // own default) and its build for this machine.
 func Latest(ctx context.Context) (Release, error) {
-	return latest(ctx, runtime.GOOS, runtime.GOARCH, runtime.GOOS == "linux" && isMusl())
+	return latest(ctx, runtime.GOOS, runtime.GOARCH, libc.Musl())
 }
 
 func latest(ctx context.Context, goos, goarch string, musl bool) (Release, error) {

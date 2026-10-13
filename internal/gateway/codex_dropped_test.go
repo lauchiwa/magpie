@@ -14,19 +14,24 @@ import (
 )
 
 // edgeDropped is what ylorn's ChatGPT backend answered to a request whose
-// screenshot took it past about 1 MiB (Discord, v0.1.1179): Envoy's own
-// 503 behind Cloudflare, as text, before any reply.
+// screenshot took it past about 1 MiB (Discord, v0.1.1179), and
+// ScarfQian's to a 1.1 MiB computer-use turn (#1628): Envoy's own 503
+// behind Cloudflare, as text, before any reply.
 const edgeDropped = "upstream connect error or disconnect/reset before headers. reset reason: remote connection failure"
 
 // dropsBig stands in for that ChatGPT backend: a body past 1 MiB is
-// answered with edgeDropped, as ylorn's was, and a smaller one is served.
-// It notes the account asked each time.
-func dropsBig(t *testing.T, tried *[]string) {
+// answered with edgeDropped the first *drops times (every time while it
+// is below zero) and served after; a smaller one is served. It notes the
+// account asked each time.
+func dropsBig(t *testing.T, tried *[]string, drops *int) {
 	t.Helper()
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		*tried = append(*tried, r.Header.Get("chatgpt-account-id"))
-		if len(b) > 1<<20 {
+		if len(b) > 1<<20 && *drops != 0 {
+			if *drops > 0 {
+				*drops--
+			}
 			w.Header().Set("Content-Type", "text/plain")
 			w.Header().Set("Server", "cloudflare")
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -59,54 +64,84 @@ func screenshotTurn(t *testing.T, n int) string {
 	return string(b)
 }
 
-// With two ChatGPT accounts on, a turn the backend drops for its size is
-// asked of one account once: the other would be dropped the same, a retry
-// sends the same bytes again, and neither account is at fault, so nobody
-// rests. The agent is told the request is too large, at a status it
-// doesn't retry, and what to do about it. A small turn after it goes to
-// the first account as before.
-func TestCodexDroppedBigBodyIsTheRequests(t *testing.T) {
+// ScarfQian (#1628): with two ChatGPT accounts on, a 1.2 MiB turn the
+// backend closes on twice, then answers, is answered: asked of acct-1,
+// then acct-2, then acct-2 again, and nobody rests, since no account is at
+// fault for it. On a2b96139c's code the agent got a 413 after one try,
+// which Codex never asks again.
+func TestCodexResetBigBodyAskedAgain(t *testing.T) {
 	codexSignedIn(t, "spare@example.com")
 	var tried []string
-	dropsBig(t, &tried)
+	drops := 2
+	dropsBig(t, &tried, &drops)
 
 	code, body := codexPost(t, screenshotTurn(t, 1200<<10))
-	if code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status %d, want 413: %s", code, body)
+	if code != 200 || !strings.Contains(body, "pong") {
+		t.Fatalf("status %d, want 200 pong: %s", code, body)
 	}
-	for _, want := range []string{"MiB", "compact", "image"} {
+	if strings.Join(tried, ",") != "acct-1,acct-2,acct-2" {
+		t.Errorf("asked %v, want acct-1,acct-2,acct-2", tried)
+	}
+	if r := restingNow(t); len(r) != 0 {
+		t.Errorf("rest over a reset of a large request: %v", r)
+	}
+}
+
+// Closed on every time, the turn is asked of each account and the last
+// again, as for a 503, and the agent is told the 503 — which Codex asks
+// again for — with what may help should it keep happening. Nobody rests,
+// and nothing is remembered of it: the next turn, as large, goes to acct-1
+// and is answered once the backend takes it.
+func TestCodexResetBigBodyStays503(t *testing.T) {
+	codexSignedIn(t, "spare@example.com")
+	var tried []string
+	drops := -1
+	dropsBig(t, &tried, &drops)
+
+	code, body := codexPost(t, screenshotTurn(t, 1200<<10))
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d, want 503: %s", code, body)
+	}
+	for _, want := range []string{"MiB", "compact", "image", "reset reason"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the agent isn't told %q: %s", want, body)
 		}
 	}
-	if strings.Join(tried, ",") != "acct-1" {
-		t.Errorf("asked %v, want acct-1 once", tried)
+	if strings.Join(tried, ",") != "acct-1,acct-2,acct-2,acct-2" {
+		t.Errorf("asked %v, want acct-1 then acct-2 three times", tried)
 	}
 	if r := restingNow(t); len(r) != 0 {
-		t.Errorf("rest over the request's size: %v", r)
+		t.Errorf("rest over a reset of a large request: %v", r)
 	}
 
-	tried = nil
-	code, body = codexPost(t, `{"model":"gpt-5.5","stream":true,"input":"ping"}`)
+	tried, drops = nil, 0
+	code, body = codexPost(t, screenshotTurn(t, 1200<<10))
 	if code != 200 || !strings.Contains(body, "pong") || strings.Join(tried, ",") != "acct-1" {
-		t.Fatalf("small turn after: %d %s tried %v", code, body, tried)
+		t.Fatalf("large turn after: %d %s tried %v", code, body, tried)
 	}
 }
 
-// With Codex's own sign-in alone, relayed as it came: Codex is answered
-// the same 413 and words, not the 503 it would send the same bytes again
-// for, five times over.
-func TestCodexDroppedBigBodyRelayed(t *testing.T) {
+// With Codex's own sign-in alone, relayed as it came: a large request
+// closed on once is asked again and answered; closed on every time, Codex
+// is answered the 503 after three tries, with what may help.
+func TestCodexResetBigBodyRelayed(t *testing.T) {
 	codexSignedIn(t)
 	var tried []string
-	dropsBig(t, &tried)
+	drops := 1
+	dropsBig(t, &tried, &drops)
 
 	code, body := codexPost(t, screenshotTurn(t, 1200<<10))
-	if code != http.StatusRequestEntityTooLarge || !strings.Contains(body, "compact") {
+	if code != 200 || !strings.Contains(body, "pong") || len(tried) != 2 {
+		t.Fatalf("closed on once: %d %s tried %v", code, body, tried)
+	}
+
+	tried, drops = nil, -1
+	code, body = codexPost(t, screenshotTurn(t, 1200<<10))
+	if code != http.StatusServiceUnavailable || !strings.Contains(body, "compact") || !strings.Contains(body, "reset reason") {
 		t.Fatalf("status %d: %s", code, body)
 	}
-	if strings.Join(tried, ",") != "acct-1" {
-		t.Errorf("asked %v, want acct-1 once", tried)
+	if len(tried) != 3 {
+		t.Errorf("asked %d times, want 3", len(tried))
 	}
 }
 

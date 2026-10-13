@@ -29,10 +29,16 @@ var vendorDot = regexp.MustCompile(`^(?:(?:global|us-gov|[a-z]{2,4})\.)?(?:anthr
 // its context: claude-opus-5[1m].
 var contextTail = regexp.MustCompile(`\[[^\]]*\]$`)
 
+// windowTail is the window magpie offers a model at beside its default
+// (grok-4.7@500k, Cursor's grok-4.7@256k): the vendor answers under the
+// plain name, which is the same model (#1645).
+var windowTail = regexp.MustCompile(`@\d+[km]?$`)
+
 // bareModel is a model's name without its maker or path, its version, the
 // size of its context or its case.
 func bareModel(m string) string {
 	m = contextTail.ReplaceAllString(strings.ToLower(strings.TrimSpace(m)), "")
+	m = windowTail.ReplaceAllString(m, "")
 	if i := strings.LastIndexByte(m, '/'); i >= 0 {
 		m = m[i+1:]
 	}

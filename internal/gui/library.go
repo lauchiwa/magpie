@@ -2,6 +2,7 @@ package gui
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -50,6 +51,36 @@ func libraryRead(res *library.Result, glance bool) (libraryJSON, error) {
 	return libraryJSON{View: v, Result: res, Home: home, Problems: p}, err
 }
 
+// instructionsJSON answers a change to the instructions: what the page's
+// Instructions tab shows, without reading the rest of the library again.
+// That read goes through every agent's skill folders, which on Windows made
+// each instruction made, saved or removed take up to a minute (#1624).
+type instructionsJSON struct {
+	Part         string                    `json:"part"` // "instructions": the page keeps the rest it has
+	Instructions *library.InstructionsView `json:"instructions"`
+	Result       *library.Result           `json:"result,omitempty"`
+	Problems     []library.Problem         `json:"problems,omitempty"`
+}
+
+func instructionsView(res *library.Result) (instructionsJSON, error) {
+	lastProblems.Lock()
+	// an instruction change wrote only the instructions: the problems the
+	// last change had with servers and skills still stand
+	p := []library.Problem{}
+	for _, x := range lastProblems.p {
+		if x.What != "instructions" {
+			p = append(p, x)
+		}
+	}
+	if res != nil {
+		p = append(p, res.Problems...)
+	}
+	lastProblems.p = p
+	lastProblems.Unlock()
+	iv, err := library.ReadInstructions()
+	return instructionsJSON{Part: "instructions", Instructions: iv, Result: res, Problems: p}, err
+}
+
 // marketJSON is a market's list, and why it may be short: a search that
 // couldn't reach the registry still shows what magpie has of its own.
 type marketJSON struct {
@@ -58,6 +89,18 @@ type marketJSON struct {
 	// Custom is a server to add by hand, for a search that is an address
 	// nothing listed is at
 	Custom *library.Custom `json:"custom,omitempty"`
+	// Failed is the source the search couldn't reach, and Cause why; the
+	// items are then what the others found (#1589)
+	Failed string `json:"failed,omitempty"`
+	Cause  string `json:"cause,omitempty"`
+}
+
+func marketOf(items any, err error) marketJSON {
+	m := marketJSON{Items: items, Error: errText(err)}
+	if se := (*library.SearchError)(nil); errors.As(err, &se) {
+		m.Failed, m.Cause = se.Source, se.Err.Error()
+	}
+	return m
 }
 
 func errText(err error) string {
@@ -116,11 +159,13 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 	// once asked for, which skills.sh gives one at a time
 	mux.HandleFunc("GET /api/library/market/servers", func(rw http.ResponseWriter, r *http.Request) {
 		list, err := library.MarketServers(r.URL.Query().Get("q"))
-		writeJSON(rw, marketJSON{Items: list, Error: errText(err), Custom: library.CustomAt(r.URL.Query().Get("q"), list)})
+		m := marketOf(list, err)
+		m.Custom = library.CustomAt(r.URL.Query().Get("q"), list)
+		writeJSON(rw, m)
 	})
 	mux.HandleFunc("GET /api/library/market/skills", func(rw http.ResponseWriter, r *http.Request) {
 		list, err := library.MarketSkills(r.URL.Query().Get("q"))
-		writeJSON(rw, marketJSON{Items: list, Error: errText(err)})
+		writeJSON(rw, marketOf(list, err))
 	})
 	mux.HandleFunc("POST /api/library/market/about", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ IDs []string }
@@ -171,13 +216,31 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeJSON(rw, v)
 	})
+	// Group again: the skills traced to their repositories once more, the
+	// page as it is then with how many joined a group
+	mux.HandleFunc("POST /api/library/skills/regroup", func(rw http.ResponseWriter, r *http.Request) {
+		n, err := library.RegroupSkills()
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		v, err := libraryView(nil)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, struct {
+			libraryJSON
+			Regrouped int `json:"regrouped"`
+		}{v, n})
+	})
 	// RTK:which agents have its hook, switching one on or off, and
 	// installing rtk when the page is asked to
 	mux.HandleFunc("GET /api/library/rtk", func(rw http.ResponseWriter, r *http.Request) {
 		v := library.ReadRTK()
-		// its latest release, and whether winget or Homebrew has it yet,
-		// when they answer in time: the page is drawn without them
-		// otherwise, and has them next time
+		// its latest release, and what the package manager it was installed
+		// with has of that release, when GitHub answers in time: the page is
+		// drawn without them otherwise, and has them next time
 		if v.Path != "" {
 			checked := make(chan *library.RTKView, 1)
 			go func() { c := *v; c.CheckLatest(); checked <- &c }()
@@ -185,6 +248,12 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			case v = <-checked:
 			case <-time.After(3 * time.Second):
 			}
+			// what the package manager has is asked after the answer goes out:
+			// `winget show` refreshes its sources and takes seconds, which is
+			// longer than the wait above, so asking it there held the whole tab
+			// for a tag that then never arrived (#1025). It is one read of the
+			// tab away, and the answer is kept for hours either way.
+			go library.CheckChannel(v)
 		}
 		writeJSON(rw, v)
 	})
@@ -364,6 +433,7 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			Paths  []string
 			Names  []string // the skills to update, of those a check found changed; to bring in, of those found in the agents
 			Server library.Server
+			Hook   library.Hook      // a hook saved (#1790)
 			Agent  string            // the agent whose own skill is in the library's way
 			ID     string            // a market server's, or a market skill's in its repository
 			Values map[string]string // what a market server needs
@@ -407,6 +477,18 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.RemoveServers(in.Names)
 		case "servers/import":
 			res, err = library.ImportServer(in.Name)
+		case "servers/remove-found":
+			res, err = library.RemoveFoundServer(in.Name)
+		case "hooks/save":
+			res, err = library.SaveHook(in.Old, in.Hook)
+		case "hooks/agents":
+			res, err = library.HookAgents(in.Name, in.Agents)
+		case "hooks/agents-some":
+			res, err = library.SomeHooksAgents(in.Names, in.Agents, in.On)
+		case "hooks/remove":
+			res, err = library.RemoveHooks([]string{in.Name})
+		case "hooks/remove-all":
+			res, err = library.RemoveHooks(in.Names)
 		case "skills/install":
 			res, err = library.InstallSkills(in.Source, in.Paths, in.Agents)
 		case "skills/update":
@@ -439,12 +521,14 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.ImportSkills(in.Names)
 		case "skills/remove-found":
 			res, err = library.RemoveFoundSkill(in.Name)
+		case "skills/remove-found-some":
+			res, err = library.RemoveFoundSkills(in.Names)
 		case "skills/use-library":
-			res, err = library.UseLibrarySkill(in.Name, in.Agent)
+			res, err = library.UseLibrarySkills(oneOrMore(in.Name, in.Names), in.Agent)
 		case "skills/how":
 			res, err = library.SetSkillHow(in.Agent, in.How)
 		case "skills/keep-own":
-			res, err = library.KeepAgentSkill(in.Name, in.Agent)
+			res, err = library.KeepAgentSkills(oneOrMore(in.Name, in.Names), in.Agent)
 		case "market/server":
 			res, err = library.InstallServer(in.ID, in.Values, in.Agents)
 		case "market/skill":
@@ -469,6 +553,15 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
+		if r.PathValue("what") == "instructions" {
+			v, err := instructionsView(res)
+			if err != nil {
+				fail(rw, err)
+				return
+			}
+			writeJSON(rw, v)
+			return
+		}
 		v, err := libraryView(res)
 		if err != nil {
 			fail(rw, err)
@@ -476,4 +569,13 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeJSON(rw, v)
 	})
+}
+
+// oneOrMore is the skills an agent's own are settled for: the several the
+// Library's warning sends for one agent together (#1896), or the one.
+func oneOrMore(name string, names []string) []string {
+	if len(names) > 0 {
+		return names
+	}
+	return []string{name}
 }

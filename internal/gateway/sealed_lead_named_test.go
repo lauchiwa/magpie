@@ -57,7 +57,7 @@ func TestSealedTaskNotPinnedOnALeadsEarlierChatProvider(t *testing.T) {
 		t.Fatalf("subagent: %d %s (qdr asked %d times)", rec.Code, body, *asked)
 	}
 	if strings.Contains(body, "(qdr)") || strings.Contains(body, "use a model on qdr") ||
-		!strings.Contains(body, "sealed by the ChatGPT backend that answered its lead") ||
+		!strings.Contains(body, "sealed by the ChatGPT backend, which answered the agent that sent it") ||
 		!strings.Contains(body, "qdr/dfmodel can't. qdr answered the lead's earlier turns") {
 		t.Fatalf("the refusal names qdr as the lead's sealer: %s", body)
 	}

@@ -78,6 +78,11 @@ func LoginPath() []string {
 	return dirs
 }
 
+// LoginEnv is "" on Windows: an app started from the Start menu gets the
+// user's variables from the registry, as a terminal does, so magpie's own
+// environment has them.
+func LoginEnv(string) string { return "" }
+
 // ShellPath is LoginPath on Windows: PowerShell and cmd both take the
 // registry's PATH.
 func ShellPath(string) []string { return LoginPath() }

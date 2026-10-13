@@ -105,13 +105,15 @@ func aliasNumber(id string) string {
 func aliasFor(id string) string { return desktopAlias + aliasNumber(id) }
 
 // claudeModel is the Claude model an entry is, lowercased and without a
-// date or a vendor's "anthropic/" in front, or "" when it is none.
+// date or a vendor's "anthropic/" in front, or "" when it is none. A version
+// a provider writes with a dot (Copilot's claude-opus-5.5) is given with a
+// dash, as Claude Desktop and Claude Code know the model (provider.ClaudeDashed).
 func claudeModel(e provider.Entry) string {
 	m := strings.ToLower(e.Model)
 	if i := strings.LastIndex(m, "/"); i >= 0 {
 		m = m[i+1:]
 	}
-	m = desktopDated.ReplaceAllString(m, "")
+	m = desktopDated.ReplaceAllString(provider.ClaudeDashed(m), "")
 	if desktopClaude.MatchString(m) {
 		return m
 	}
@@ -150,14 +152,14 @@ func DesktopID(e provider.Entry) string { return claudeLooking(e) }
 
 // desktopModels is /v1/models as Claude Desktop is shown it: every model
 // picked for it (provider.CatalogFor, the Agents page's model list) by an id
-// it keeps (claudeLooking), named by its own name alone (蓝猫: "DeepSeek
-// V4.1 Flash", not with its provider's beside it). Desktop shows the name,
-// not the id, and its description after it, so none is given but a 1M
-// entry's (desktop1M); it folds rows
-// of one name into one entry, so two models of one name keep their
-// provider's after it (desktopNames). A model of 1M or more is listed by
-// its "[1m]" id under settings.DesktopLongest, described as Desktop's own
-// 1M entry is (desktop1M).
+// it keeps (claudeLooking), named as the agents' lists name models
+// (desktopNames: the Provider in model names setting, so its menu reads
+// like Codex's, #1746). Desktop shows the name, not the id, and its
+// description after it, so none is given but a 1M entry's (desktop1M); it
+// folds rows of one name into one entry, so no two of one name read the
+// same (desktopNames). A model of 1M or more is listed by its "[1m]" id
+// under settings.DesktopLongest, described as Desktop's own 1M entry is
+// (desktop1M).
 func desktopModels(entries []provider.Entry) []map[string]any {
 	names := desktopNames(entries)
 	// the tier each model stands in for: the user's pick (a model picked
@@ -310,46 +312,25 @@ func desktopTierTurn(asked string) string {
 	return DesktopTiers()[t]
 }
 
-func desktopName(e provider.Entry) string {
-	if e.Name != "" {
-		return e.Name
-	}
-	return e.ID
-}
-
 // desktopNames are the names Claude Desktop is shown entries by, in order:
-// each its own name, but for two or more of one name (case aside), which
-// get their provider's id after it — "DeepSeek V4.1 Flash (opencode-go)" —
-// or, where that still leaves two alike (two accounts of one provider), the
-// whole catalog id.
+// as the agents' lists name them (provider.Labels, the Provider in model
+// names setting: on, every name with its provider's after it; own, a name
+// the user gave just as they wrote it; off, names plain — but two of one
+// name keep their provider's, so they stay apart), and where that still
+// leaves two alike (one provider's models named alike) the whole catalog id
+// after it, for Desktop's menu shows the name alone.
 func desktopNames(entries []provider.Entry) []string {
-	count := func(names []string) map[string]int {
-		n := map[string]int{}
-		for _, s := range names {
-			n[strings.ToLower(s)]++
-		}
-		return n
+	out := provider.Labels(entries)
+	same := map[string]int{}
+	for _, s := range out {
+		same[strings.ToLower(s)]++
 	}
-	out := make([]string, len(entries))
 	for i, e := range entries {
-		out[i] = desktopName(e)
-	}
-	same := count(out)
-	by := make([]string, len(entries))
-	for i, e := range entries {
-		by[i] = out[i]
-		if same[strings.ToLower(out[i])] > 1 && out[i] != e.ID {
-			whose, _, _ := strings.Cut(e.ID, "/")
-			by[i] += " (" + whose + ")"
+		if same[strings.ToLower(out[i])] > 1 {
+			out[i] += " (" + e.ID + ")"
 		}
 	}
-	still := count(by)
-	for i, e := range entries {
-		if by[i] != out[i] && still[strings.ToLower(by[i])] > 1 {
-			by[i] = out[i] + " (" + e.ID + ")"
-		}
-	}
-	return by
+	return out
 }
 
 // aliased is the catalog id an alias Claude Desktop was given stands for:

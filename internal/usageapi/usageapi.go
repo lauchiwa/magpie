@@ -155,7 +155,7 @@ func FilterOf(q url.Values) usage.Filter {
 // viaOf is the source a request's ?via= names, "" for both.
 func viaOf(s string) string {
 	switch s {
-	case usage.SourceGateway, usage.SourceSession:
+	case usage.SourceGateway, usage.SourceSession, usage.SourceReported:
 		return s
 	}
 	return ""
@@ -196,6 +196,9 @@ type Ledger struct {
 	// the two together, so the page can show all three (#the usage report).
 	Through usage.Totals `json:"through"`
 	Direct  usage.Totals `json:"direct"`
+	// Reported: the calls a client told magpie of through POST
+	// /v1/magpie/usage/requests (#1874), which went straight to their vendor
+	Reported usage.Totals `json:"reported"`
 	// Agents, Providers and Purposes: those with calls in the period, for the filters
 	Agents    []Named  `json:"agents"`
 	Providers []Named  `json:"providers"`
@@ -264,7 +267,7 @@ func LedgerPage(p usage.Period, f usage.Filter, offset, limit int) Ledger {
 		return a
 	}
 	out := Ledger{Period: p, Rows: make([]Row, 0, len(page)), Offset: offset, Total: l.Total, Totals: l.Sum, Agents: []Named{}, Providers: []Named{}, Accounts: []Account{}}
-	out.Through, out.Direct = l.Through, l.Direct
+	out.Through, out.Direct, out.Reported = l.Through, l.Direct, l.Reported
 	out.Bucket, out.Series = l.Bucket, l.Series
 	out.Purposes = l.Purposes
 	out.Day = f.Day
@@ -276,10 +279,10 @@ func LedgerPage(p usage.Period, f usage.Filter, offset, limit int) Ledger {
 	for _, r := range page {
 		a := who(r.Agent)
 		lr := Row{Row: r, AgentName: a.Name, Icon: a.Icon, ProviderName: names[r.Provider]}
-		if r.Source != "log" {
+		if r.Source != "log" && r.Source != usage.SourceReported {
 			lr.Access = access[r.Provider]
 		}
-		if r.Priced {
+		if r.Priced && r.OwnCost == nil {
 			if model := provider.PricedNameFor(r.Provider, r.Model); model != r.Model {
 				lr.PricingModel = model
 			}

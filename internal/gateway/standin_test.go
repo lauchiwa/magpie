@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -213,5 +214,80 @@ func TestClaudeTierStandInByFamily(t *testing.T) {
 	StandIn = func(string, string) string { return "" }
 	if code, body := ask("claude-fable-5-1", cc); code != 200 || modelOf(f.got) != "claude-fable-5-1" {
 		t.Errorf("not routed: %d %s, upstream got %q", code, body, modelOf(f.got))
+	}
+}
+
+// tbxark on X: a script Claude Code starts (a hook, its statusline, a
+// plugin's) inherits its ANTHROPIC_BASE_URL and token, and asked magpie
+// for claude-sonnet-4-6 as Python-urllib: 404 unknown model, while Claude
+// Code's own requests went to its tier. A client magpie knows as no agent,
+// with the plain token, naming a Claude id magpie doesn't serve, gets
+// Claude Code's tier, on /v1/messages and count_tokens; an id the user
+// serves goes where it is served, and an agent magpie gave a token keeps
+// what it asked for.
+func TestClaudeTierForAScriptClaudeCodeStarted(t *testing.T) {
+	setHome(t, t.TempDir())
+	f := &fake{t: t, ctype: "application/json", reply: `{"id":"msg","type":"message","role":"assistant","content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`}
+	up := setup(t, provider.Anthropic, f)
+	p, _ := provider.Find("fake")
+	p.Models = []string{"main", "flash", "grok", "sol"}
+	if err := provider.Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Save(provider.Provider{ID: "anth", Name: "Anth", Key: "k", Anthropic: up.URL, Models: []string{"claude-sonnet-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	var askedFor []string
+	StandIn = func(agent, model string) string {
+		askedFor = append(askedFor, agent)
+		if agent != "claude" {
+			return ""
+		}
+		switch {
+		case strings.Contains(model, "sonnet"):
+			return "fake/grok"
+		case strings.Contains(model, "opus"):
+			return "fake/sol"
+		}
+		return "fake/main"
+	}
+	t.Cleanup(func() { StandIn = nil })
+	ask := func(path, model, ua, key string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", path, strings.NewReader(`{"model":"`+model+`","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("User-Agent", ua)
+		req.Header.Set("x-api-key", key)
+		New().Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	const urllib = "Python-urllib/3.12"
+	for asked, want := range map[string]string{"claude-sonnet-4-6": "grok", "claude-opus-5-5": "sol"} {
+		if rec := ask("/v1/messages", asked, urllib, Token); rec.Code != 200 || modelOf(f.got) != want {
+			t.Errorf("%s from a script: %d %s, upstream got %q, want %q", asked, rec.Code, rec.Body.String(), modelOf(f.got), want)
+		}
+	}
+	for _, ua := range []string{"", "anthropic-python/0.75.0"} {
+		if rec := ask("/v1/messages", "claude-sonnet-4-6", ua, Token); rec.Code != 200 || modelOf(f.got) != "grok" {
+			t.Errorf("%q: %d %s, upstream got %q", ua, rec.Code, rec.Body.String(), modelOf(f.got))
+		}
+	}
+	// count_tokens is counted for the model the turn goes to
+	f.got = nil
+	if rec := ask("/v1/messages/count_tokens", "claude-sonnet-4-6", urllib, Token); rec.Code != 200 || modelOf(f.got) != "grok" {
+		t.Errorf("count_tokens from a script: %d %s, upstream got %q", rec.Code, rec.Body.String(), f.got)
+	}
+	// a Claude id the user serves is sent as asked
+	if rec := ask("/v1/messages", "claude-sonnet-5", urllib, Token); rec.Code != 200 || modelOf(f.got) != "claude-sonnet-5" {
+		t.Errorf("served id: %d %s, upstream got %q", rec.Code, rec.Body.String(), modelOf(f.got))
+	}
+	// an agent magpie gave its own token isn't taken for Claude Code
+	askedFor = nil
+	if rec := ask("/v1/messages", "claude-sonnet-4-6", urllib, TokenFor("codex")); rec.Code != 404 || slices.Contains(askedFor, "claude") {
+		t.Errorf("an agent's token: %d %s, stand-ins asked %v", rec.Code, rec.Body.String(), askedFor)
+	}
+	// Claude Code not routed through magpie: still unknown
+	StandIn = func(string, string) string { return "" }
+	if rec := ask("/v1/messages", "claude-sonnet-4-6", urllib, Token); rec.Code != 404 {
+		t.Errorf("not routed: %d %s", rec.Code, rec.Body.String())
 	}
 }

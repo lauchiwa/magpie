@@ -191,7 +191,7 @@ func TestAllowancesReadByThemselvesByDefault(t *testing.T) {
 func TestKeyReadsOnlyWhenAsked(t *testing.T) {
 	keyLimitsHome(t)
 	srv, asked := sub2apiServer(t, func() ([]byte, int) { return sub2apiUsage(t, true), 200 })
-	p := sub2apiKey(srv)
+	p := sub2apiKey(t, srv)
 	if err := Save(p); err != nil {
 		t.Fatal(err)
 	}

@@ -501,7 +501,30 @@ function asked(input, init) {
   )
 }
 
+// MAGPIE_ONLY are the headers magpie tells a plugin's fetch where the agent
+// that asked works with (WorkDirHeader and WorkGitHeader in
+// internal/provider): for the plugin to read, never for its vendor, so a
+// plugin that sends on the headers it was given sends them nowhere.
+const MAGPIE_ONLY = ["x-magpie-work-dir", "x-magpie-work-git"]
+
+function unsaid(input, init) {
+  if (input instanceof Request && MAGPIE_ONLY.some((k) => input.headers.has(k))) {
+    const h = new Headers(input.headers)
+    for (const k of MAGPIE_ONLY) h.delete(k)
+    input = new Request(input, { headers: h })
+  }
+  if (init?.headers) {
+    const h = new Headers(init.headers)
+    if (MAGPIE_ONLY.some((k) => h.has(k))) {
+      for (const k of MAGPIE_ONLY) h.delete(k)
+      init = { ...init, headers: h }
+    }
+  }
+  return [input, init]
+}
+
 globalThis.fetch = Object.assign(function fetch(input, init) {
+  ;[input, init] = unsaid(input, init)
   const r = reach.getStore()
   if (!r) return asked(input, init)
   return asked(input, init).then(
@@ -1208,6 +1231,22 @@ function cost(c) {
   }
 }
 
+// MODALITIES are the kinds of input and output OpenCode's capabilities
+// name, in its order.
+const MODALITIES = ["text", "image", "audio", "video", "pdf"]
+
+// modalities is a models.dev or config modalities list as capabilities
+// has it: each kind true or false, text when it lists none.
+const modalities = (list) => Object.fromEntries(MODALITIES.map((k) => [k, (list ?? ["text"]).includes(k)]))
+
+// kinds are the kinds a capabilities.input or .output says yes to, for
+// magpie: undefined when the plugin gave none.
+function kinds(c) {
+  if (!c || typeof c !== "object") return undefined
+  const out = Object.keys(c).filter((k) => c[k] === true)
+  return out.length ? out : undefined
+}
+
 // fromModelsDev is a models.dev model as OpenCode's provider list has it.
 function fromModelsDev(p, m) {
   return {
@@ -1226,14 +1265,8 @@ function fromModelsDev(p, m) {
       reasoning: m.reasoning ?? false,
       attachment: m.attachment ?? false,
       toolcall: m.tool_call ?? true,
-      input: {
-        text: true,
-        image: (m.modalities?.input ?? []).includes("image"),
-        audio: (m.modalities?.input ?? []).includes("audio"),
-        video: (m.modalities?.input ?? []).includes("video"),
-        pdf: (m.modalities?.input ?? []).includes("pdf"),
-      },
-      output: { text: true, image: false, audio: false, video: false, pdf: false },
+      input: { ...modalities(m.modalities?.input), text: true },
+      output: modalities(m.modalities?.output),
       interleaved: m.interleaved ?? false,
     },
     release_date: m.release_date ?? "",
@@ -1282,7 +1315,8 @@ async function info(id, key, strict) {
         ...(m.reasoning !== undefined ? { reasoning: m.reasoning } : {}),
         ...(m.attachment !== undefined ? { attachment: m.attachment } : {}),
         ...(m.tool_call !== undefined ? { toolcall: m.tool_call } : {}),
-        ...(m.modalities?.input ? { input: Object.fromEntries(["text", "image", "audio", "video", "pdf"].map((k) => [k, m.modalities.input.includes(k)])) } : {}),
+        ...(m.modalities?.input ? { input: modalities(m.modalities.input) } : {}),
+        ...(m.modalities?.output ? { output: modalities(m.modalities.output) } : {}),
       },
       variants: m.variants ?? was?.variants ?? {},
       // magpie's own mark: a decision model, answering System One
@@ -1445,6 +1479,9 @@ async function providers({ proxies } = {}) {
           reasoning: !!m.capabilities?.reasoning,
           image: !!m.capabilities?.input?.image,
           imageSaid: typeof m.capabilities?.input?.image === "boolean",
+          // every kind it takes and gives, not image alone (#1595)
+          inputs: kinds(m.capabilities?.input),
+          outputs: kinds(m.capabilities?.output),
           released: m.release_date ?? "",
           cost: m.cost,
           variants: Object.keys(m.variants ?? {}),
@@ -1528,7 +1565,11 @@ function signInKey(provider, account) {
 
 let nextSession = 1
 
-async function authorize({ provider, method, inputs, account }) {
+// A sign-in goes through the proxy its subscription's requests will (proxy,
+// as fetch's: "", "direct" or its URL), so the vendor sees the account
+// come from one place from its first request on (#1663): authorize and the
+// callback that trades the code are both run under it.
+async function authorize({ provider, method, inputs, account, proxy }) {
   const m = authOf(provider).methods[method]
   if (!m) throw new Error(`no sign-in method ${method} for ${provider}`)
   if (m.type !== "oauth") throw new Error("not an oauth method")
@@ -1538,9 +1579,9 @@ async function authorize({ provider, method, inputs, account }) {
   // auth login) calls, and a plugin told so asks its questions on the
   // terminal, magpie's stdin here (opencode-antigravity-auth waited on its
   // "Project ID" prompt, the sign-in never starting)
-  const a = await inScope(provider, key, () => m.authorize(m.prompts?.length ? inputs ?? {} : undefined))
+  const a = await via.run(proxy ?? "", () => inScope(provider, key, () => m.authorize(m.prompts?.length ? inputs ?? {} : undefined)))
   const session = String(nextSession++)
-  sessions.set(session, { provider, key, a, inputs })
+  sessions.set(session, { provider, key, a, inputs, proxy: proxy ?? "" })
   return { session, url: a.url ?? "", instructions: a.instructions ?? "", method: a.method }
 }
 
@@ -1555,12 +1596,12 @@ async function callback({ session, code }) {
   const s = sessions.get(session)
   if (!s) throw new Error("no such sign-in")
   sessions.delete(session)
-  const r = await inScope(s.provider, s.key, () => (s.a.method === "code" ? s.a.callback(code ?? "") : s.a.callback()))
+  const r = await via.run(s.proxy, () => inScope(s.provider, s.key, () => (s.a.method === "code" ? s.a.callback(code ?? "") : s.a.callback())))
   if (!r || r.type !== "success") return failed(r)
   return { ok: true, ...save(s.provider, s.key, r, undefined) }
 }
 
-async function apiKey({ provider, method, inputs, key, account }) {
+async function apiKey({ provider, method, inputs, key, account, proxy }) {
   const m = authOf(provider).methods[method]
   if (!m || m.type !== "api") throw new Error("not an API key method")
   const at = signInKey(provider, account)
@@ -1569,7 +1610,7 @@ async function apiKey({ provider, method, inputs, key, account }) {
     setAuth(at, { type: "api", key, ...md })
     return { ok: true, provider, account: settle(provider, at) }
   }
-  const r = await inScope(provider, at, () => m.authorize(inputs ?? {}))
+  const r = await via.run(proxy ?? "", () => inScope(provider, at, () => m.authorize(inputs ?? {})))
   if (!r || r.type !== "success") return failed(r)
   return { ok: true, ...save(provider, at, r, inputs, key) }
 }

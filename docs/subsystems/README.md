@@ -5,6 +5,7 @@ These pages describe current responsibilities, runtime paths, state, and contrac
 | Subsystem | Reference |
 | --- | --- |
 | Built-in subscriptions moving to plugins | [Provider and plugin ownership](provider-plugins.md) |
+| Built-in plugins: registry, lifecycle, plugins.yml, presets, settings schemas, the window's kernel (slots, error boundary, kit) | [Plugin runtime](plugin-runtime.md) |
 | Plugins that run on the gateway's requests and replies | [Gateway middleware](gateway-middleware.md) |
 | Claude subscription turns across Claude Code runs | [Claude subscription bridge](claude-subscription-bridge.md) |
 | How the gateway picks a provider, key or account, and falls back | [Gateway routing and fallback](gateway-routing.md) |
@@ -14,6 +15,7 @@ These pages describe current responsibilities, runtime paths, state, and contrac
 | Outbound client identity profiles | [Outbound identity profiles](identity-profiles.md) |
 | Instructions, MCP servers, skills and RTK written into agents | [Library](library.md) |
 | Tray, panel, window, `magpie web` and the page's JSON API | [GUI app shell](gui-shell.md) |
+| Encrypted backups and setup synchronization over WebDAV, S3 or GitHub | [Sync and backup](sync-backup.md) |
 
 A subsystem can span several packages or repositories. Its reference describes the behavior those parts provide together; it does not need to list every function.
 

@@ -138,7 +138,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await p.route("**/*", server(lang, theme, variant, asked, exported));
       await p.goto("http://magpie.test/");
       await p.locator('[data-view="usage"]').first().click();
-      await p.locator("#usageTab .opt").nth(1).click();
+      await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       if (variant !== "none") await p.locator("#ledRank .rk").first().waitFor();
       if (["many", "unpriced"].includes(variant)) await p.locator("#ledSplit .opt").nth(SPLIT.provider).click();
       return { p, errors, asked, exported, context };
@@ -414,7 +414,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // are divided — the two sources the Requests tab draws keep none of it
       assert.equal(await p.locator("#ledKpi .blk").nth(2).evaluate((b) => getComputedStyle(b).borderLeftWidth), "0px", "a totals card starting a row carries no left line");
       assert.notEqual(await p.locator("#ledKpi .blk").nth(2).evaluate((b) => getComputedStyle(b).borderTopWidth), "0px", "and the rows are divided");
-      await p.locator("#usageTab .opt").nth(1).click();
+      await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       await p.locator("#ledVia .blk").first().waitFor();
       assert.equal(await p.locator("#ledVia .blk").nth(1).evaluate((b) => getComputedStyle(b).borderLeftWidth), "0px", "a source cell carries no line between cells of one bar");
       // a hovered end cell rounds as the bar does, never a square corner over

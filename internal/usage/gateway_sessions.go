@@ -68,7 +68,7 @@ func GatewaySessionByID(agent, id string, nativeKeys map[string]bool) (GatewaySe
 	if id == "" {
 		return GatewaySession{}, false
 	}
-	agent = AgentOf(agent)
+	agent = ReportedAs(agent)
 	if nativeKeys[agent+"|"+id] {
 		return GatewaySession{}, false
 	}
@@ -179,10 +179,10 @@ func buildGatewaySessions(snapshot *logSnapshot, since time.Time, nativeKeys map
 	daily := map[dayKey]*GatewayDayUsage{}
 	perSession := map[key]map[dayKey]*GatewayDayUsage{}
 	snapshot.visit(since, func(r Record) {
-		if r.IsRejected() || r.Session == "" {
+		if r.IsRejected() || r.IsReported() || r.Session == "" {
 			return
 		}
-		a := AgentOf(r.Agent)
+		a := ReportedAs(r.Agent)
 		k := key{a, r.Session}
 		if nativeKeys != nil && nativeKeys[a+"|"+r.Session] {
 			return

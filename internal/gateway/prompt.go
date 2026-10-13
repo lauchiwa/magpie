@@ -476,10 +476,10 @@ func filesOfCommand(cmd string) []string {
 func callOf(name string, input []byte) toolCall {
 	c := toolCall{name: name}
 	var args map[string]json.RawMessage
-	_ = json.Unmarshal(input, &args)
+	_ = decodeJSON(input, &args)
 	str := func(k string) string {
 		var s string
-		if json.Unmarshal(args[k], &s) == nil {
+		if decodeJSON(args[k], &s) == nil {
 			return s
 		}
 		return ""
@@ -498,7 +498,7 @@ func callOf(name string, input []byte) toolCall {
 	}
 	if cmd == "" {
 		var argv []string
-		if json.Unmarshal(args["command"], &argv) == nil {
+		if decodeJSON(args["command"], &argv) == nil {
 			cmd = strings.Join(argv, " ")
 		}
 	}
@@ -578,11 +578,11 @@ type rawBlock struct {
 // blocksOf reads content that is a string or a list of blocks.
 func blocksOf(c json.RawMessage) []rawBlock {
 	var s string
-	if json.Unmarshal(c, &s) == nil {
+	if decodeJSON(c, &s) == nil {
 		return []rawBlock{{Type: "text", Text: s}}
 	}
 	var bs []rawBlock
-	_ = json.Unmarshal(c, &bs)
+	_ = decodeJSON(c, &bs)
 	return bs
 }
 
@@ -595,7 +595,7 @@ func (b *promptBuilder) anthropic(body []byte) bool {
 		} `json:"messages"`
 		Tools []json.RawMessage `json:"tools"`
 	}
-	if json.Unmarshal(body, &req) != nil {
+	if decodeJSON(body, &req) != nil {
 		return false
 	}
 	for _, s := range blocksOf(req.System) {
@@ -609,7 +609,7 @@ func (b *promptBuilder) anthropic(body []byte) bool {
 		var d struct {
 			Name string `json:"name"`
 		}
-		_ = json.Unmarshal(t, &d)
+		_ = decodeJSON(t, &d)
 		b.tool(d.Name, rawTokens(t), t)
 	}
 	for _, m := range req.Messages {
@@ -636,10 +636,61 @@ func (b *promptBuilder) anthropic(body []byte) bool {
 }
 
 // userSays tells what the user said from what the agent put in for them.
-func userSays(text string) bool {
-	t := strings.TrimSpace(text)
-	return t != "" && !strings.HasPrefix(t, "<system-reminder>") && !agentsFor.MatchString(t) &&
-		!strings.HasPrefix(t, "<environment_context>") && !strings.HasPrefix(t, "<user_instructions>")
+func userSays(text string) bool { return userWords(text) != "" }
+
+var (
+	// reminders are what agents add to a user's message for the model
+	// alone: Claude Code's <system-reminder>, ZCode's with a source=.
+	reminders = regexp.MustCompile(`(?s)<system-reminder(?:\s[^>]*)?>.*?</system-reminder>`)
+	// myRequest heads what the user typed in the Codex app, after the
+	// context it puts first (# Context from my IDE setup:, <in-app-browser-context>…).
+	myRequest = regexp.MustCompile(`(?m)^## My request(?: for Codex)?:[ \t]*\n?`)
+	// injected are how a text the agent put in as the user begins, beside
+	// agentsFor and the reminders: Codex's and the Codex app's context,
+	// Claude Code's and ZCode's notices, plugin metadata, agent lists and
+	// todo nudges.
+	injected = []string{
+		"<system-reminder", "<environment_context>", "<user_instructions>", "<turn_aborted>",
+		"<user_shell_command>", "<subagent_notification>", "<in-app-browser-context",
+		"<task-notification>", "<subagent-notification>", "<plugin_reference>",
+		"Available agent types for the Agent tool:", "Available agent types and the tools they have access to:",
+		"New agent types are now available for the Agent tool:",
+		"The TodoWrite tool hasn't been used recently.", "The task tools haven't been used recently.",
+		"Conversation rewind applied.", "Workspace rewind applied.",
+	}
+)
+
+// userWords is what the user said in a text of theirs: "" for a text the
+// agent put in (an instruction file, a reminder, a notice), else the text
+// without the reminders in it, and after the Codex app's context. Routing
+// (turnIn, userText, firstWords) and the prompt's turns go by it alike.
+func userWords(text string) string {
+	t := strings.TrimSpace(reminders.ReplaceAllString(text, ""))
+	if at := myRequest.FindAllStringIndex(t, -1); len(at) > 0 {
+		t = strings.TrimSpace(t[at[len(at)-1][1]:])
+	}
+	if t == "" || agentsFor.MatchString(t) {
+		return ""
+	}
+	for _, lead := range injected {
+		if strings.HasPrefix(t, lead) {
+			return ""
+		}
+	}
+	return t
+}
+
+// userSaid is what the user said in a message: the words of its texts.
+func userSaid(m Message) string {
+	var said []string
+	for _, p := range m.Parts {
+		if p.Kind == Text {
+			if w := userWords(p.Text); w != "" {
+				said = append(said, w)
+			}
+		}
+	}
+	return strings.Join(said, "\n")
 }
 
 func (b *promptBuilder) anthropicBlock(role string, x rawBlock) {
@@ -695,25 +746,25 @@ func (b *promptBuilder) responses(body []byte) bool {
 		Tools        []json.RawMessage `json:"tools"`
 		Previous     string            `json:"previous_response_id"`
 	}
-	if json.Unmarshal(body, &req) != nil {
+	if decodeJSON(body, &req) != nil {
 		return false
 	}
 	b.held = req.Previous != ""
 	var ins string
-	if json.Unmarshal(req.Instructions, &ins) == nil && ins != "" {
+	if decodeJSON(req.Instructions, &ins) == nil && ins != "" {
 		b.systemText(ins, "prompt")
 	}
 	for _, t := range req.Tools {
 		b.responsesTool(t)
 	}
 	var s string
-	if json.Unmarshal(req.Input, &s) == nil {
+	if decodeJSON(req.Input, &s) == nil {
 		b.newTurn()
 		b.userText(s)
 		return true
 	}
 	var items []json.RawMessage
-	_ = json.Unmarshal(req.Input, &items)
+	_ = decodeJSON(req.Input, &items)
 	for _, it := range items {
 		b.responsesItem(it)
 	}
@@ -729,7 +780,7 @@ func (b *promptBuilder) responsesTool(t json.RawMessage) {
 			Name string `json:"name"`
 		} `json:"function"`
 	}
-	_ = json.Unmarshal(t, &d)
+	_ = decodeJSON(t, &d)
 	name := d.Name
 	if name == "" && d.Function != nil {
 		name = d.Function.Name
@@ -778,7 +829,7 @@ func (b *promptBuilder) responsesItem(raw json.RawMessage) {
 		Encrypted string          `json:"encrypted_content"`
 		Action    json.RawMessage `json:"action"`
 	}
-	if json.Unmarshal(raw, &it) != nil {
+	if decodeJSON(raw, &it) != nil {
 		return
 	}
 	if it.Type == "" && it.Role != "" {
@@ -840,7 +891,7 @@ func (b *promptBuilder) responsesItem(raw json.RawMessage) {
 	case "function_call_output", "custom_tool_call_output", "local_shell_call_output", "tool_search_output":
 		n := 0
 		var s string
-		if json.Unmarshal(it.Output, &s) == nil {
+		if decodeJSON(it.Output, &s) == nil {
 			n = tokensOf(s)
 		} else {
 			var texts []string
@@ -874,14 +925,14 @@ type rPart struct {
 
 func responsesContent(c json.RawMessage) []rPart {
 	var s string
-	if json.Unmarshal(c, &s) == nil {
+	if decodeJSON(c, &s) == nil {
 		return []rPart{{text: s}}
 	}
 	var ps []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
-	_ = json.Unmarshal(c, &ps)
+	_ = decodeJSON(c, &ps)
 	out := make([]rPart, 0, len(ps))
 	for _, p := range ps {
 		out = append(out, rPart{text: p.Text, image: p.Type == "input_image" || p.Type == "input_file" || p.Type == "image_url"})
@@ -908,7 +959,7 @@ func (b *promptBuilder) chatCompletions(body []byte) bool {
 		} `json:"messages"`
 		Tools []json.RawMessage `json:"tools"`
 	}
-	if json.Unmarshal(body, &req) != nil {
+	if decodeJSON(body, &req) != nil {
 		return false
 	}
 	for _, t := range req.Tools {
@@ -994,7 +1045,7 @@ func (b *promptBuilder) gemini(body []byte) bool {
 			Decls []json.RawMessage `json:"functionDeclarations"`
 		} `json:"tools"`
 	}
-	if json.Unmarshal(body, &req) != nil {
+	if decodeJSON(body, &req) != nil {
 		return false
 	}
 	if req.System != nil {
@@ -1007,7 +1058,7 @@ func (b *promptBuilder) gemini(body []byte) bool {
 			var n struct {
 				Name string `json:"name"`
 			}
-			_ = json.Unmarshal(d, &n)
+			_ = decodeJSON(d, &n)
 			b.tool(n.Name, rawTokens(d), d)
 		}
 	}

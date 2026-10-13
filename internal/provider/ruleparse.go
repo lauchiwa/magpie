@@ -2,8 +2,9 @@ package provider
 
 // A rule as it is typed: use=<model> tokens=200k images effort=high
 // agents=a,b intent="…" compact time=09:00-18:00 days=mon-fri
-// folders=~/work,"~/My Project", or
-// pause=<model> time=… days=… agents=… — by magpie group rule and the
+// folders=~/work,"~/My Project" except-folders=~/work/old, or
+// pause=<model> time=… days=… agents=… folders=… except-folders=… — by
+// magpie group rule and the
 // TUI's routing page.
 
 import (
@@ -157,19 +158,23 @@ func ParseRule(g Group, words []string) (r Rule, at int, classifier string, err 
 			}
 			r.Time.Days = days
 		case "folders", "folder", "in", "project", "projects":
-			for _, p := range strings.Split(v, ",") {
-				if p = strings.TrimSpace(p); p == "" {
-					continue
-				}
-				c, err := cleanFolder(p)
-				if err != nil {
-					return r, 0, "", err
-				}
-				r.Folders = append(r.Folders, c)
+			fs, err := parseFolders(v)
+			if err != nil {
+				return r, 0, "", err
 			}
-			if len(r.Folders) == 0 {
+			if len(fs) == 0 {
 				return r, 0, "", fmt.Errorf("folders names the working folders it holds in: folders=~/work/acme,~/oss")
 			}
+			r.Folders = append(r.Folders, fs...)
+		case "except-folders", "except-folder", "exceptfolders", "not-in", "outside":
+			fs, err := parseFolders(v)
+			if err != nil {
+				return r, 0, "", err
+			}
+			if len(fs) == 0 {
+				return r, 0, "", fmt.Errorf("except-folders names the working folders it doesn't hold in: except-folders=~/big-task")
+			}
+			r.ExceptFolders = append(r.ExceptFolders, fs...)
 		case "classifier", "classify", "by":
 			if classifier = strings.TrimSpace(v); classifier == "" {
 				return r, 0, "", fmt.Errorf("classifier=<model>: the model that tells which intent a message is")
@@ -181,17 +186,17 @@ func ParseRule(g Group, words []string) (r Rule, at int, classifier string, err 
 			}
 			at = n
 		default:
-			return r, 0, "", fmt.Errorf(UnknownRuleWord+"%q (use, pause, tokens, images, effort, agents, intent, compact, time, days, folders, classifier, at)", w)
+			return r, 0, "", fmt.Errorf(UnknownRuleWord+"%q (use, pause, tokens, images, effort, agents, intent, compact, time, days, folders, except-folders, classifier, at)", w)
 		}
 	}
 	if r.Use == "" {
 		return r, 0, "", fmt.Errorf("use=<model> (or pause=<model>) is missing: one of %s", strings.Join(g.Members, ", "))
 	}
-	if r.Pause && (r.Tokens > 0 || r.Images || r.Effort != "" || r.Intent != "" || r.Compact || len(r.Folders) > 0) {
-		return r, 0, "", fmt.Errorf("pause=<model> holds by time=, days= or agents= only")
+	if r.Pause && (r.Tokens > 0 || r.Images || r.Effort != "" || r.Intent != "" || r.Compact) {
+		return r, 0, "", fmt.Errorf("pause=<model> holds by time=, days=, agents=, folders= or except-folders= only")
 	}
-	if r.Pause && r.Time == nil && len(r.Agents) == 0 {
-		return r, 0, "", fmt.Errorf("pause=<model> needs time=, days= or agents=: when the model is left out")
+	if r.Pause && r.Time == nil && len(r.Agents) == 0 && !r.ByFolder() {
+		return r, 0, "", fmt.Errorf("pause=<model> needs time=, days=, agents=, folders= or except-folders=: when the model is left out")
 	}
 	if r.Intent != "" && classifier == "" && g.Classifier == "" {
 		return r, 0, "", fmt.Errorf("a rule with an intent needs the group's classifier, the model that tells which intent a message is: add classifier=<model>, best a small fast one")
@@ -291,12 +296,33 @@ func (r Rule) Line() string {
 			out = append(out, "days="+strings.ReplaceAll(strings.ToLower(r.Time.DaysText()), "–", "-"))
 		}
 	}
-	if len(r.Folders) > 0 {
-		v := strings.ReplaceAll(strings.Join(r.Folders, ","), `"`, "")
+	folders := func(k string, fs []string) {
+		if len(fs) == 0 {
+			return
+		}
+		v := strings.ReplaceAll(strings.Join(fs, ","), `"`, "")
 		if strings.ContainsAny(v, " \t") {
 			v = `"` + v + `"`
 		}
-		out = append(out, "folders="+v)
+		out = append(out, k+"="+v)
 	}
+	folders("folders", r.Folders)
+	folders("except-folders", r.ExceptFolders)
 	return strings.Join(out, " ")
+}
+
+// parseFolders reads a typed list of folders, comma separated.
+func parseFolders(v string) ([]string, error) {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		c, err := cleanFolder(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, nil
 }

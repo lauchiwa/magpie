@@ -21,6 +21,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
@@ -114,7 +115,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], asked = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, asked));
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const card = page.locator(".subscription-card", { hasText: "WorkBuddy" });
       // every account in full, so each row is there to read
       await card.locator(".wb-checkin").first().waitFor();
@@ -159,7 +162,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], asked = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, asked));
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const card = page.locator(".subscription-card", { hasText: "Trae CN" });
       await card.locator(".wb-checkin").first().waitFor();
       assert.equal(await card.locator(".wb-checkin").count(), 1);
@@ -209,7 +214,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (url.pathname === "/api/settings") return route.fulfill({ json: settings });
         return serve(lang, [])(route);
       });
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const card = page.locator(".subscription-card", { hasText: "Trae CN" });
       await card.locator(".wb-checkin").first().waitFor();
       assert.equal((await card.locator(".ci-say").innerText()).trim(), says);
@@ -217,7 +224,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.match(await card.locator(".ci-say").getAttribute("title"), /当前参与用户太多/);
       assert.equal(await card.locator(".ci-now").count(), 0, "a press would only claim again");
 
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=settings&tab=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       await page.locator("#traeCheckinSub").waitFor({ state: "attached" });
       const sub = await page.locator("#traeCheckinSub").textContent();
       assert.ok(sub.includes("hu" + (lang === "en" ? ": " : "：") + says), sub);
@@ -232,7 +241,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], asked = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, asked));
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const card = page.locator(".subscription-card", { hasText: "MiniMax Code" });
       await card.locator(".wb-checkin").first().waitFor();
       assert.equal(await card.locator(".wb-checkin").count(), 1);
@@ -274,7 +285,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (url.pathname === "/api/settings") return route.fulfill({ json: settings });
         return serve(lang, [])(route);
       });
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=settings&tab=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const tab = page.locator("#warmTab-minimax");
       await tab.waitFor();
       assert.equal(await tab.isHidden(), false);
@@ -295,7 +308,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], asked = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, asked));
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const card = page.locator(".subscription-card", { hasText: "arno" });
       await card.locator(".wb-checkin").first().waitFor();
       assert.equal(await card.locator(".wb-checkin").count(), 1);
@@ -336,7 +351,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (url.pathname === "/api/settings") return route.fulfill({ json: settings });
         return serve(lang, [])(route);
       });
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=settings&tab=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const tab = page.locator("#warmTab-qoder");
       await tab.waitFor();
       assert.equal(await tab.isHidden(), false);

@@ -2,7 +2,7 @@ package provider
 
 // A plan bought with an API key — Zhipu's GLM Coding Plan (and Z.ai's),
 // Kimi Code, OpenCode Go, a Command Code plan, MiniMax's Coding (Token)
-// Plan, StepFun's Step Plan, Volcengine Ark's Coding and Agent Plans and
+// Plan, Ollama Cloud's included allowance, StepFun's Step Plan, Volcengine Ark's Coding and Agent Plans and
 // Tencent Cloud's Token Plan 企业版 — has windows of allowance like a
 // subscription's, which the vendor tells to the key (StepFun only to a
 // sign-in, stepfun_plan.go; Volcengine and Tencent Cloud only to the
@@ -59,6 +59,10 @@ func planQuotaSourceOf(p Provider) (planQuotaSource, bool) {
 			if u := strings.TrimSuffix(base, "/"); strings.HasSuffix(u, "/zen/go") || strings.Contains(u, "/zen/go/") {
 				return planQuotaSource{"https://opencode.ai/zen/go/v1/usage", true, readOpenCodeGo, true}, true
 			}
+		case "ollama.com":
+			// Ollama Cloud's included allowance (#1888); a key with none
+			// gets no card
+			return planQuotaSource{ollamaBalanceURL, true, readOllamaPlan, false}, true
 		}
 	}
 	return planQuotaSource{}, false

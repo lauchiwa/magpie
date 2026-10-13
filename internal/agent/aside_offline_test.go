@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -128,11 +129,7 @@ func TestAsidePostReadFailuresNeverOfferOffline(t *testing.T) {
 				if err := a.Native.Stage("model", "magpie/relay/glm-4.6"); err != nil {
 					t.Fatal(err)
 				}
-				dir := filepath.Dir(c.record)
-				if err := os.Chmod(dir, 0500); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { os.Chmod(dir, 0700) })
+				refuseWrites(t, c.record)
 			case "set refusal":
 				asideSet = func(string, string) error { return errors.New("refused") }
 			case "readback mismatch":
@@ -214,10 +211,7 @@ func TestAsideOfflineRestoresCompleteSelectionsAndPreservesUserChanges(t *testin
 	if err != nil || len(r.Fields) != 0 {
 		t.Fatalf("record not cleared: %+v %v", r, err)
 	}
-	mode, err := os.Stat(c.record)
-	if err != nil || mode.Mode().Perm() != 0600 {
-		t.Fatalf("record mode: %v %v", mode, err)
-	}
+	recordPerm(t, c.record)
 }
 
 func TestAsideOfflinePlanGuards(t *testing.T) {
@@ -293,10 +287,7 @@ func TestAsideOfflineLegacyRecordDoesNotResurrect(t *testing.T) {
 	if err != nil || len(r.Fields) != 0 {
 		t.Fatal("legacy restore points resurrected")
 	}
-	mode, err := os.Stat(c.record)
-	if err != nil || mode.Mode().Perm() != 0600 {
-		t.Fatalf("record mode: %v %v", mode, err)
-	}
+	recordPerm(t, c.record)
 }
 
 func TestAsideOfflineWriteFailureRollsBack(t *testing.T) {
@@ -311,13 +302,10 @@ func TestAsideOfflineWriteFailureRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := readFile(settings) + readFile(models) + readFile(c.record)
-	dir := filepath.Dir(c.record)
-	if err := os.Chmod(dir, 0500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(dir, 0700) })
+	refuseWrites(t, c.record)
 	err = a.Native.ExecuteOffline(plan)
-	if err == nil || !strings.Contains(err.Error(), "permission") {
+	// "permission denied" elsewhere, "Access is denied." on Windows
+	if err == nil || !(strings.Contains(err.Error(), "permission") || strings.Contains(err.Error(), "denied")) {
 		t.Fatalf("expected write refusal after settings restoration: %v", err)
 	}
 	if readFile(settings)+readFile(models)+readFile(c.record) != before {
@@ -341,9 +329,7 @@ func TestAsideDisconnectUnavailableOnlyAtInitialRead(t *testing.T) {
 			case "initial":
 				asideRead = func(string) (map[string]json.RawMessage, error) { return nil, errors.New("offline") }
 			case "record":
-				dir := filepath.Dir(newAsideConnection(here("")).record)
-				os.Chmod(dir, 0500)
-				t.Cleanup(func() { os.Chmod(dir, 0700) })
+				refuseWrites(t, newAsideConnection(here("")).record)
 			case "refusal":
 				asideSet = func(string, string) error { return errors.New("refused") }
 			case "mismatch":
@@ -512,7 +498,14 @@ func TestAsideOfflineProviderWriteFailureRollsBackAllFiles(t *testing.T) {
 	if err := os.Remove(models); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, models); err != nil {
+	// the provider's file points at a target whose write is refused: a
+	// symlink, or on Windows, where a symlink needs rights a test isn't
+	// given, a hard link
+	link := os.Symlink
+	if runtime.GOOS == "windows" {
+		link = os.Link
+	}
+	if err := link(target, models); err != nil {
 		t.Fatal(err)
 	}
 	c := newAsideConnection(here(""))
@@ -521,15 +514,47 @@ func TestAsideOfflineProviderWriteFailureRollsBackAllFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := readFile(settings) + readFile(models) + readFile(c.record)
-	if err := os.Chmod(targetDir, 0500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(targetDir, 0700) })
+	refuseWrites(t, target)
 	asideRead = func(string) (map[string]json.RawMessage, error) { t.Fatal("rollback read daemon"); return nil, nil }
 	if err := a.Native.ExecuteOffline(plan); err == nil {
 		t.Fatal("provider write should fail")
 	}
 	if readFile(settings)+readFile(models)+readFile(c.record) != before {
 		t.Fatal("final provider failure did not roll back settings and record")
+	}
+}
+
+// refuseWrites makes file unwritable the way each OS refuses it. Elsewhere
+// its directory loses write permission, so the temporary file a save
+// renames over it can't be made either. Windows ignores a directory's mode,
+// so there the file itself is read-only, which neither a write nor a rename
+// over it replaces.
+func refuseWrites(t *testing.T, file string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if err := os.Chmod(file, 0o400); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(file, 0o600) })
+		return
+	}
+	dir := filepath.Dir(file)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+}
+
+// recordPerm checks the record's mode as os.Stat reports it: 0600, which
+// Windows, carrying no POSIX bits, reports as 0666.
+func recordPerm(t *testing.T, record string) {
+	t.Helper()
+	want := os.FileMode(0o600)
+	if runtime.GOOS == "windows" {
+		want = 0o666
+	}
+	mode, err := os.Stat(record)
+	if err != nil || mode.Mode().Perm() != want {
+		t.Fatalf("record mode: %v %v", mode, err)
 	}
 }

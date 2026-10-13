@@ -3,6 +3,7 @@ package provider
 import (
 	"errors"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -93,21 +94,36 @@ func TestCLIIdentityFirstAskBounded(t *testing.T) {
 	firstAsk = 100 * time.Millisecond
 	t.Cleanup(func() { firstAsk = old })
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	let := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(let)
 	c := &cliIdentity{name: "x", exe: func() string { return "/bin/sh" }, ask: func() (string, string, bool, error) { <-release; return "me@example.com", "Pro", true, nil }}
-	start := time.Now()
-	if _, _, ok := c.get(); ok {
-		t.Fatal("an unanswered CLI served someone")
+	// The ask is held until release, so a look that comes back at all came
+	// back without its answer: that is the bound, not a clock (#1617). The
+	// deadlines only turn a look that waited for the ask into a FAIL rather
+	// than a hang; nothing is measured against them.
+	look := func() <-chan bool {
+		served := make(chan bool, 1)
+		go func() { _, _, ok := c.get(); served <- ok }()
+		return served
 	}
-	if d := time.Since(start); d > time.Second {
-		t.Fatalf("the first look waited %v", d)
+	select {
+	case ok := <-look():
+		if ok {
+			t.Fatal("an unanswered CLI served someone")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first look waited for the held ask")
 	}
-	// a request looks again: that one doesn't wait
-	start = time.Now()
-	c.get()
-	if d := time.Since(start); d > 50*time.Millisecond {
-		t.Fatalf("a second look waited %v", d)
+	// a request looks again: that one doesn't wait at all, not even
+	// firstAsk, made longer than the deadline below
+	firstAsk = time.Hour
+	select {
+	case <-look():
+	case <-time.After(10 * time.Second):
+		t.Fatal("a second look waited")
 	}
-	close(release)
+	let()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if u, _, ok := c.get(); ok && u == "me@example.com" {

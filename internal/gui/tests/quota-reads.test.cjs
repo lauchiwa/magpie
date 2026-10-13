@@ -82,7 +82,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.route("**/*", server(lang, posts));
           await page.goto("http://magpie.test/?view=usage");
           await page.locator("#prefs").click();
-          await page.locator("#setTab-usage").click();
+          await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
           const row = page.locator("#quotaReadsRow");
           const opts = row.locator("#quotaReadsSegs .opt");
           await opts.first().waitFor();

@@ -535,7 +535,7 @@ func startQoderSignIn(s *signInFlow, site *qoder.Site) error {
 	if err != nil {
 		return fmt.Errorf("%s sign-in: %w", site.Name, err)
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), fl.deadline)
+	ctx, cancel := context.WithDeadline(s.via(context.Background()), fl.deadline)
 	s.mu.Lock()
 	s.st.URL, s.stop = authURL, cancel
 	s.mu.Unlock()

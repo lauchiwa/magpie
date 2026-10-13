@@ -1041,7 +1041,7 @@ func dshSetFile(path, v string, modern bool, models []catalog.Model, gw string) 
 			effort = ""
 		}
 		put("agent-default-model", dshDefaultLines(dshRouteFor(ref, models), ref, effort))
-		items = dshPutSearch(items, dshProfileHome(path), ref, gw)
+		items = dshPutSearch(items, dshProfileHome(path), dshSearchModel(ref), gw)
 	case modern:
 		drop("llm-deepseek")
 		if items, err = dshPutRoute(items, false, nil, gw); err != nil {

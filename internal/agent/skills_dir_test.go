@@ -20,6 +20,7 @@ func TestSkillsOnlyFolderIsNotInstalled(t *testing.T) {
 		func(h, _ string) *Agent { return droid(h) },
 	} {
 		home := t.TempDir()
+		ownAppData(t, home)
 		cfg := filepath.Join(home, ".config")
 		a := mk(home, cfg)
 		t.Run(a.ID, func(t *testing.T) {
@@ -59,6 +60,7 @@ func TestLeftoverFoldersAreNotInstalled(t *testing.T) {
 		{func(h string) *Agent { return hermes(h) }, []string{"cache", "log", "skills"}},
 	} {
 		home := t.TempDir()
+		ownAppData(t, home)
 		a := c.mk(home)
 		t.Run(a.ID, func(t *testing.T) {
 			for _, d := range c.left {
@@ -87,4 +89,13 @@ func TestLeftoverFoldersAreNotInstalled(t *testing.T) {
 	if !codebuddy(home).Detected() {
 		t.Error("a file named logs, not a folder, is no longer taken for the agent's own")
 	}
+}
+
+// ownAppData puts APPDATA and LOCALAPPDATA in home, where agents keep
+// their folders on Windows (Hermes in %LOCALAPPDATA%\hermes): left at the
+// package's home, another test's files there are taken for the agent.
+func ownAppData(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 }

@@ -133,7 +133,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // the Usage page's Requests: a request's details name it
       await page.locator('[data-view="usage"]').first().click();
-      await page.locator("#usageTab .opt").nth(1).click();
+      await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       const rows = page.locator(".led tbody tr.led-row");
       await rows.nth(1).waitFor();
       const top = () => page.locator("#view-usage").evaluate((v) => v.scrollTop);

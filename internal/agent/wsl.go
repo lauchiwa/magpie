@@ -87,6 +87,26 @@ func (p place) claudeDir() string {
 	return appdir.ClaudeDirIn(p.home)
 }
 
+// hermesHome is Hermes Agent's folder at the place: $HERMES_HOME, else
+// %LOCALAPPDATA%\hermes on Windows and ~/.hermes elsewhere, on this machine
+// (appdir.HermesHome); ~/.hermes in a distro, which is Linux and whose
+// variables magpie can't read.
+func (p place) hermesHome() string {
+	if p.spell != nil {
+		return filepath.Join(p.home, ".hermes")
+	}
+	return appdir.HermesHomeIn(p.home)
+}
+
+// hermesDefault is Hermes's default folder at the place, whatever
+// HERMES_HOME says: the root of its profiles.
+func (p place) hermesDefault() string {
+	if p.spell != nil {
+		return filepath.Join(p.home, ".hermes")
+	}
+	return appdir.HermesDefaultIn(p.home)
+}
+
 // exists is whether there is a file or folder at path, as an agent looks
 // for the one it reads; false at a cold place.
 func (p place) exists(path string) bool {
@@ -270,6 +290,11 @@ var wslKinds = []wslKind{
 			switch key {
 			case "model", "subagent":
 				return func(map[string]string) []Option {
+					// over several accounts magpie routes, so they are
+					// offered via magpie too, as on a live Codex (#1603)
+					if codexFailover() {
+						return append(group("OpenAI", options(ownCodex(), "")), viaMagpie("codex", "")...)
+					}
 					return append(group("OpenAI", options(ownCodex(), "")), viaMagpieFor("codex", "")...)
 				}
 			case "effort":
@@ -716,7 +741,7 @@ func wslAgent(k wslKind, d distro) *Agent {
 // files, which starts the distro.
 func asleep(live *Agent, k wslKind, d distro) *Agent {
 	started := false
-	a := &Agent{ID: live.ID, Name: live.Name, Icon: live.Icon, WSL: d.Name, detect: live.detect, Spelled: live.Spelled,
+	a := &Agent{ID: live.ID, Name: live.Name, Icon: live.Icon, WSL: d.Name, detect: live.detect, Spelled: live.Spelled, ModelAliases: live.ModelAliases, NoNames: live.NoNames,
 		Notice: func() string {
 			if started {
 				return live.Notice()

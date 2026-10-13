@@ -124,6 +124,39 @@ func TestGroupWaitsOutEveryMemberOverloaded(t *testing.T) {
 	}
 }
 
+// A relay's 500 that says its model's load has reached its limit
+// (real-jacket on #1418: two keys of one relay in an order group, Codex,
+// Patience at 4 minutes) passes like any overload. Its "上限" made it a
+// used-up quota: no member was asked again, and each rested a quarter of
+// an hour by "quota", renewed on every try.
+func TestGroupWaitsOutRelayLoadLimit(t *testing.T) {
+	fresh(t)
+	loaded := reply{500, "", `当前模型 gpt-5.5 负载已经达到上限，请稍后重试 (request id: 20261011161901234567890abcdefgh)`}
+	a := &scripted{replies: []reply{loaded, {200, "", chatOK}}}
+	b := &scripted{replies: []reply{loaded}}
+	scriptedOn(t, "a", provider.Chat, a)
+	scriptedOn(t, "b", provider.Chat, b)
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m"}, Routing: provider.Ordered, Patience: 240}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 || !strings.Contains(body, "hello") || a.n != 2 {
+		t.Fatalf("%d %s (a %d, b %d)", code, body, a.n, b.n)
+	}
+	r := s.trace.routes[len(s.trace.routes)-1]
+	replanned := false
+	for _, try := range r.Tries {
+		if try.Fail == failQuota || try.Rest != nil && try.Rest.By == "quota" {
+			t.Errorf("a load limit read as a used-up quota: %+v", try)
+		}
+		replanned = replanned || try.Replan > 0
+	}
+	if !replanned {
+		t.Fatalf("the members weren't asked again: %+v", r.Tries)
+	}
+}
+
 // What Codex was sent (#1418): plus-B's 200 and frames, then
 // server_is_overloaded, and sub2api the same. With patience, the agent's
 // stream is the reply of the one asked again, and nothing of the failures.
@@ -265,5 +298,72 @@ func TestCodexHeardWithinItsIdleTimeout(t *testing.T) {
 	res2.Body.Close()
 	if took := time.Since(start); took > 3*time.Second || !strings.Contains(string(body), "server_is_overloaded") {
 		t.Fatalf("after %s (a %d, b %d):\n%s", took, a.n, b.n, body)
+	}
+}
+
+// Aliceonly's trace on #1418: sub2api answered 502 "Upstream HTTP/2
+// stream failed", Codex account A a 200 that only framed a reply and then
+// failed server_is_overloaded, and five candidates after it were never
+// asked. An event streamEvent didn't know was taken for the reply's
+// content and let the stream through, so its failure came after the
+// reply had begun. Which event Codex's backend sent isn't in the trace;
+// these stand in for any it may add. Now only text, reasoning or a call
+// lets a stream through, and the third member answers.
+func TestFramesThenOverloadedGoesToTheNext(t *testing.T) {
+	fresh(t)
+	unknown := []string{
+		`event: keepalive` + "\n" + `data: {"type":"keepalive"}`,
+		`event: response.rate_limits.updated` + "\n" + `data: {"type":"response.rate_limits.updated","rate_limits":{"allowed":true}}`,
+		`event: response.output_item.added` + "\n" + `data: {"type":"response.output_item.added","item":{"type":"compaction_summary","id":"cs_1"}}`,
+	}
+	a := &scripted{replies: []reply{{502, "", `{"error":{"message":"Upstream HTTP/2 stream failed"}}`}}}
+	b := &scripted{replies: []reply{{200, "text/event-stream", sse(append(append(slices.Clone(overloadedLead), unknown...), overloadedFailed)...)}}}
+	c := &scripted{replies: []reply{{200, "text/event-stream", sse(
+		`event: response.output_text.delta`+"\n"+`data: {"type":"response.output_text.delta","delta":"hello"}`,
+		`event: response.completed`+"\n"+`data: {"type":"response.completed","response":{"id":"r1","status":"completed","output":[]}}`)}}}
+	responsesOn(t, "a", a)
+	responsesOn(t, "b", b)
+	responsesOn(t, "c", c)
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: []string{"a/m", "b/m", "c/m"}, Routing: provider.Ordered, Patience: provider.PatienceOff}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	code, body := sendTo(s, "/v1/responses", codexAsk)
+	if code != 200 || !strings.Contains(body, "hello") || strings.Contains(body, "server_is_overloaded") || strings.Contains(body, "keepalive") || c.n != 1 {
+		t.Fatalf("%d %q (a %d, b %d, c %d)", code, body, a.n, b.n, c.n)
+	}
+	r := s.trace.routes[len(s.trace.routes)-1]
+	if len(r.Tries) != 3 || r.Tries[1].Fail == "" {
+		t.Fatalf("tries: %+v", r.Tries)
+	}
+}
+
+// What only frames a reply, or isn't known, doesn't let a stream through;
+// text, reasoning, a call or a reply's end does.
+func TestStreamEventUnknownOnlyFrames(t *testing.T) {
+	for _, x := range []struct {
+		ev   string
+		kind int
+	}{
+		{`data: {"type":"keepalive"}`, eventLead},
+		{`event: response.rate_limits.updated` + "\n" + `data: {"type":"response.rate_limits.updated"}`, eventLead},
+		{`data: {"type":"response.output_item.added","item":{"type":"compaction_summary"}}`, eventLead},
+		{`data: {"x":1}`, eventLead},
+		{`data: {}`, eventLead},
+		{`data: {"type":"response.output_item.added","item":{"type":"web_search_call","id":"ws"}}`, eventContent},
+		{`data: {"type":"response.output_item.added","item":{"type":"mcp_list_tools"}}`, eventContent},
+		{`data: {"type":"response.web_search_call.searching","item_id":"ws"}`, eventContent},
+		{`data: {"type":"response.function_call_arguments.delta","delta":"{"}`, eventContent},
+		{`data: {"type":"response.custom_tool_call_input.delta","delta":"x"}`, eventContent},
+		{`data: {"type":"response.output_text.annotation.added"}`, eventContent},
+		{`data: {"type":"response.refusal.delta","delta":"no"}`, eventContent},
+		{`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"s","name":"web_search"}}`, eventContent},
+		{`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"container_upload"}}`, eventLead},
+		{`event: message_stop` + "\n" + `data: {"type":"message_stop"}`, eventContent},
+		{`data: [DONE]`, eventContent},
+	} {
+		if k, _, _ := streamEvent([]byte(x.ev)); k != x.kind {
+			t.Errorf("streamEvent(%s) = %d, want %d", x.ev, k, x.kind)
+		}
 	}
 }

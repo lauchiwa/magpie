@@ -12,6 +12,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -118,7 +119,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const posted = async (n) => { for (let i = 0; i < 100 && posts.length < n; i++) await page.waitForTimeout(20); assert.equal(posts.length, n, "posts"); return posts[n - 1]; };
         const settled = () => page.waitForTimeout(300);
 
+        await watchSettingsReads(page);
         await page.goto("http://magpie.test/?view=settings&tab=usage");
+        await settingsDrawn(page); // rows found are the ones that stay (#1659)
         const usageSegs = page.locator("#usageAlertSegs .opt"), balSegs = page.locator("#balanceAlertSegs .opt");
         await usageSegs.first().waitFor();
 
@@ -173,14 +176,18 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await settled();
 
         // another setting saved later keeps both alerts. The currency row
-        // sits above the alert rows: in zh, since the Allowance reads row
-        // (e9221e96d), the wheel stops at the bottom with it 0.02px above
-        // the view, and Playwright scrolls a target into view before it
-        // clicks. So the alert clicks are checked here, and the currency
-        // click from where its row is in view.
+        // sits above the alert rows, out of view in zh with them mid-page,
+        // and a scroll made by a script is put back as the page is drawn
+        // again: so the alert clicks are checked here, and the currency
+        // row is wheeled into view, as a reader would, before its click.
         assert.equal(await view(page), before, "no alert click moved the page");
         const cny = page.locator("#currencySegs .opt", { hasText: w.cny });
-        await cny.scrollIntoViewIfNeeded();
+        for (let i = 0; i < 40; i++) {
+          const box = await cny.boundingBox();
+          if (box && box.y >= 60) break;
+          await page.mouse.wheel(0, -60);
+          await page.waitForTimeout(30);
+        }
         const atCurrency = await view(page);
         await cny.click();
         const c = await posted(5);
@@ -213,7 +220,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         page.setDefaultTimeout(5000);
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", server(lang, posts, "denied"));
+        await watchSettingsReads(page);
         await page.goto("http://magpie.test/?view=settings&tab=usage");
+        await settingsDrawn(page); // rows found are the ones that stay (#1659)
         await page.locator("#usageAlertSegs .opt").first().waitFor();
         await wheelTo(page);
         // nothing said while every alert is off

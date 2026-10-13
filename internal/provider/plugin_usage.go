@@ -8,6 +8,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"regexp"
 	"strings"
@@ -151,6 +152,9 @@ func quotaOfPlugin(q SubscriptionQuota, u plugin.Usage) SubscriptionQuota {
 		if t, err := time.Parse(time.RFC3339, x.ResetsAt); err == nil {
 			w.ResetsAt = &t
 		}
+		if t, err := time.Parse(time.RFC3339, x.RunsOutAt); err == nil {
+			w.RunsOutAt, w.RunsOut = &t, x.RunsOut
+		}
 		if set := idSetOf(x.Models); set != nil {
 			w.matches = set.has
 		} else if set := idSetOf(x.NotModels); set != nil {
@@ -247,4 +251,14 @@ func (a *Account) UsageAgent() string {
 		return "plugin:" + a.plugin.ID
 	}
 	return a.Agent
+}
+
+// PluginAllowanceForTest is the allowance a plugin's usage answer gives
+// routing, for the gateway's tests.
+func PluginAllowanceForTest(usage []byte, now time.Time) Allowance {
+	var u plugin.Usage
+	if json.Unmarshal(usage, &u) != nil {
+		return nil
+	}
+	return allowanceOf(quotaOfPlugin(SubscriptionQuota{}, u).Windows, now)
 }

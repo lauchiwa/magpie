@@ -102,7 +102,11 @@ func SignInServer(ctx context.Context, name string) (mcpauth.State, error) {
 	if s.Transport != "http" {
 		return mcpauth.State{}, errNotHTTP
 	}
-	return mcpauth.Start(ctx, s.Name, s.URL)
+	var app *mcpauth.App
+	if s.OAuth != nil {
+		app = &mcpauth.App{ClientID: s.OAuth.ClientID, ClientSecret: s.OAuth.ClientSecret, CallbackPort: s.OAuth.CallbackPort}
+	}
+	return mcpauth.StartWith(ctx, s.Name, s.URL, app)
 }
 
 // SignOutServer forgets magpie's sign-in to the server called name, and

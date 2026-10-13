@@ -251,3 +251,34 @@ func TestMCPProxyKeepsQueryAndHeaders(t *testing.T) {
 		t.Fatalf("the server got the gateway's key %q", f.Seen.Get("X-Api-Key"))
 	}
 }
+
+// A server that refuses even the token magpie just renewed no longer takes
+// the sign-in: it is marked run out, for the Library to say so rather than
+// "Signed in" beside the server's refusal (新v学员 on Discord), and the
+// agent is told to sign in again, never with a 401.
+func TestMCPProxyRefusedAfterRenewalRunsOut(t *testing.T) {
+	fresh(t)
+	f := mcpauthtest.New(t)
+	f.SignIn(t, "neon")
+	gw := httptest.NewServer(New().Handler())
+	defer gw.Close()
+	f.RefuseTokens()
+	req, _ := http.NewRequest("POST", gw.URL+"/mcp/neon", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway || resp.Header.Get("WWW-Authenticate") != "" || !strings.Contains(string(b), "sign in to it again") {
+		t.Fatalf("refused after renewing: %d %v %s", resp.StatusCode, resp.Header, b)
+	}
+	if f.Refreshed != 1 {
+		t.Fatalf("renewed %d times, not once", f.Refreshed)
+	}
+	if st := mcpauth.StatusOf("neon", f.URL); !st.SignedIn || !st.Dead {
+		t.Fatalf("the sign-in after a renewed token was refused: %+v", st)
+	}
+}

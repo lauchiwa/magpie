@@ -81,7 +81,7 @@ func pencilApp(home string) bool {
 	if runtime.GOOS != "darwin" {
 		return false
 	}
-	for _, d := range []string{"/Applications", filepath.Join(home, "Applications")} {
+	for _, d := range macAppFolders(home) {
 		for _, n := range []string{"Pencil.app", "pen.dev.app"} {
 			if _, err := os.Stat(filepath.Join(d, n)); err == nil {
 				return true
@@ -114,7 +114,7 @@ func pencilProviderJSON(gw string) map[string]any {
 		ms = append(ms, e)
 	}
 	return map[string]any{"name": "magpie", "baseUrl": gw + "/v1", "api": "openai-completions",
-		"apiKey": gateway.TokenFor("pencil"), "models": ms}
+		"apiKey": agentKeyAt("pencil", gw), "models": ms}
 }
 
 // what pencil says after a change (notice.go)

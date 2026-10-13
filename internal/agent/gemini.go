@@ -2,12 +2,12 @@ package agent
 
 import (
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -182,7 +182,7 @@ func geminiIn(at place) *Agent {
 	}
 
 	return &Agent{
-		ID: "gemini", Name: "Gemini CLI", Icon: "geminicli-color", Aliases: []string{"gemini-cli"},
+		ID: "gemini", Name: "Gemini CLI", Icon: "geminicli-color", Aliases: []string{"gemini-cli"}, NoNames: true,
 		UA:  []string{"geminicli", "gemini-cli"},
 		Bin: "gemini", Dir: dir, Path: path,
 		// its model's default forgets what it had before magpie, its
@@ -198,7 +198,7 @@ func geminiIn(at place) *Agent {
 			if Taken(dir) {
 				return false
 			}
-			_, err := exec.LookPath("gemini")
+			_, err := proc.Look("gemini")
 			return err == nil
 		},
 		Check: func() string {

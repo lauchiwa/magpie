@@ -203,16 +203,21 @@ var presets = []PresetDef{
 		}},
 	// Xiaomi MiMo (#174): a Token Plan's tp- key is spent at its region's
 	// own host (China, Singapore, Europe), pay as you go at api.xiaomimimo.com;
-	// each serves chat completions, Responses and Anthropic messages
+	// each serves chat completions, Responses and Anthropic messages. Each
+	// region names its own catalog: a plan's lists its models (at $0, which
+	// membershipCatalogs keeps out of prices) before xiaomi's, pay as you go
+	// xiaomi's alone (#1873). The preset's is plan-cn's, the region its
+	// endpoints are at, which a provider saved before the regions had their
+	// own still holds and so follows its region.
 	{ID: "xiaomi", Name: "Xiaomi MiMo", Icon: "mimocode", Kind: KindVendor, Catalog: "xiaomi-token-plan-cn, xiaomi",
 		Chat: "https://token-plan-cn.xiaomimimo.com/v1", Responses: "https://token-plan-cn.xiaomimimo.com/v1", Anthropic: "https://token-plan-cn.xiaomimimo.com/anthropic",
 		Note:    "Token Plan · pay as you go",
 		Website: "https://platform.xiaomimimo.com", KeysURL: "https://platform.xiaomimimo.com/token-plan",
 		Regions: []Region{
-			{ID: "plan-cn", Name: "Plan · China", Chat: "https://token-plan-cn.xiaomimimo.com/v1", Responses: "https://token-plan-cn.xiaomimimo.com/v1", Anthropic: "https://token-plan-cn.xiaomimimo.com/anthropic"},
-			{ID: "plan-sgp", Name: "Plan · Singapore", Chat: "https://token-plan-sgp.xiaomimimo.com/v1", Responses: "https://token-plan-sgp.xiaomimimo.com/v1", Anthropic: "https://token-plan-sgp.xiaomimimo.com/anthropic"},
-			{ID: "plan-ams", Name: "Plan · Europe", Chat: "https://token-plan-ams.xiaomimimo.com/v1", Responses: "https://token-plan-ams.xiaomimimo.com/v1", Anthropic: "https://token-plan-ams.xiaomimimo.com/anthropic"},
-			{ID: "api", Name: "Pay as you go", Chat: "https://api.xiaomimimo.com/v1", Responses: "https://api.xiaomimimo.com/v1", Anthropic: "https://api.xiaomimimo.com/anthropic"},
+			{ID: "plan-cn", Name: "Plan · China", Chat: "https://token-plan-cn.xiaomimimo.com/v1", Responses: "https://token-plan-cn.xiaomimimo.com/v1", Anthropic: "https://token-plan-cn.xiaomimimo.com/anthropic", Catalog: "xiaomi-token-plan-cn, xiaomi"},
+			{ID: "plan-sgp", Name: "Plan · Singapore", Chat: "https://token-plan-sgp.xiaomimimo.com/v1", Responses: "https://token-plan-sgp.xiaomimimo.com/v1", Anthropic: "https://token-plan-sgp.xiaomimimo.com/anthropic", Catalog: "xiaomi-token-plan-sgp, xiaomi"},
+			{ID: "plan-ams", Name: "Plan · Europe", Chat: "https://token-plan-ams.xiaomimimo.com/v1", Responses: "https://token-plan-ams.xiaomimimo.com/v1", Anthropic: "https://token-plan-ams.xiaomimimo.com/anthropic", Catalog: "xiaomi-token-plan-ams, xiaomi"},
+			{ID: "api", Name: "Pay as you go", Chat: "https://api.xiaomimimo.com/v1", Responses: "https://api.xiaomimimo.com/v1", Anthropic: "https://api.xiaomimimo.com/anthropic", Catalog: "xiaomi"},
 		}},
 	// Baidu Qianfan: a personal and an enterprise Token Plan, each at its
 	// own endpoints under qianfan.baidubce.com on a key of its own; pay as
@@ -535,13 +540,19 @@ var presets = []PresetDef{
 		Note: "your local models", Website: "https://ollama.com"},
 	{ID: "lmstudio", Name: "LM Studio", Icon: "lmstudio", Kind: KindLocal, NoKey: true,
 		Chat: "http://localhost:1234/v1",
-		Note: "local server on :1234", Website: "https://lmstudio.ai"},
-	{ID: "omlx", Name: "oMLX", Icon: "omlx", Kind: KindLocal, NoKey: true,
+		Note: "local server, port 1234 by default", Website: "https://lmstudio.ai"},
+	// its decision models (Clef, OpenJev), served at /v1/systemone since
+	// 0.7.1, are the ones its /v1/models/status says are (omlx_decide.go)
+	{ID: OMLXPreset, Name: "oMLX", Icon: "omlx", Kind: KindLocal, NoKey: true,
 		Chat: "http://localhost:8000/v1", Responses: "http://localhost:8000/v1", Anthropic: "http://localhost:8000",
-		Note: "local server on :8000", Website: "https://omlx.ai"},
-	{ID: "mlx-serve", Name: "MLX-Serve", Icon: "mlx-serve", Kind: KindLocal, NoKey: true,
+		Decide: "http://localhost:8000/v1",
+		Note:   "local server, port 8000 by default", Website: "https://omlx.ai"},
+	// its decision models (Clef, Clef-Flash, Kev, Laya, D1), served at
+	// /v1/systemone, are marked by capabilities in /v1/models (mlxserve_decide.go)
+	{ID: MLXServePreset, Name: "MLX-Serve", Icon: "mlx-serve", Kind: KindLocal, NoKey: true,
 		Chat: "http://localhost:11234/v1", Responses: "http://localhost:11234/v1", Anthropic: "http://localhost:11234",
-		Note: "local server on :11234", Website: "https://github.com/ddalcu/mlx-serve"},
+		Decide: "http://localhost:11234/v1",
+		Note:   "local server, port 11234 by default", Website: "https://github.com/ddalcu/mlx-serve"},
 
 	// another computer's magpie, shared on its network (remote_magpie.go):
 	// its providers, routing groups and usage stay there, each request

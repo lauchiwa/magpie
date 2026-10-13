@@ -17,8 +17,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -116,6 +116,7 @@ type cursorSpend struct {
 	IndividualLimit *json.Number `json:"individualLimit"`
 	LimitType       string       `json:"limitType"`
 	PooledLimit     json.Number  `json:"pooledLimit"` // an int64 string
+	PooledUsed      json.Number  `json:"pooledUsed"`
 }
 
 // cursorHardLimit is GetHardLimit's reply: the on-demand limit, in dollars.
@@ -126,16 +127,21 @@ type cursorHardLimit struct {
 
 // cursorOnDemand is what Cursor still serves once the included usage is
 // spent: kind is "fixed" (up to limit dollars), "unlimited", "disabled" or
-// "unavailable" (not known).
+// "unavailable" (not known). mine is the member's own spend when used is
+// their team's pool's (pool is set).
 type cursorOnDemand struct {
-	kind        string
-	used, limit float64 // dollars
+	kind              string
+	used, limit, mine float64 // dollars
+	pool              bool
 }
 
 // cursorOnDemandOf derives the On-demand state as cursor-agent 2026.10.01's
 // usage view does (usage-data.ts), and as the plugin's onDemandOf: from the
 // period's spendLimitUsage and, where that sets no limit of the user's,
-// GetHardLimit's reply (nil when it couldn't be read).
+// GetHardLimit's reply (nil when it couldn't be read). A team member with
+// no limit of their own spends the team's pool, which cursor-agent's view
+// calls unlimited but which runs out at pooledLimit for the whole team
+// (#1868): that is a fixed limit on the pool's spend.
 func cursorOnDemandOf(p cursorPeriod, hard *cursorHardLimit) cursorOnDemand {
 	num := func(n json.Number) float64 { f, _ := n.Float64(); return f }
 	s := p.SpendLimitUsage
@@ -146,9 +152,9 @@ func cursorOnDemandOf(p cursorPeriod, hard *cursorHardLimit) cursorOnDemand {
 	var own *cursorOnDemand
 	if s.IndividualLimit != nil {
 		if l := num(*s.IndividualLimit); l > 0 {
-			own = &cursorOnDemand{"fixed", used, l / 100}
+			own = &cursorOnDemand{kind: "fixed", used: used, limit: l / 100}
 		} else {
-			own = &cursorOnDemand{"disabled", used, 0}
+			own = &cursorOnDemand{kind: "disabled", used: used}
 		}
 	}
 	if s.LimitType == "team" {
@@ -156,25 +162,27 @@ func cursorOnDemandOf(p cursorPeriod, hard *cursorHardLimit) cursorOnDemand {
 		case own != nil:
 			return *own
 		case hard != nil && (hard.NoUsageBasedAllowed || hard.HardLimit <= 0):
-			return cursorOnDemand{"disabled", used, 0}
-		case hard != nil, num(s.PooledLimit) > 0:
-			return cursorOnDemand{"unlimited", used, 0}
+			return cursorOnDemand{kind: "disabled", used: used}
+		case num(s.PooledLimit) > 0:
+			return cursorOnDemand{kind: "fixed", used: num(s.PooledUsed) / 100, limit: num(s.PooledLimit) / 100, mine: used, pool: true}
+		case hard != nil:
+			return cursorOnDemand{kind: "unlimited", used: used}
 		}
-		return cursorOnDemand{"unavailable", used, 0}
+		return cursorOnDemand{kind: "unavailable", used: used}
 	}
 	switch {
 	case hard == nil && own != nil:
 		return *own
 	case hard == nil:
-		return cursorOnDemand{"unavailable", used, 0}
+		return cursorOnDemand{kind: "unavailable", used: used}
 	case hard.NoUsageBasedAllowed:
-		return cursorOnDemand{"disabled", used, 0}
+		return cursorOnDemand{kind: "disabled", used: used}
 	case hard.HardLimit >= 2147483647:
-		return cursorOnDemand{"unlimited", used, 0}
+		return cursorOnDemand{kind: "unlimited", used: used}
 	case hard.HardLimit > 0:
-		return cursorOnDemand{"fixed", used, hard.HardLimit}
+		return cursorOnDemand{kind: "fixed", used: used, limit: hard.HardLimit}
 	}
-	return cursorOnDemand{"disabled", used, 0}
+	return cursorOnDemand{kind: "disabled", used: used}
 }
 
 // cursorDashboard posts {} to one of Cursor's DashboardService methods and
@@ -248,11 +256,29 @@ func cursorWindows(ctx context.Context, token string) ([]QuotaWindow, error) {
 	}
 	switch od.kind {
 	case "fixed":
-		ws = append(ws, QuotaWindow{Name: "On-demand", Used: max(0, min(100, 100*od.used/od.limit)), Display: fmt.Sprintf("$%.2f / $%.2f", od.used, od.limit), ResetsAt: resets})
+		display := cursorDollars(od.used) + " / " + cursorDollars(od.limit)
+		if od.pool {
+			display += " (you: " + cursorDollars(od.mine) + ")"
+		}
+		ws = append(ws, QuotaWindow{Name: "On-demand", Used: max(0, min(100, 100*od.used/od.limit)), Display: display, ResetsAt: resets})
 	case "unlimited":
-		ws = append(ws, QuotaWindow{Name: "On-demand", Display: fmt.Sprintf("$%.2f", od.used), ResetsAt: resets, Aside: true})
+		ws = append(ws, QuotaWindow{Name: "On-demand", Display: cursorDollars(od.used), ResetsAt: resets, Aside: true})
 	}
 	return append(ws, QuotaWindow{Name: "Total", Used: u.Total, ResetsAt: resets, Aside: true}), nil
+}
+
+// cursorDollars says a dollar amount to the cent, thousands grouped, as the
+// plugin does: a team's pool runs to six figures ($451,200.00).
+func cursorDollars(d float64) string {
+	s := strconv.FormatFloat(math.Abs(d), 'f', 2, 64)
+	whole, cents, _ := strings.Cut(s, ".")
+	for i := len(whole) - 3; i > 0; i -= 3 {
+		whole = whole[:i] + "," + whole[i:]
+	}
+	if d < 0 && s != "0.00" {
+		return "-$" + whole + "." + cents
+	}
+	return "$" + whole + "." + cents
 }
 
 // cursorPoolBase names a model's family: lower case, without cursor- and

@@ -36,6 +36,15 @@ func agentKeyAt(agent, gw string) string {
 	return gateway.TokenFor(agent)
 }
 
+// hereKey is keyAt for the gateway's own address, gateway.URL(): an agent
+// on this machine given that address sends the gateway's own token, unless
+// MAGPIE_ADDR pins it to an address beyond loopback, which the gateway
+// takes only a named key from (#1647, ggbdpq).
+func hereKey() string { return keyAt(gateway.URL()) }
+
+// agentKey is agentKeyAt for the gateway's own address, as hereKey.
+func agentKey(agent string) string { return agentKeyAt(agent, gateway.URL()) }
+
 // ourKey says k is a key magpie gives an agent: gateway.Token, or the LAN
 // sharing key one that reaches the gateway from elsewhere is given.
 func ourKey(k string) bool {

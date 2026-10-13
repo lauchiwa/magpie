@@ -184,8 +184,16 @@ func grokIn(at place) *Agent {
 						return err
 					}
 					if e != "" {
+						// a model without the chosen effort starts at its
+						// nearest one (a tie goes up), not at Grok's default:
+						// switching to a group of low/medium/high from xhigh
+						// keeps high (Creat.wu on Discord)
 						if es := efforts(v); es != nil && !contains(es, e) {
-							if err := edit.DelTOMLKey(path, "models", "default_reasoning_effort"); err != nil {
+							if n := catalog.NearestEffort(e, es); contains(es, n) {
+								if err := edit.SetTOMLKey(path, "models", "default_reasoning_effort", n); err != nil {
+									return err
+								}
+							} else if err := edit.DelTOMLKey(path, "models", "default_reasoning_effort"); err != nil {
 								return err
 							}
 						}

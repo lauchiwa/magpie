@@ -554,6 +554,17 @@ var (
 	onChangeMu sync.Mutex
 )
 
+// telling counts the hooks told of a change or of a sign-in (OnChange,
+// OnSignIn) that are still running, for Told. It is a count, not a WaitGroup: a host can tell a change while
+// Told waits.
+var telling struct {
+	sync.Mutex
+	*sync.Cond
+	n int
+}
+
+func init() { telling.Cond = sync.NewCond(&telling.Mutex) }
+
 // OnChange registers f to be told when a plugin sign-in or the plugins
 // change (a sign-in saved or refreshed, a plugin added).
 func OnChange(f func()) {
@@ -582,8 +593,25 @@ func changed() {
 	fs := append([]func(){}, onChange...)
 	onChangeMu.Unlock()
 	for _, f := range fs {
-		go f()
+		tell(f)
 	}
+}
+
+// tell runs a hook in the background, counted in telling until it ends.
+func tell(f func()) {
+	telling.Lock()
+	telling.n++
+	telling.Unlock()
+	go func() {
+		defer func() {
+			telling.Lock()
+			if telling.n--; telling.n == 0 {
+				telling.Broadcast()
+			}
+			telling.Unlock()
+		}()
+		f()
+	}()
 }
 
 // Restart stops the host, so the next call starts one with the plugins
@@ -748,8 +776,14 @@ func start(ctx context.Context) (*host, error) {
 		return nil, err
 	}
 	h, crashed, err := startOn(ctx, bun)
+	if crashed {
+		err = whyDied(ctx, bun, err)
+	}
 	if err == nil || !crashed || os.Getenv("MAGPIE_BUN") != "" {
-		return h, err
+		// a Bun that can't be started at all isn't fallen back from: the
+		// one before is the same build for this system, and setting this
+		// one aside would mark a good version bad (#1877)
+		return h, cantStart(bun, err)
 	}
 	// the Bun magpie last took died starting the host: the one before it,
 	// and the new one set aside when that one starts it
@@ -820,13 +854,8 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 		proxy:    proxy,
 		proxyAt:  time.Now(),
 	}
-	go func() {
-		sc := bufio.NewScanner(stderr)
-		sc.Buffer(make([]byte, 64<<10), 4<<20)
-		for sc.Scan() {
-			log.Printf("plugin: %s", sc.Text())
-		}
-	}()
+	go drainStderr(stderr)
+
 	go h.read(out)
 	go h.writerLoop()
 	go h.ctrlLoop()
@@ -872,6 +901,21 @@ func startOn(ctx context.Context, bun string) (*host, bool, error) {
 		}
 	}
 	return h, false, nil
+}
+
+// drainStderr logs the child's stderr a line at a time. A line over 4 MiB
+// stops the scanner; the rest is read and dropped, so the child is never left
+// blocked on a pipe nobody reads, and the log says from where.
+func drainStderr(r io.Reader) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64<<10), 4<<20)
+	for sc.Scan() {
+		log.Printf("plugin: %s", sc.Text())
+	}
+	if errors.Is(sc.Err(), bufio.ErrTooLong) {
+		log.Printf("plugin: a stderr line over 4 MiB; the plugin's stderr is dropped from here on")
+	}
+	io.Copy(io.Discard, r)
 }
 
 func (h *host) read(out io.Reader) {
@@ -937,7 +981,9 @@ func (h *host) dispatch(m message) {
 			f := onSignIn
 			onSignInMu.Unlock()
 			if f != nil {
-				go f(m.Provider, m.Account, m.Said)
+				// counted, so Told waits for it: it writes the
+				// account's lapse into logins.json (#1935)
+				tell(func() { f(m.Provider, m.Account, m.Said) })
 			}
 		case "toast":
 			log.Printf("plugin: %s %s", m.Title, m.Message)

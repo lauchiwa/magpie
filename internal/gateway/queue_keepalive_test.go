@@ -279,25 +279,26 @@ func TestQueuedStreamKeptAliveForTheMinute(t *testing.T) {
 // begun before the vendor was asked, wrote nothing until keepHeldAfter
 // after it began. The check is on the gateway's own writes, in order,
 // not on gaps a client measures, which stretch under load (3f4287e6).
+// The request waits for a slot (MaxConcurrency), freed once its agent has
+// heard a keepalive, so it is kept alive before the handoff however late
+// it runs; a wait for room in the minute is kept alive and handed over
+// the same way (keepQueued, then watch), but needed a minute sized for a
+// loaded machine (#1654).
 func TestQueuedStreamKeptAliveOnceSentToItsVendor(t *testing.T) {
 	for _, a := range queueAsks {
 		t.Run(a.name, func(t *testing.T) {
-			// what is left of the minute when the queued request arrives,
-			// late under load, stays over keepHeldAfter, so it is kept
-			// alive before the handoff
-			shortMinute(t, 4*time.Second, time.Minute)
-			v := &streamVendor{later: time.Second}
-			gw := queueGateway(t, v, func(p *provider.Provider) { p.MaxRPM = 1 })
+			one := 1
+			v := &streamVendor{block: make(chan struct{}), later: time.Second}
+			gw := queueGateway(t, v, func(p *provider.Provider) { p.MaxConcurrency = &one })
 			keepFast(t, keepaliveGap, 100*time.Millisecond, keepaliveLongest)
 			keepHeldAfter = 1500 * time.Millisecond // put back by queueGateway's cleanup
-			if code, body, _, err := askHeard(gw, a.path, a.body, nil); err != nil || code != 200 {
-				t.Fatalf("first: %d %v %s", code, err, body)
-			}
+			first := holdSlot(t, gw, v, a.path, a.body)
 			req, _ := http.NewRequest("POST", gw+a.path, strings.NewReader(a.body))
 			req.Header.Set("Content-Type", "application/json")
 			var from string
 			req = req.WithContext(httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
-				GotConn: func(i httptrace.GotConnInfo) { from = i.Conn.LocalAddr().String() },
+				GotConn:              func(i httptrace.GotConnInfo) { from = i.Conn.LocalAddr().String() },
+				GotFirstResponseByte: first.free,
 			}))
 			res, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 30 * time.Second}).Do(req)
 			if err != nil {
@@ -308,6 +309,7 @@ func TestQueuedStreamKeptAliveOnceSentToItsVendor(t *testing.T) {
 			if err != nil || res.StatusCode != 200 || !strings.Contains(string(b), ": keepalive") || !strings.Contains(string(b), "queued ok") {
 				t.Fatalf("queued = %d %v %q, want 200, keepalives, then the reply", res.StatusCode, err, b)
 			}
+			first.done(t)
 			l, ok := writes.Load(from)
 			if !ok {
 				t.Fatal("no writes recorded for the agent's connection")
@@ -324,6 +326,41 @@ func TestQueuedStreamKeptAliveOnceSentToItsVendor(t *testing.T) {
 			}
 		})
 	}
+}
+
+// heldSlot is a request holding a provider's one slot (MaxConcurrency 1)
+// at a vendor whose first request waits on its block.
+type heldSlot struct {
+	once sync.Once
+	v    *streamVendor
+	err  chan error
+}
+
+// free lets the holder's vendor answer, which frees the slot; once.
+func (h *heldSlot) free() { h.once.Do(func() { close(h.v.block) }) }
+
+// done waits for the holder's own reply.
+func (h *heldSlot) done(t *testing.T) {
+	t.Helper()
+	if err := <-h.err; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// holdSlot sends a request that takes the slot and keeps it until free; it
+// is freed after 5s if nothing frees it, so a queued agent that hears
+// nothing fails its test rather than hanging it.
+func holdSlot(t *testing.T, gw string, v *streamVendor, path, body string) *heldSlot {
+	t.Helper()
+	h := &heldSlot{v: v, err: make(chan error, 1)}
+	go func() {
+		_, _, _, err := askHeard(gw, path, body, nil)
+		h.err <- err
+	}()
+	waitSeen(t, v, 1) // the first has the slot
+	stop := time.AfterFunc(5*time.Second, h.free)
+	t.Cleanup(func() { stop.Stop(); h.free() })
+	return h
 }
 
 // A slot of MaxConcurrency waited for is kept alive the same way.
@@ -357,7 +394,11 @@ func TestQueuedStreamKeptAliveForASlot(t *testing.T) {
 // Once a queued request's agent has the stream's 200, the vendor failing
 // after it reaches the agent as its stream's error event, in its
 // protocol's own shape, not as a status the agent can no longer be told,
-// nor a JSON error body inside the stream.
+// nor a JSON error body inside the stream. The request waits for a slot
+// (MaxConcurrency), freed once its agent has heard a keepalive: a wait for
+// room in the minute goes through the same keepQueued and handoff, but
+// there each of the vendor's retries waited a minute more, nine seconds a
+// protocol (#1654).
 func TestQueuedStreamFailureIsTheStreamsError(t *testing.T) {
 	wants := map[string][]string{
 		"chat":      {`"error"`, "the vendor is overloaded"},
@@ -366,14 +407,17 @@ func TestQueuedStreamFailureIsTheStreamsError(t *testing.T) {
 	}
 	for _, a := range queueAsks {
 		t.Run(a.name, func(t *testing.T) {
-			shortMinute(t, queueMinute, time.Minute)
-			gw := queueGateway(t, &streamVendor{fail: 10}, func(p *provider.Provider) { p.MaxRPM = 1 })
-			if code, body, _, err := askHeard(gw, a.path, a.body, nil); err != nil || code != 200 {
-				t.Fatalf("first: %d %v %s", code, err, body)
-			}
-			code, body, _, err := askHeard(gw, a.path, a.body, nil)
+			one := 1
+			v := &streamVendor{fail: 10, block: make(chan struct{})}
+			gw := queueGateway(t, v, func(p *provider.Provider) { p.MaxConcurrency = &one })
+			first := holdSlot(t, gw, v, a.path, a.body)
+			code, body, _, err := askHeard(gw, a.path, a.body, first.free)
 			if err != nil || code != 200 || !strings.Contains(body, ": keepalive") {
 				t.Fatalf("queued = %d %v %q, want the stream's 200 and keepalives", code, err, body)
+			}
+			first.done(t)
+			if _, ok := v.arrived(1); !ok {
+				t.Fatal("the queued request never reached the vendor")
 			}
 			for _, w := range wants[a.name] {
 				if !strings.Contains(body, w) {

@@ -86,7 +86,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await card.locator(".pm-logo img").getAttribute("src"), "/api/icons/aiderpic.png");
         assert.equal(await card.locator(".pm-logo svg").count(), 0);
 
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         const row = (name) => view.locator(".pm-row").filter({ has: page.locator(".name", { hasText: name }) });
         const aider = row("aider");
         await aider.waitFor();

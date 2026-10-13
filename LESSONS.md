@@ -400,6 +400,17 @@ it doesn't.**
 - Done right on 10-09/10-10: none of the 22 commits over 400 lines lacks a
   body.
 
+**A squash merge's message is written, not GitHub's default.** Give
+`gh pr merge --squash` a `--subject` and a `--body-file` holding the PR's
+own change and what was run at the reviewed head.
+- 708ae4144 (#852) and 81b7016e6 (#1028) each carry a ~520KB body. Their
+  branches had main merged in (100 commits on #1028), and the default
+  squash message lists every commit's message. #1028's own run record
+  isn't in git at all: the body after its subject is other commits.
+- Before pushing, check that `git log -1 --format=%B | wc -c` is a few KB at
+  most.
+- Seen 1× (2026-10-13).
+
 **Two sessions never commit from the same checkout.**
 - 10-09 12:10: 2018882e carries the davsync subject but holds the GTK
   font-DPI fix (#1371, 7 files). b86001d4, "#1371 GTK", is empty. be203728

@@ -236,8 +236,17 @@ func copilotDirect(ctx context.Context, app copilotApp) (copilotSession, error) 
 		} `json:"endpoints"`
 	}
 	if res.StatusCode != 200 || json.Unmarshal(b, &u) != nil {
+		// 401 is GitHub refusing the token itself; a 403 here can be an
+		// account without Copilot, and a 5xx is GitHub's own trouble
+		if res.StatusCode == http.StatusUnauthorized {
+			copilotRefuse(github, res.StatusCode)
+		}
 		return copilotSession{}, errors.New("the Copilot CLI's sign-in was refused (" + APIError(b, res.Status) + "); run `copilot login` again")
 	}
+	copilotRefusals.Lock()
+	delete(copilotRefusals.at, github)
+	delete(copilotRefusals.status, github)
+	copilotRefusals.Unlock()
 	s := copilotSession{Token: github, ExpiresAt: time.Now().Add(30 * time.Minute).Unix(), direct: true}
 	s.Endpoints.API = u.Endpoints.API
 	copilotSessions[github] = s

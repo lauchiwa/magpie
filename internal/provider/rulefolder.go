@@ -10,6 +10,7 @@ import (
 	"path"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -84,4 +85,22 @@ func cleanFolder(p string) (string, error) {
 		return "", fmt.Errorf("the folder %q is not a whole path (/Users/me/work, ~/work, C:\\work)", p)
 	}
 	return p, nil
+}
+
+// cleanFolders checks a rule's folders, each once, none blank.
+func cleanFolders(in []string) ([]string, error) {
+	var out []string
+	for _, p := range in {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		c, err := cleanFolder(p)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(out, c) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }

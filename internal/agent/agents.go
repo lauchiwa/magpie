@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -19,6 +18,7 @@ import (
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
@@ -47,6 +47,11 @@ func init() {
 var others = []*Agent{
 	{ID: "magpie", Name: "magpie", Icon: "magpie", UA: []string{"magpie"}},
 	{ID: "curl", Name: "curl", Icon: "curl", UA: []string{"curl"}},
+	// PI-Desktop (vastsa/PI-Desktop) runs Pi's own library, which says
+	// "pi (…)"; given a User-Agent of its own in its provider's settings
+	// ("pi-desktop/0.1.0"), it is told apart from Pi by that name, which
+	// Pi's "pi-" would take otherwise (#1966, dgmico)
+	{ID: "pi-desktop", Name: "PI-Desktop", Icon: "pi", UA: []string{"pi-desktop"}},
 }
 
 // Clients is everyone whose requests the gateway knows by name: every
@@ -91,6 +96,7 @@ func builtins(home, cfg string) []*Agent {
 		opencode(home, cfg),
 		openChamber(home, cfg),
 		mimocode(home, cfg),
+		deveco(home, cfg),
 		pi(home),
 		stepcode(home),
 		aside(home),
@@ -128,6 +134,7 @@ func builtins(home, cfg string) []*Agent {
 		qoder(home),
 		qoderCN(home),
 		grok(home),
+		grokApp(home),
 		zcode(home),
 		workbuddy(home),
 		workbuddyAI(home),
@@ -369,7 +376,7 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 			ms[m.ID] = e
 		}
 		return map[string]any{"npm": "@ai-sdk/openai-compatible", "name": "magpie",
-			"options": map[string]any{"baseURL": gw + "/v1", "apiKey": keyAt(gw)}, "models": ms}
+			"options": map[string]any{"baseURL": gw + "/v1", "apiKey": openCodeKeyAt(catalog, gw)}, "models": ms}
 	case "crush":
 		var ms []map[string]any
 		for _, m := range models {
@@ -674,7 +681,7 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 				return ""
 			}
 			return wiringOff(name, path, func(k string) (string, bool) { return edit.GetJSON(path, "provider."+magpieID+".options."+k) },
-				"baseURL", at.v1(), "apiKey", at.gwKey())
+				"baseURL", at.v1(), "apiKey", openCodeKeyAt(id, at.gw()))
 		},
 		Sync: func() error {
 			// a model of magpie's chosen, but its provider gone from the
@@ -689,6 +696,17 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 			{Key: "small", Label: "small", Get: jsonGet(path, "small_model"), Set: set("small_model"), Options: opts("small")},
 		},
 	}
+}
+
+// openCodeKeyAt is the key an OpenCode-shaped agent (id) sends the gateway
+// at gw: the gateway's own, which OpenCode and MiMo Code are told apart by
+// their User-Agents with, or for DevEco Code, parts of whose code still
+// send OpenCode's User-Agent, one that names it.
+func openCodeKeyAt(id, gw string) string {
+	if id == "deveco" {
+		return agentKeyAt(id, gw)
+	}
+	return keyAt(gw)
 }
 
 // openCodeRef is the value that makes the OpenCode config at path (agent
@@ -804,6 +822,31 @@ func mimocode(home, cfg string) *Agent {
 	return openCodeLike(here(home), "mimocode", "MiMo Code", "mimocode", "mimo",
 		dir, filepath.Join(home, ".local", "share", "mimocode", "auth.json"),
 		[]string{"mimocode"}, "mimo")
+}
+
+// deveco is DevEco Code, Huawei's fork of OpenCode for HarmonyOS apps
+// (openharmony-sig/deveco-code, #1885). It keeps OpenCode's config shape
+// in its own folder, $XDG_CONFIG_HOME/deveco, merging config.json,
+// deveco.json and deveco.jsonc there (packages/opencode/src/config,
+// loadGlobal); DEVECO_CONFIG_DIR adds a folder read after it, as
+// OPENCODE_CONFIG_DIR does OpenCode's, so what magpie writes there wins.
+// Its auth is xdg-basedir's data folder's, ~/.local/share/deveco. 0.2.3's
+// requests to a provider of the config's say "deveco/0.2.3 ai-sdk/…", but
+// much of the OpenCode code it keeps still sends OpenCode's own User-Agent
+// (opencode/<version>), so its key names it as well (openCodeKeyAt).
+func deveco(home, cfg string) *Agent {
+	return openCodeLike(here(home), "deveco", "DevEco Code", "deveco-color", "deveco",
+		devecoDir(cfg), filepath.Join(home, ".local", "share", "deveco", "auth.json"), []string{"deveco"})
+}
+
+// devecoDir is the folder DevEco Code reads its user config from:
+// $DEVECO_CONFIG_DIR when set to an absolute folder, else
+// $XDG_CONFIG_HOME/deveco (cfg).
+func devecoDir(cfg string) string {
+	if d := strings.TrimSpace(appdir.Getenv("DEVECO_CONFIG_DIR")); filepath.IsAbs(d) {
+		return d
+	}
+	return filepath.Join(cfg, "deveco")
 }
 
 func pi(home string) *Agent { return piIn(here(home)) }
@@ -964,6 +1007,16 @@ func piLikeKeyed(at place, id, name, dir string, key func() string) *Agent {
 		Sync: func() error {
 			return syncJSON(modelsPath, "providers."+magpieID, block)
 		},
+		// a provider renamed takes its magpie/<id>/ entries in enabledModels
+		// with it: an entry left on the old id names nothing, and Pi would
+		// leave that model out of Ctrl+P (#1919, #1828)
+		RenameRefs: func(from, to string) (bool, error) {
+			next, ok := renameRefList(piScope(path), from, to)
+			if !ok {
+				return false, nil
+			}
+			return true, edit.SetJSON(path, edit.KV{Path: "enabledModels", Value: next})
+		},
 		Fields: []Field{
 			{
 				Key: "model", Label: "model",
@@ -1064,14 +1117,14 @@ func gooseIn(at place, cfg string) *Agent {
 		keyEnv = func(string) string { return "" }
 	}
 	return &Agent{
-		ID: "goose", Name: "Goose", Icon: "goose", Bin: "goose", Dir: filepath.Dir(path), Path: path, Spelled: prefixed,
+		ID: "goose", Name: "Goose", Icon: "goose", Bin: "goose", Dir: filepath.Dir(path), Path: path, Spelled: prefixed, NoNames: true,
 		UA: []string{"goose"},
 		Check: func() string {
 			if p, _ := gooseActive(path); p != gooseProviderID {
 				return ""
 			}
 			return wiringOff("Goose", provider, func(k string) (string, bool) { return edit.GetJSON(provider, k) },
-				"base_url", at.v1(), "headers.Authorization", "Bearer "+at.gwKey())
+				"base_url", at.v1(), "headers.Authorization", "Bearer "+gooseKey(at))
 		},
 		Sync: func() error { return syncGooseProvider(provider, at) },
 		// goose loads custom_providers when it starts
@@ -1087,7 +1140,7 @@ func gooseIn(at place, cfg string) *Agent {
 			if agentDir(filepath.Dir(path)) {
 				return true
 			}
-			bin, err := exec.LookPath("goose")
+			bin, err := proc.Look("goose")
 			return err == nil && !goProgram(bin)
 		},
 		Fields: []Field{{
@@ -1169,6 +1222,11 @@ func copilot(home string) *Agent {
 		ID: "copilot", Name: "Copilot CLI", Icon: "githubcopilot", Aliases: []string{"gh-copilot"},
 		UA:  []string{"copilot", "github-copilot"},
 		Bin: "copilot", Dir: dir, Path: path,
+		// GitHub Copilot's JetBrains and VS Code plugins write ~/.copilot
+		// too (agents, skills, hooks, instructions, prompts, ide), so the
+		// folder says nothing of the CLI: its settings.json or the copilot
+		// command does (#1495)
+		dirShared: true,
 		Fields: []Field{{
 			Key: "model", Label: "model",
 			Get: jsonGet(path, "model"),

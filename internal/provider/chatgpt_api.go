@@ -114,12 +114,15 @@ func setSIWCLoginOn(user string, on bool) error {
 }
 
 // forgetSIWCLogin removes an account, and has OpenAI revoke its refresh
-// token: signed out, it is gone there too.
+// token: signed out, it is gone there too. The revoke leaves through the
+// account's own proxy, as its sign-in and requests did (#1663), read
+// before the account is forgotten.
 func forgetSIWCLogin(user string) error {
+	via := ViaLogin(context.Background(), ChatGPTAPIID, user)
 	return forgetSideLogin(ChatGPTAPIID, user, siwcSide(), func(l savedLogin) {
 		if c, ok := siwcSaved(l); ok {
 			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				ctx, cancel := context.WithTimeout(via, 15*time.Second)
 				defer cancel()
 				_ = siwcRevoke(ctx, c)
 			}()

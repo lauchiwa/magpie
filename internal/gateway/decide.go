@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -119,7 +120,11 @@ func jevBody(model string, intents []string, work map[string]string, prev before
 			}
 		}
 		qs["intent"] = map[string]any{"type": "choice", "instructions": intentAsk(prev), "criteria": criteria}
-		qs["level"] = map[string]any{"type": "choice", "instructions": levelAsk(prev, work != nil), "criteria": levels}
+		// One kind is no scale, and a choice of one option is no question:
+		// Clef turns it away, failing the whole call
+		if len(intents) > 1 {
+			qs["level"] = map[string]any{"type": "choice", "instructions": levelAsk(prev, work != nil), "criteria": levels}
+		}
 
 	}
 	if effort {
@@ -193,7 +198,7 @@ func readJev(b []byte, intents []string, levels bool, prev before) (verdict, err
 			Output int `json:"output_tokens"`
 		} `json:"usage"`
 	}
-	if err := json.Unmarshal(b, &out); err != nil {
+	if err := decodeJSON(b, &out); err != nil {
 		return verdict{}, answerError{fmt.Errorf("not a System One answer")}
 	}
 	var v verdict
@@ -275,7 +280,7 @@ func (s *Server) jevLevelled(ctx context.Context, p provider.Provider, model str
 			Score *float64 `json:"score"`
 		} `json:"answers"`
 	}
-	if json.Unmarshal(b, &out) != nil || out.Answers["levels"].Noul == nil {
+	if decodeJSON(b, &out) != nil || out.Answers["levels"].Noul == nil {
 		return levelling{}, answerError{fmt.Errorf("not a System One answer")}
 	}
 	l.levels = *out.Answers["levels"].Noul >= 0.5
@@ -302,7 +307,7 @@ func (s *Server) askJev(p provider.Provider, model string, intents []string, pre
 		model = p.Jev()
 	}
 	var l levelling
-	if len(intents) > 0 {
+	if len(intents) > 1 { // one kind is a topic: a message may be none of it
 		var err error
 		if l, err = s.jevLevelled(ctx, p, model, intents); err != nil {
 			return verdict{}, err
@@ -337,12 +342,12 @@ func (s *Server) systemOne(ctx context.Context, p provider.Provider, model strin
 			Output int `json:"output_tokens"`
 		} `json:"usage"`
 	}
-	_ = json.Unmarshal(b, &use)
+	_ = decodeJSON(b, &use)
 	var keyID, keyName string
 	if p.Account == nil && p.Key != "" {
 		keyID, keyName = provider.KeyID(p.Key), p.KeyName
 	}
-	usage.Append(usage.Record{Time: start, Agent: usage.AgentOf(RouterAgent), Provider: p.ID, Host: p.Where(), Model: model, Requested: model, Served: use.Model,
+	usage.Append(usage.Record{Time: start, Agent: usage.AgentOf(RouterAgent), Kind: "routing", Provider: p.ID, Host: p.Where(), Model: model, Requested: model, Served: use.Model,
 		ProviderKeyID: keyID, ProviderKeyName: keyName, ProviderAccount: accountOf(p),
 		Input: use.Usage.Input, Output: use.Usage.Output, Millis: time.Since(start).Milliseconds(), Status: status})
 	return b, nil
@@ -353,6 +358,12 @@ func (s *Server) systemOne(ctx context.Context, p provider.Provider, model strin
 // the provider answers in another one. DecideURL and Sign errors are as
 // they are; a transport error is named with p.
 func (s *Server) postDecide(ctx context.Context, p provider.Provider, model string, body []byte) (int, []byte, http.Header, error) {
+	// every decision call goes through here — System One, a group rule's
+	// classifier, a decision group's members: a model the user disabled
+	// (#1867) is never asked
+	if msg, off := modelOff(p, model, p.ID+"/"+model); off {
+		return 0, nil, nil, errors.New(msg)
+	}
 	ctx = s.metered(p.Via(ctx), p, "") // counted against its MaxRPM (rpm.go)
 	u, err := p.DecideModelURL(ctx, model)
 	if err != nil {
@@ -411,8 +422,13 @@ func (s *Server) serveSystemOne(w http.ResponseWriter, r *http.Request) {
 	var q struct {
 		Model string `json:"model"`
 	}
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		writeError(w, provider.Chat, http.StatusBadRequest, "not a System One request")
+		return
+	}
+	// a decision model the user disabled (#1867), or a group of them all
+	// disabled, is refused as a chat model is
+	if refuseOff(w, provider.Chat, q.Model) {
 		return
 	}
 	// a routing group of decision models: each of them in turn
@@ -434,6 +450,10 @@ func (s *Server) serveSystemOne(w http.ResponseWriter, r *http.Request) {
 	asked := q.Model
 	if asked == "" {
 		asked = p.ID + "/" + model
+	}
+	if msg, off := modelOff(p, model, asked); off {
+		writeError(w, provider.Chat, http.StatusForbidden, msg)
+		return
 	}
 	// a gateway key held to some models (#882) is refused another; a
 	// decision model is a model, and System One asks one directly
@@ -470,7 +490,7 @@ func (s *Server) serveSystemOne(w http.ResponseWriter, r *http.Request) {
 	seat := decideSeat(p, model)
 	var used Usage
 	who := callerOf(r)
-	tr := s.trace.begin(Route{Time: start, Agent: who.agent, Session: sessionOf(r.Header), Model: asked, Provider: p.ID,
+	tr := s.trace.beginFor(r, Route{Time: start, Agent: who.agent, Session: sessionOf(r.Header), Model: asked, Provider: p.ID,
 		Order: []Weighed{seat}, Tries: []Try{{ID: seat.ID, Model: model, Start: start}}})
 	end := func(status int, msg string, tokens int) {
 		ms := time.Since(start).Milliseconds()
@@ -498,7 +518,7 @@ func (s *Server) serveSystemOne(w http.ResponseWriter, r *http.Request) {
 			Output int `json:"output_tokens"`
 		} `json:"usage"`
 	}
-	_ = json.Unmarshal(b, &use)
+	_ = decodeJSON(b, &use)
 	errMsg := ""
 	if status >= 300 {
 		errMsg = provider.APIError(b, fmt.Sprintf("%d %s", status, http.StatusText(status)))
@@ -549,7 +569,7 @@ func withEffort(proto provider.Protocol, body []byte, effort string) []byte {
 		OutputConfig map[string]any `json:"output_config"`
 		MaxTokens    int            `json:"max_tokens"`
 	}
-	if effort == "" || json.Unmarshal(body, &v) != nil {
+	if effort == "" || decodeJSON(body, &v) != nil {
 		return body
 	}
 	switch proto {
@@ -617,7 +637,7 @@ func requestEffort(proto provider.Protocol, body []byte) string {
 			Effort string `json:"effort"`
 		} `json:"output_config"`
 	}
-	if json.Unmarshal(body, &v) != nil || v.Thinking == nil || v.Thinking.Type != "enabled" && v.Thinking.Type != "adaptive" {
+	if decodeJSON(body, &v) != nil || v.Thinking == nil || v.Thinking.Type != "enabled" && v.Thinking.Type != "adaptive" {
 		return ""
 	}
 	if e := effortOf(v.OutputConfig.Effort); e != "" {
@@ -676,7 +696,7 @@ func withFixedEffort(proto provider.Protocol, body []byte, effort string) []byte
 		var v struct {
 			Reasoning map[string]any `json:"reasoning"`
 		}
-		if json.Unmarshal(body, &v) != nil {
+		if decodeJSON(body, &v) != nil {
 			return body
 		}
 		if v.Reasoning == nil {
@@ -691,7 +711,7 @@ func withFixedEffort(proto provider.Protocol, body []byte, effort string) []byte
 			} `json:"thinking"`
 			MaxTokens int `json:"max_tokens"`
 		}
-		if json.Unmarshal(body, &v) != nil {
+		if decodeJSON(body, &v) != nil {
 			return body
 		}
 		if effort == "none" {

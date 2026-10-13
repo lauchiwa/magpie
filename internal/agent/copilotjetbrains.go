@@ -50,7 +50,6 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
-	"github.com/yetone/magpie/internal/gateway"
 )
 
 // copilotJBID is the agent's id, and what its token names.
@@ -154,7 +153,7 @@ func copilotJetBrainsAt(path string, installed func() bool) *Agent {
 					return url, url != ""
 				}
 				return edit.GetJSON(path, k)
-			}, "deploymentUrl", vscodeURL(), copilotJBKey, gateway.TokenFor(copilotJBID))
+			}, "deploymentUrl", vscodeURL(), copilotJBKey, agentKey(copilotJBID))
 		},
 		// its picker lists the models picked for it (#1508)
 		ListsModels: true,
@@ -202,7 +201,7 @@ func copilotJBWrite(path string) error {
 	models := copilotJBModelsJSON(hidden)
 	kvs := []edit.KV{
 		{Path: copilotJBConfig, Value: map[string]string{"groupName": magpieID, "apiType": "chatCompletions"}},
-		{Path: copilotJBKey, Value: gateway.TokenFor(copilotJBID)},
+		{Path: copilotJBKey, Value: agentKey(copilotJBID)},
 		{Path: copilotJBModels, Value: models},
 	}
 	// written only where it differs, so a sync with nothing new leaves the

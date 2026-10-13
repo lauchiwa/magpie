@@ -16,7 +16,7 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 
 .ctx-card { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 14px; min-width: 0; font-variant-numeric: tabular-nums; }
 .ctx-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.ctx-head .grow, .ctx-foot .grow, .ctx-contents-head .grow, .ctx-agent-head .grow, .ctx-agent-foot .grow, .ctx-tools .grow, .ctx-sess-head .grow { flex: 1; }
+.ctx-head .grow, .ctx-foot .grow, .ctx-contents-head .grow, .ctx-agent-head .grow, .ctx-agent-foot .grow, .ctx-sess-head .grow { flex: 1; }
 .ctx-title { font-size: 13px; font-weight: 600; color: var(--fg); white-space: nowrap; }
 .ctx-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--code-font, var(--code)); font-size: 11px; color: var(--muted); }
 .ctx-state { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 20px; padding: 0 8px; border-radius: 10px; font-size: 11px; font-weight: 500; background: var(--pill); color: var(--fg-2); }
@@ -294,6 +294,8 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 @media (prefers-reduced-motion: reduce) { .ctx-tune-chart :is(svg, .ctx-tc-dot) { animation: none; } }
 .ctx-tune-note { padding: 0 4px 12px; }
 .ctx-tune-why { margin: 0; font-size: 12px; line-height: 1.5; color: var(--fg-2); }
+/* what the advice doesn't weigh (#1854), quieter than the facts it follows */
+.ctx-tune-caveat { margin: -4px 0 0; font-size: 11px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
 .ctx-tune-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .ctx-tune-src { font-size: 11px; color: var(--muted); margin-top: -7px; overflow-wrap: anywhere; }
 .ctx-tune-foot .grow { flex: 1; }

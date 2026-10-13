@@ -30,6 +30,8 @@
 package agentplug
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -340,13 +342,44 @@ func (a *Agent) Connect(in map[string]any) (map[string]any, error) {
 	if !res.IsObject() {
 		return nil, errors.New("connect returned neither an object nor nothing")
 	}
-	g, err := a.rt.ToGo(res)
+	b, err := a.rt.AppendJSON(nil, res)
 	if err != nil {
 		return nil, err
 	}
-	out, ok := g.(map[string]any)
-	if !ok {
+	return keys(b)
+}
+
+// keys is connect's result, as JSON text, by key path. An object or array
+// stays its JSON text (a json.RawMessage), so its members are written in
+// the order the module gave them: a Go map would write them sorted, and an
+// agent shows Kilo's effort variants low, medium, high as high, low, medium
+// (#1890). A string, number, boolean or null is its Go value.
+func keys(b []byte) (map[string]any, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(b, &top); err != nil || top == nil {
 		return nil, errors.New("connect returned no object of keys")
+	}
+	out := make(map[string]any, len(top))
+	for k, raw := range top {
+		switch raw[0] {
+		case '{', '[':
+			out[k] = raw
+			continue
+		}
+		d := json.NewDecoder(bytes.NewReader(raw))
+		d.UseNumber()
+		var v any
+		if err := d.Decode(&v); err != nil {
+			return nil, fmt.Errorf("connect's %q: %w", k, err)
+		}
+		if n, ok := v.(json.Number); ok {
+			if i, err := n.Int64(); err == nil {
+				v = i
+			} else {
+				v, _ = n.Float64()
+			}
+		}
+		out[k] = v
 	}
 	return out, nil
 }

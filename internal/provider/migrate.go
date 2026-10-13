@@ -374,7 +374,14 @@ func setMigration(id string, f func(m *Migration)) error {
 	for k, v := range readMigrationsFile() {
 		all[k] = v
 	}
+	// f changes its own copy: the lists read are shared with every reader
+	// (filememo), and a write that fails leaves them as the file has them
 	m := all[id]
+	m.Accounts = slices.Clone(m.Accounts)
+	for i := range m.Accounts {
+		m.Accounts[i].Was = maps.Clone(m.Accounts[i].Was)
+	}
+	m.Backup = slices.Clone(m.Backup)
 	f(&m)
 	all[id] = m
 	b, err := json.MarshalIndent(all, "", "  ")
@@ -422,7 +429,10 @@ func lockMoves() (func(), error) {
 // Hooks the tests stand in for.
 var (
 	installPlugin = func(ctx context.Context, pkg, min string) error {
-		older := false
+		// what the user has is theirs: a version they pinned stays, and
+		// a git one is reinstalled from its own repository, where a bare
+		// name would replace either with <pkg>@latest
+		found, older := pkg, false
 		for _, e := range plugin.Load().Plugins {
 			if plugin.PackageName(e.Spec) != pkg {
 				continue
@@ -437,7 +447,10 @@ var (
 			if plugin.IsPath(e.Spec) {
 				return fmt.Errorf("%s at %s is %s; moving needs %s or newer", pkg, e.Spec, v, min)
 			}
-			older = !plugin.IsGit(e.Spec)
+			if plugin.Pinned(e.Spec) {
+				return fmt.Errorf("%s is pinned at %s; moving needs %s or newer", pkg, e.Spec, min)
+			}
+			found, older = e.Spec, !plugin.IsGit(e.Spec)
 			break
 		}
 		var err error
@@ -445,9 +458,9 @@ var (
 			// npm's newest, which bun says why it won't install (a
 			// minimumReleaseAge), where bun's own latest is an older
 			// version without a word (sweanng424 on Discord)
-			err = plugin.Upgrade(ctx, pkg)
+			err = upgradePlugin(ctx, pkg)
 		} else {
-			_, err = plugin.Add(ctx, pkg)
+			_, err = addPlugin(ctx, found)
 		}
 		if err == nil && min != "" {
 			if v := plugin.Version(pkg); update.Newer(min, v) {
@@ -458,6 +471,10 @@ var (
 	}
 	pluginProviders = plugin.Providers
 	removePlugin    = plugin.Remove
+	// addPlugin and upgradePlugin install what installPlugin decided: vars
+	// so a test can read what it is handed
+	addPlugin     = plugin.Add
+	upgradePlugin = plugin.Upgrade
 )
 
 // modelsInUse are the models the built-in id serves now: the ones agents,

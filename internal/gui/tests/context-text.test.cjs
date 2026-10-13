@@ -102,7 +102,9 @@ function serve(lang, asked) {
 // the reader scrolls (the wheel) until what they'll point at is in view:
 // the app puts back a scroll that isn't the reader's, a test's own included
 async function wheelTo(page, l) {
-  await page.mouse.move(200, 300);
+  // over the page, not the sidebar beside it
+  const v = await page.locator("#view-usage").boundingBox();
+  await page.mouse.move(v.x + v.width / 2, 300);
   for (let i = 0; i < 40 && await l.evaluate((b) => b.getBoundingClientRect().bottom > innerHeight - 70); i++) {
     await page.mouse.wheel(0, 120);
     await page.waitForTimeout(50);

@@ -171,7 +171,7 @@ func (q Provider) detectOne(proto Protocol, m string, wait time.Duration) (Detec
 	}
 	return d, func(ctx context.Context) Result {
 		u, body := tiny(k, proto, UpstreamName(q, m))
-		return probe(ctx, k, proto, u, k.Prepare([]byte(body)), m, wait)
+		return probe(ctx, k, proto, u, k.tested(body), m, wait)
 	}
 }
 
@@ -308,11 +308,11 @@ func (p Provider) detectModels(ctx context.Context) []string {
 	if len(ids) > 0 {
 		return ids
 	}
-	ms, _, err := p.fetchOne(ctx)
+	l, err := p.fetchOne(ctx)
 	if err != nil {
 		return nil
 	}
-	for _, m := range ms {
+	for _, m := range l.models {
 		ids = append(ids, m.ID)
 	}
 	return ids

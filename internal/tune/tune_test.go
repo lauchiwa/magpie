@@ -124,3 +124,30 @@ func TestCompactSettingCappedByWindow(t *testing.T) {
 		t.Fatalf("curve reaches %d, past the model's window", last)
 	}
 }
+
+// Each window tried says how many compactions it would have made (#1860):
+// fewer as the window grows, none once it is over every conversation, and
+// at the window the agent ran with, about as many as its files show.
+func TestCompactCurveCountsCompactions(t *testing.T) {
+	cs := many(3, func(id string, t0 time.Time) []Call {
+		return session(id, t0, 600, 30000, 5000, 967000, 60000, 30*time.Second, false)
+	})
+	o := claudeOpts
+	o.Window, o.Current = 1000000, 1000000
+	r := Compact(cs, o)
+	if r == nil {
+		t.Fatal("no advice")
+	}
+	first, last := r.Curve[0], r.Curve[len(r.Curve)-1]
+	if first.Compacts <= last.Compacts || last.Compacts == 0 {
+		t.Fatalf("%d compactions at %d, %d at %d: want more at the smaller window, some at the largest", first.Compacts, first.Value, last.Compacts, last.Value)
+	}
+	for i := 1; i < len(r.Curve); i++ {
+		if r.Curve[i].Compacts > r.Curve[i-1].Compacts {
+			t.Fatalf("%d compactions at %d, more than %d at %d", r.Curve[i].Compacts, r.Curve[i].Value, r.Curve[i-1].Compacts, r.Curve[i-1].Value)
+		}
+	}
+	if d := last.Compacts - r.Facts.Compacts; d < -3 || d > 3 {
+		t.Fatalf("%d compactions replayed at %d, %d seen in the files", last.Compacts, last.Value, r.Facts.Compacts)
+	}
+}

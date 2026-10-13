@@ -81,10 +81,13 @@ func WeightsFor(model string) Weights {
 	return Weights{Read: 0.1, Write: 1, Write1h: 1, Out: 8}
 }
 
-// Point is one setting tried and what the period would have cost with it.
+// Point is one setting tried and what the period would have cost with it,
+// and how many compactions it would have made there: what a window over
+// the leanest buys, said beside what it costs (#1860).
 type Point struct {
-	Value int     `json:"value"`
-	Cost  float64 `json:"cost"`
+	Value    int     `json:"value"`
+	Cost     float64 `json:"cost"`
+	Compacts int     `json:"compacts"`
 }
 
 // Facts are what a replay found of the user's habits, said beside the
@@ -319,13 +322,13 @@ func Compact(cs []Call, o CompactOpts) *Compaction {
 	// growth, free over it
 	floor := max(o.Min, roundUp(after+max(after/2, 20*f.Growth)+o.Reserve, o.Step))
 	r := &Compaction{Model: model, Current: cur, Window: o.Window, Facts: f}
-	run := func(v int) float64 {
-		c, _, _ := replayCompact(ss, max(after+1, v-o.Reserve), after, b, rework, w, write)
-		return c
+	run := func(v int) Point {
+		c, n, _ := replayCompact(ss, max(after+1, v-o.Reserve), after, b, rework, w, write)
+		return Point{Value: v, Cost: c, Compacts: n}
 	}
-	r.Cost = run(cur)
+	r.Cost = run(cur).Cost
 	for v := floor; v <= top; v += o.Step {
-		r.Curve = append(r.Curve, Point{Value: v, Cost: run(v)})
+		r.Curve = append(r.Curve, run(v))
 	}
 	if len(r.Curve) == 0 {
 		return nil

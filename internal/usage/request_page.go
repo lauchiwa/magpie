@@ -39,6 +39,9 @@ type RequestPage struct {
 	// is the two together; the page shows the three beside each other so a
 	// reader can tell what magpie carried from what it only read about.
 	Through, Direct Totals
+	// Reported are the calls a client told magpie of (#1874), which went
+	// straight to their vendor: counted in Sum, apart from both of those.
+	Reported Totals
 	// Accounts are the subscription accounts that answered calls in the
 	// period, by provider and account, for the Account filter (#557)
 	Accounts []Group
@@ -59,18 +62,29 @@ type RequestPage struct {
 
 type packedRow struct {
 	Time                           time.Time
-	Text                           [30]uint32
+	Text                           [35]uint32
 	Tokens                         [6]int64
 	Millis, TTFT, FirstText, Order int64
-	Sent, Flow                     int64
+	Sent, Flow, FirstReasoning     int64
+	Own, Retried, Queued           int64
 	RouteID                        int64
 	Cost                           float64
 	Status, Tries                  int32
-	Flags                          uint8
+	Flags                          uint16
 }
 
-// rowHandedOn is the Flags bit of Record.HandedOn
-const rowHandedOn = 128
+// rowHandedOn is the Flags bit of Record.HandedOn, rowReasoningHidden
+// Record.ReasoningHidden's: 64 is block_price.go's swapKnown, 256
+// rowOwnCost
+const (
+	rowHandedOn        = 128
+	rowReasoningHidden = 512
+)
+
+// rowOwnCost marks a reported call that said what it cost (#1874): Cost is
+// that, which the block pricer keeps, and reading the row back gives
+// Record.OwnCost again.
+const rowOwnCost = 256
 
 type rowChunk struct {
 	Archive   []byte
@@ -90,12 +104,19 @@ type rowChunk struct {
 // rowMsg is the Text of a row's Claude message id, after rowText's, and
 // rowError its error's
 const (
-	rowMsg   = 29
+	rowMsg   = 34
 	rowError = 9
+	// rowClient is the Text of the client's own name, when the user counts
+	// it as another agent (Row.Client, #1958)
+	rowClient = 33
 )
 
-func rowText(r *Row) [29]*string {
-	return [29]*string{&r.Agent, &r.Provider, &r.Host, &r.SessionProvider, &r.SessionAccount, &r.Model, &r.Requested, &r.Served, &r.Effort, &r.Error, &r.ErrType, &r.RequestID, &r.Endpoint, &r.Session, &r.NativeSession, &r.Kind, &r.Source, &r.Via, &r.ProviderKeyID, &r.ProviderKeyName, &r.CallerKeyID, &r.CallerKeyName, &r.Archive, &r.Operation, &r.ProviderAccount, &r.ResponseID, &r.Upstream, &r.Subagent, &r.ParentAgent}
+// rowText is every string of a row's record, the upstream's own stop
+// reason ("Upstream stop reason", #1927) and the service tiers (#1784)
+// among them: a string left out comes back empty from the cache, in the
+// page and in /v1/magpie/usage/requests (TestRowTextHoldsEveryString)
+func rowText(r *Row) [34]*string {
+	return [34]*string{&r.Agent, &r.Provider, &r.Host, &r.SessionProvider, &r.SessionAccount, &r.Model, &r.Requested, &r.Served, &r.Effort, &r.Error, &r.ErrType, &r.RequestID, &r.Endpoint, &r.Session, &r.NativeSession, &r.Kind, &r.Source, &r.Via, &r.ProviderKeyID, &r.ProviderKeyName, &r.CallerKeyID, &r.CallerKeyName, &r.Archive, &r.Operation, &r.ProviderAccount, &r.ResponseID, &r.Upstream, &r.Subagent, &r.ParentAgent, &r.Stop, &r.TierAsked, &r.TierSent, &r.TierServed, &r.Client}
 }
 func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 	if c.dict == nil {
@@ -112,7 +133,7 @@ func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 		c.Bytes += int64(len(s) + 48)
 		return id
 	}
-	p := packedRow{Time: r.Time, Tokens: [6]int64{int64(r.Input), int64(r.Output), int64(r.CacheRead), int64(r.CacheWrite), int64(r.Reasoning), int64(r.CacheWrite1h)}, Millis: r.Millis, TTFT: r.TTFT, FirstText: r.FirstText, Sent: r.Sent, Flow: r.Flow, Order: order, RouteID: r.RouteID, Cost: r.Cost, Status: int32(r.Status), Tries: int32(r.Tries)}
+	p := packedRow{Time: r.Time, Tokens: [6]int64{int64(r.Input), int64(r.Output), int64(r.CacheRead), int64(r.CacheWrite), int64(r.Reasoning), int64(r.CacheWrite1h)}, Millis: r.Millis, TTFT: r.TTFT, FirstText: r.FirstText, FirstReasoning: r.FirstReasoning, Sent: r.Sent, Flow: r.Flow, Own: r.Own, Retried: r.Retried, Queued: r.Queued, Order: order, RouteID: r.RouteID, Cost: r.Cost, Status: int32(r.Status), Tries: int32(r.Tries)}
 	for i, s := range rowText(&r) {
 		p.Text[i] = intern(*s)
 	}
@@ -129,6 +150,9 @@ func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 	if r.SessionOfficialLogin {
 		p.Flags |= 8
 	}
+	if r.ReasoningHidden {
+		p.Flags |= rowReasoningHidden
+	}
 	if r.Routed {
 		p.Flags |= 32
 	}
@@ -137,6 +161,10 @@ func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 	}
 	if r.HandedOn {
 		p.Flags |= rowHandedOn
+	}
+	if r.OwnCost != nil {
+		p.Flags |= rowOwnCost
+		p.Cost = *r.OwnCost
 	}
 	c.Rows = append(c.Rows, p)
 	c.Count = len(c.Rows)
@@ -147,12 +175,19 @@ func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 }
 func (c *rowChunk) row(i int) Row {
 	p := &c.Rows[i]
-	r := Row{Record: Record{RouteID: p.RouteID, Time: p.Time, Input: int(p.Tokens[0]), Output: int(p.Tokens[1]), CacheRead: int(p.Tokens[2]), CacheWrite: int(p.Tokens[3]), CacheWrite1h: int(p.Tokens[5]), Reasoning: int(p.Tokens[4]), Millis: p.Millis, TTFT: p.TTFT, FirstText: p.FirstText, Sent: p.Sent, Flow: p.Flow, Status: int(p.Status), Tries: int(p.Tries), HandedOn: p.Flags&rowHandedOn != 0, Rejected: p.Flags&4 != 0, SessionOfficialLogin: p.Flags&8 != 0}, Cost: p.Cost, Priced: p.Flags&1 != 0, Swapped: p.Flags&2 != 0, Routed: p.Flags&32 != 0}
+	r := Row{Record: Record{RouteID: p.RouteID, Time: p.Time, Input: int(p.Tokens[0]), Output: int(p.Tokens[1]), CacheRead: int(p.Tokens[2]), CacheWrite: int(p.Tokens[3]), CacheWrite1h: int(p.Tokens[5]), Reasoning: int(p.Tokens[4]), Millis: p.Millis, TTFT: p.TTFT, FirstText: p.FirstText, FirstReasoning: p.FirstReasoning, ReasoningHidden: p.Flags&rowReasoningHidden != 0, Sent: p.Sent, Flow: p.Flow, Own: p.Own, Retried: p.Retried, Queued: p.Queued, Status: int(p.Status), Tries: int(p.Tries), HandedOn: p.Flags&rowHandedOn != 0, Rejected: p.Flags&4 != 0, SessionOfficialLogin: p.Flags&8 != 0}, Cost: p.Cost, Priced: p.Flags&1 != 0, Swapped: p.Flags&2 != 0, Routed: p.Flags&32 != 0}
 	for i, s := range rowText(&r) {
 		*s = c.Strings[p.Text[i]]
 	}
 	if r.Swapped && p.Flags&swapKnown == 0 && (SameSpelled(r.Model, r.Served) || ServingName(r.Model, r.Served) || RelayRenamed(r.Model, r.Served)) {
 		r.Swapped = false // kept before a name spelled otherwise, a vendor's serving name or a relay's rename was the same
+	}
+	if r.Source == SourceReported {
+		r.Record.Source = SourceReported
+		if p.Flags&rowOwnCost != 0 {
+			own := p.Cost
+			r.OwnCost = &own
+		}
 	}
 	r.Computer = c.Computer
 	return r
@@ -267,7 +302,7 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 	cfg := settings.Load()
 	prices, _ := json.Marshal(cfg.ModelPrices)
 	wires, _ := json.Marshal(cfg.ModelWires)
-	meta := fmt.Sprintf("%s|%s|%s|%s|%s|%s", ids, renamed, prices, wires, statKey(provider.Path()), statKey(catalog.CachePath()))
+	meta := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s", ids, renamed, prices, wires, statKey(provider.Path()), statKey(catalog.CachePath()), clientAgentsKey())
 	h := sha256.New()
 	for _, current := range provider.All() {
 		fmt.Fprintf(h, "%q:%q:%v:%t:%t:%t;", current.ID, current.Where(), current.Catalogs(), current.IsPlugin(), current.Account == nil, current.Key != "")
@@ -351,7 +386,7 @@ func queryPage(p Period, f Filter, offset, limit int, readSource func(sessions.C
 			row.Priced = true
 			row.Cost = r.CostAt(*pr)
 		}
-		row.Agent = AgentOf(r.Agent)
+		row.Agent, row.Client = reportedAs(r.Agent)
 		return row
 	}
 	since := p.Since(now)
@@ -828,9 +863,12 @@ func buildRequestBlocks(p Period, f Filter, offset, limit int, now time.Time, ga
 		// while another is picked, or one of them would read 0 and
 		// there would be no way back.
 		if !r.IsRejected() && viaFilter.keepsRow(r) {
-			if r.Source == "log" {
+			switch r.Source {
+			case "log":
 				out.Direct.addRow(r)
-			} else {
+			case SourceReported:
+				out.Reported.addRow(r)
+			default:
 				out.Through.addRow(r)
 			}
 		}
@@ -1014,9 +1052,12 @@ func pageFromLedgerAt(p Period, f Filter, offset, limit int, all Ledgered, now t
 		if r.IsRejected() || !viaFilter.keepsRow(r) {
 			continue
 		}
-		if r.Source == "log" {
+		switch r.Source {
+		case "log":
 			out.Direct.addRow(r)
-		} else {
+		case SourceReported:
+			out.Reported.addRow(r)
+		default:
 			out.Through.addRow(r)
 		}
 	}

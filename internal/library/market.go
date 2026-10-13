@@ -368,7 +368,7 @@ func fetchRegistry(q string) ([]listed, error) {
 		} `json:"servers"`
 	}
 	if err := getJSON(u, &body); err != nil {
-		return nil, fmt.Errorf("couldn't search the MCP Registry: %w", err)
+		return nil, &SearchError{Source: "the MCP Registry", Err: err}
 	}
 	var list []listed
 	seen := map[string]bool{}
@@ -871,7 +871,7 @@ func searchSkillsSh(q string) ([]skillsShEntry, error) {
 		Skills []skillsShEntry `json:"skills"`
 	}
 	if err := getJSON(skillsShURL+"/api/search?"+url.Values{"q": {q}, "limit": {"40"}}.Encode(), &body); err != nil {
-		return nil, fmt.Errorf("couldn't search skills.sh: %w", err)
+		return nil, &SearchError{Source: "skills.sh", Err: err}
 	}
 	return slices.DeleteFunc(body.Skills, func(e skillsShEntry) bool { return !repoRe.MatchString(e.Source) || e.SkillID == "" }), nil
 }
@@ -1134,6 +1134,20 @@ func fetchImage(u string) ([]byte, string, error) {
 
 var client = &http.Client{Timeout: 20 * time.Second}
 
+// SearchError is a source the market searches that didn't answer; what
+// the market has of its own is still listed beside it (#1589).
+type SearchError struct {
+	Source string // skills.sh, the MCP Registry
+	Err    error
+}
+
+func (e *SearchError) Error() string { return "couldn't search " + e.Source + ": " + e.Err.Error() }
+func (e *SearchError) Unwrap() error { return e.Err }
+
+// retryPause is how long a 503 is waited out before the one more try; a
+// variable for tests.
+var retryPause = time.Second
+
 var metaDescRe = regexp.MustCompile(`<meta\s+name="description"\s+content="([^"]*)"`)
 
 // metaDescription is what a page's <meta name="description"> says.
@@ -1156,6 +1170,15 @@ func get(u, accept string, limit int64) ([]byte, error) {
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
+	}
+	// a 503 is a server starting cold or busy for a moment (skills.sh's
+	// search answered one, and 200 right after, #1589): it's asked once more
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		resp.Body.Close()
+		time.Sleep(retryPause)
+		if resp, err = client.Do(req); err != nil {
+			return nil, err
+		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
