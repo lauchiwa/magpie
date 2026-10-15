@@ -57,22 +57,13 @@ func Arm(providerID string, client Client, now time.Time) error {
 //
 // The caller has already identified the client from the inbound request.
 // A mismatch does not consume consent, so unrelated traffic cannot steal
-// the one-shot capture.
+// the one-shot capture. The window is consumed under the captures mutex,
+// and the candidate stored after it is released: Add waits for
+// lifecycle's lock, and Arm, Disarm and ArmedCaptures must not wait on it.
 func Observe(providerID string, client Client, h http.Header, now time.Time) (Profile, bool, error) {
-	captures.Lock()
-	defer captures.Unlock()
-	armed, ok := captures.byProvider[providerID]
-	if !ok {
+	if !takeCapture(providerID, client, now) {
 		return Profile{}, false, nil
 	}
-	if now.After(armed.expires) {
-		delete(captures.byProvider, providerID)
-		return Profile{}, false, nil
-	}
-	if armed.client != client {
-		return Profile{}, false, nil
-	}
-	delete(captures.byProvider, providerID)
 	id, err := NewID()
 	if err != nil {
 		return Profile{}, true, err
@@ -85,6 +76,26 @@ func Observe(providerID string, client Client, h http.Header, now time.Time) (Pr
 		return Profile{}, true, err
 	}
 	return p, true, nil
+}
+
+// takeCapture consumes providerID's armed window when it is live and for
+// client; an expired one is removed.
+func takeCapture(providerID string, client Client, now time.Time) bool {
+	captures.Lock()
+	defer captures.Unlock()
+	armed, ok := captures.byProvider[providerID]
+	if !ok {
+		return false
+	}
+	if now.After(armed.expires) {
+		delete(captures.byProvider, providerID)
+		return false
+	}
+	if armed.client != client {
+		return false
+	}
+	delete(captures.byProvider, providerID)
+	return true
 }
 
 // Disarm revokes an armed capture before it is used. It is safe to call
