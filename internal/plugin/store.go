@@ -266,9 +266,11 @@ func checkList() {
 }
 
 // IsPath is whether spec names a file or folder rather than a package,
-// as OpenCode tells them apart.
+// as OpenCode tells them apart. A spec starting with / or \ is a path on
+// every OS, as Node and Bun read it on Windows too: a folder from a Mac's
+// plugins.json, carried by a sync, is that Mac's alone.
 func IsPath(spec string) bool {
-	return strings.HasPrefix(spec, "file://") || strings.HasPrefix(spec, ".") || filepath.IsAbs(spec) || regexp.MustCompile(`^[A-Za-z]:[\\/]`).MatchString(spec)
+	return strings.HasPrefix(spec, "file://") || strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") || strings.HasPrefix(spec, `\`) || filepath.IsAbs(spec) || regexp.MustCompile(`^[A-Za-z]:[\\/]`).MatchString(spec)
 }
 
 var pkgName = regexp.MustCompile(`^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$`)
