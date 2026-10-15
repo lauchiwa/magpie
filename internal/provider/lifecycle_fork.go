@@ -127,6 +127,7 @@ func issueFor(f file, m lifecycle.Mark) issue {
 // lifecycle state from one window. A window that can't be held marks the
 // rows unknown, so a bound one fails rather than signs as some other.
 func lifeLoad() (file, issue) {
+	notUnderCommit("lifeLoad")
 	for range 3 {
 		m, err := beginLife(lifecycle.Writable)
 		if err != nil {
@@ -153,6 +154,7 @@ func lifeLoad() (file, issue) {
 // headersFor is the identity headers p presents, from one identity read
 // that agrees with the lifecycle state it was taken under.
 func (p Provider) headersFor() (http.Header, error) {
+	notUnderCommit("headersFor")
 	switch p.life.kind {
 	case lifeTransient:
 		// no binding, but an unreadable store still fails closed
@@ -279,6 +281,7 @@ func (v *IdentityView) Providers() []Provider {
 // after Begin, and only where the config folder already exists: a read that
 // creates it would leave a fresh home not empty.
 func ReadIdentityView(withProviders bool) (*IdentityView, error) {
+	notUnderCommit("ReadIdentityView")
 	var last error
 	for range 3 {
 		v, err := captureView(withProviders)

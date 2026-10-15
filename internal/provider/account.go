@@ -795,6 +795,7 @@ func refreshFailed(status int, agent, msg string) error {
 
 // Accounts lists the signed-in agents as providers.
 func Accounts() []Provider {
+	notUnderCommit("Accounts") // lifecycle_commit.go
 	if settings.AccountDiscoveryOff() {
 		return nil
 	}

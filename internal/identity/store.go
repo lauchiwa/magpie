@@ -491,6 +491,31 @@ func HeaderFor(providerID string) (http.Header, error) {
 	return s.HeaderFor(providerID)
 }
 
+// ValidStore is identities.json's own save validator, for a provider
+// commit that writes the file through lifecycle's journal.
+func ValidStore(b []byte) bool { return validStore(b) }
+
+// BoundIn is the provider ids bound in identities.json's bytes cur, nil
+// when the file is absent: for a provider commit to record whether a
+// deleted provider was bound. Bytes that are not a valid store are an
+// error, as in PlanBound.
+func BoundIn(cur []byte) (map[string]bool, error) {
+	if cur == nil {
+		return nil, nil
+	}
+	f, err := decode(cur)
+	if err != nil {
+		return nil, fmt.Errorf("%s can't be read (%v), so which providers present an identity profile is unknown; nothing was changed — fix it, or move it aside, and try again", Path(), err)
+	}
+	out := make(map[string]bool, len(f.Bound))
+	for id, profile := range f.Bound {
+		if profile != "" {
+			out[id] = true
+		}
+	}
+	return out, nil
+}
+
 // PlanBound is identities.json with bindings moved and dropped, for a
 // provider commit to write in its journal: it reads and writes nothing.
 // cur is the file's bytes, nil when the file is absent. moves maps an old

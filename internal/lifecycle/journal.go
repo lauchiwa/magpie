@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/lastgood"
@@ -70,6 +73,11 @@ type Plan struct {
 	Participants []Participant
 	stage        func(string) error
 }
+
+// TestStage, when set, is the stage seam of every Plan that has none: an
+// owner package's test injects a failure or an exit at a named step of a
+// commit it makes through its own API. Nil in production.
+var TestStage func(string) error
 
 func rank(name string) int {
 	switch name {
@@ -394,10 +402,17 @@ func Commit(p Plan) error {
 	if err := steady.WriteFile(JournalPath(), b, 0600); err != nil {
 		return err
 	}
-	if err := at(p.stage, "journal:write"); err != nil {
+	if err := at(stageOf(p), "journal:write"); err != nil {
 		return err
 	}
-	return replay(j, p.stage)
+	return replay(j, stageOf(p))
+}
+
+func stageOf(p Plan) func(string) error {
+	if p.stage != nil {
+		return p.stage
+	}
+	return TestStage
 }
 
 // Recover deterministically finishes a journal while the caller holds Lock.
@@ -426,11 +441,54 @@ func at(stage func(string) error, name string) error {
 func ambiguous(path string, cur Image) error {
 	err := error(&AmbiguousError{Journal: JournalPath()})
 	if cur.Exists {
-		if _, e := lastgood.KeepBad(path, cur.Bytes); e != nil {
+		if e := keepEvidence(path, cur.Bytes); e != nil {
 			err = errors.Join(err, e)
 		}
 	}
 	return err
+}
+
+// keepEvidence copies a third state aside as path.bad-<time>, as
+// lastgood.KeepBad does, but says why: the file may parse perfectly well,
+// it is only not what the journal recorded. KeepBad's log line would call
+// it unparseable. The same bytes kept already are not kept again.
+func keepEvidence(path string, b []byte) error {
+	names, _ := filepath.Glob(path + ".bad-*")
+	for _, name := range names {
+		if old, err := os.ReadFile(name); err == nil && bytes.Equal(old, b) {
+			return nil
+		}
+	}
+	stamp := path + ".bad-" + time.Now().Format("20060102-150405")
+	for i := 1; i < 1000; i++ {
+		name := stamp
+		if i > 1 {
+			name += "-" + strconv.Itoa(i)
+		}
+		f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			log.Printf("%s differs from the recorded operation and couldn't be kept: %v", filepath.Base(path), err)
+			return err
+		}
+		_, err = f.Write(b)
+		if err == nil {
+			err = steady.Sync(f)
+		}
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			os.Remove(name)
+			log.Printf("%s differs from the recorded operation and couldn't be kept: %v", filepath.Base(path), err)
+			return err
+		}
+		log.Printf("%s differs from what the recorded operation expected; it is kept as %s", filepath.Base(path), filepath.Base(name))
+		return nil
+	}
+	return fmt.Errorf("%s differs from the recorded operation and there is no free name to keep it under", filepath.Base(path))
 }
 
 // check verifies ALL primaries and backups before changing ANY of them. A

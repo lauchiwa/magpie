@@ -396,6 +396,7 @@ func Path() string { return filepath.Join(appdir.Config(), "providers.json") }
 // what lists the providers to the user says so (FileError), and an edit
 // refuses (read).
 func load() file {
+	notUnderCommit("load")
 	f, _ := read()
 	return f
 }
@@ -418,6 +419,7 @@ func (e *unreadableError) Unwrap() []error { return []error{ErrUnreadable, e.err
 // Reads used for an edit must keep errors: a broken file is not an empty
 // catalog to write over. Only a missing file is a first use.
 func read() (file, error) {
+	notUnderCommit("read") // only commitLocked's direct reread belongs under its lock
 	var f file
 	b, err := steady.ReadFile(Path())
 	if errors.Is(err, os.ErrNotExist) {
@@ -465,33 +467,10 @@ func FileError() error {
 
 // store replaces providers.json whole, through a file renamed over it, so
 // that a read at that moment sees the old catalog or the new one, never a
-// file cut short.
-func store(f file) error {
-	p := Path()
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	// a group as it was read has the models its patterns matched then
-	// among its members: they are found again each time, never written
-	f.Groups = slices.Clone(f.Groups)
-	for i := range f.Groups {
-		f.Groups[i] = f.Groups[i].stored()
-	}
-	b, err := json.MarshalIndent(f, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := lastgood.Keep(p, validProviders, 0o600); err != nil {
-		return err
-	}
-	if err := writePrivate(p, append(b, '\n')); err != nil {
-		return err
-	}
-	pruneIcons(f)
-	// what agents were handed of the catalog may be out of date now
-	catalog.Touched()
-	return nil
-}
+// file cut short. It is commit (lifecycle_commit.go) with no intent: a
+// write built on an out-of-date read is refused, and the identity
+// bindings follow the ids it removes or adds.
+func store(f file) error { return commit(f, intent{}) }
 
 // All lists the configured providers in the order they were added, then
 // the signed-in agents. An entry in the file with no URL is only the
@@ -500,6 +479,7 @@ func store(f file) error {
 // item or a CLI's among them, and Codex's /models asked for it seven times
 // over, past the 5 s Codex waits for the list (#746).
 func All() []Provider {
+	notUnderCommit("All") // before heldOf: a cache hit is still a read entry
 	held := heldOf("all", allProviders)
 	out := make([]Provider, 0, len(held))
 	// asked once, from the settings a held look has read already: asked for

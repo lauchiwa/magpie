@@ -90,6 +90,7 @@ func heldOf[T any](key string, build func() T) T {
 }
 
 func heldEntries(build func() []Entry) []Entry {
+	notUnderCommit("heldEntries") // includes a cached Catalog/Resolve
 	// clipped: a caller's append copies
 	return heldOf("entries", func() []Entry { return slices.Clip(build()) })
 }
