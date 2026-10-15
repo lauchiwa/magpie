@@ -131,7 +131,7 @@ func Begin(mode Mode) (Mark, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), beginWait)
 	defer cancel()
 	for {
-		pending, err := readImage(JournalPath())
+		pending, err := readJournal()
 		if err != nil {
 			return Mark{}, err
 		}
@@ -199,7 +199,7 @@ func (m Mark) Validate() error {
 	}
 	// Journal first: a commit removes it only after writing metadata, so a
 	// commit finishing between these reads still changes the metadata.
-	pending, err := readImage(JournalPath())
+	pending, err := readJournal()
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrBusy, err)
 	}

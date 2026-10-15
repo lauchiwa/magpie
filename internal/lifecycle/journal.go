@@ -94,18 +94,65 @@ func ReadImage(name string) (Image, error) {
 		_, image, err := providersImage()
 		return image, err
 	}
+	if name == MetaFile {
+		return readMeta()
+	}
 	return readImage(filepath.Join(appdir.Config(), name))
 }
 
 // lstat is a test seam for Windows' momentary absence during replacement.
 var lstat = os.Lstat
 
+// waitReplace is steady's bounded wait for a file being replaced; a seam
+// so tests can count the waits a read takes.
+var waitReplace = steady.Stat
+
+// readJournal reads the journal. It is only ever created where none is
+// (Commit refuses a pending one) and removed, never replaced, so not being
+// there is never a replace under way and is not waited out: waiting cost
+// every Begin about 20ms on Windows for the journal that is almost never
+// there.
+func readJournal() (Image, error) {
+	path := JournalPath()
+	fi, err := lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Image{}, nil
+	}
+	if err != nil {
+		return readImage(path) // denied: the bounded wait of a replace
+	}
+	return readFound(path, fi)
+}
+
+// readMeta reads lifecycle.json. Only a journal's commit or recovery
+// replaces it, and the journal is there throughout, so the wait for a
+// replace under way is taken only when one is: lifecycle.json not there
+// with no journal is checked once more and is then absent, at no wait (a
+// legacy config, and every test home, has none). A commit wholly between
+// those checks has written the file, which the second check then finds.
+func readMeta() (Image, error) {
+	path := filepath.Join(appdir.Config(), MetaFile)
+	for range 2 {
+		fi, err := lstat(path)
+		if err == nil {
+			return readFound(path, fi)
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return readImage(path)
+		}
+		if _, err := lstat(JournalPath()); !errors.Is(err, fs.ErrNotExist) {
+			return readImage(path) // a commit may be replacing it: wait
+		}
+	}
+	return Image{}, nil
+}
+
 func readImage(path string) (Image, error) {
 	fi, err := lstat(path)
 	if err != nil && runtime.GOOS == "windows" {
 		// Reuse steady's bounded wait for replace-time absence/denial, then
 		// inspect the link itself again; Stat alone would follow symlinks.
-		if _, waitErr := steady.Stat(path); waitErr != nil {
+		if _, waitErr := waitReplace(path); waitErr != nil {
 			err = waitErr
 		} else {
 			fi, err = lstat(path)
@@ -121,6 +168,11 @@ func readImage(path string) (Image, error) {
 	if err != nil {
 		return Image{}, fmt.Errorf("%w: %s: %w", ErrUnknown, path, err)
 	}
+	return readFound(path, fi)
+}
+
+// readFound reads the regular file path that lstat just found as fi.
+func readFound(path string, fi fs.FileInfo) (Image, error) {
 	if !fi.Mode().IsRegular() {
 		return Image{}, fmt.Errorf("%w: %s is not a regular file", ErrUnknown, path)
 	}
@@ -315,7 +367,7 @@ func journalFields(b []byte) bool {
 // Commit publishes the intent before changing files, and metadata last. The
 // caller holds Lock. On failure the journal stays for Recover; no blind rollback.
 func Commit(p Plan) error {
-	existing, err := readImage(JournalPath())
+	existing, err := readJournal()
 	if err != nil {
 		return err
 	}
@@ -352,7 +404,7 @@ func Commit(p Plan) error {
 // Already-after participants are skipped, including Keep, so the backup stays
 // one generation behind even after repeated recovery or a crash during Keep.
 func Recover() error {
-	image, err := readImage(JournalPath())
+	image, err := readJournal()
 	if err != nil || !image.Exists {
 		return err
 	}
@@ -565,7 +617,7 @@ func replay(j Journal, stage func(string) error) error {
 }
 
 func sameJournal(j Journal) error {
-	cur, err := readImage(JournalPath())
+	cur, err := readJournal()
 	if err != nil {
 		return err
 	}
