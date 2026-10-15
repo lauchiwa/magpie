@@ -59,6 +59,47 @@ func TestCheckChild(t *testing.T) {
 	}
 }
 
+// With GOTMPDIR set, a test's own folders (t.TempDir) are made there, not
+// in the system's temporary folder, and a binary the test starts again
+// with one as its home still runs; a relative GOTMPDIR, which t.TempDir
+// doesn't use either, and a folder outside both are still refused.
+func TestCheckChildTakesGOTMPDIR(t *testing.T) {
+	base := t.TempDir()
+	tmp, gotmp := filepath.Join(base, "tmp"), filepath.Join(base, "gotmp")
+	for _, k := range append(folderVars, "CODEX_HOME", "TMP", "TEMP", "TMPDIR", "GOTMPDIR") {
+		t.Setenv(k, "")
+	}
+	for _, k := range []string{"TMP", "TEMP", "TMPDIR"} {
+		t.Setenv(k, tmp)
+	}
+	if filepath.Clean(os.TempDir()) != tmp {
+		t.Fatalf("os.TempDir() is %q, want %q", os.TempDir(), tmp)
+	}
+	sandbox, fixture := filepath.Join(tmp, prefix+"x"), filepath.Join(gotmp, "TestX", "001")
+	SetHome(t, fixture)
+
+	if err := checkChild(sandbox); err == nil {
+		t.Error("without GOTMPDIR, a home in another folder passed")
+	}
+	t.Setenv("GOTMPDIR", gotmp)
+	if err := checkChild(sandbox); err != nil {
+		t.Errorf("a fixture home in GOTMPDIR: %v", err)
+	}
+	if err := checkChild(filepath.Join(gotmp, prefix+"y")); err != nil {
+		t.Errorf("a sandbox in GOTMPDIR: %v", err)
+	}
+	outside := filepath.Join(base, "elsewhere", "home")
+	t.Setenv("CODEX_HOME", outside)
+	if err := checkChild(sandbox); err == nil {
+		t.Error("CODEX_HOME outside both temporary folders passed")
+	}
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("GOTMPDIR", "gotmp")
+	if err := checkChild(sandbox); err == nil {
+		t.Error("a relative GOTMPDIR was taken as a temporary folder")
+	}
+}
+
 func TestRemoveTouchesOnlyItsOwn(t *testing.T) {
 	dir := t.TempDir()
 	other := filepath.Join(dir, prefix+"x")

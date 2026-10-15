@@ -153,13 +153,26 @@ func Isolate() (string, error) {
 // again: the sandbox, and every folder variable and agent folder set, lie
 // in the temporary folder. On Windows that folder must come from TMP or
 // TEMP, since without them Go would take it from USERPROFILE, the very
-// thing to check.
+// thing to check. A test's own folders (t.TempDir) are made in GOTMPDIR
+// when it names one, so that counts as the temporary folder too.
 func checkChild(home string) error {
 	if runtime.GOOS == "windows" && os.Getenv("TMP") == "" && os.Getenv("TEMP") == "" {
 		return errors.New("a test started this binary again without TMP or TEMP: pass them along")
 	}
-	tmp := os.TempDir()
-	if !within(home, tmp) {
+	tmps := []string{os.TempDir()}
+	if g := os.Getenv("GOTMPDIR"); g != "" && filepath.IsAbs(g) {
+		tmps = append(tmps, g)
+	}
+	inTemp := func(p string) bool {
+		for _, d := range tmps {
+			if within(p, d) {
+				return true
+			}
+		}
+		return false
+	}
+	tmp := strings.Join(tmps, " or ")
+	if !inTemp(home) {
 		return fmt.Errorf("%s is %q, outside the temporary folder %s", Marker, home, tmp)
 	}
 	vars := append([]string{}, folderVars...)
@@ -169,7 +182,7 @@ func checkChild(home string) error {
 		}
 	}
 	for _, k := range vars {
-		if v := os.Getenv(k); v != "" && !within(v, tmp) {
+		if v := os.Getenv(k); v != "" && !inTemp(v) {
 			return fmt.Errorf("%s is %q, outside the temporary folder %s", k, v, tmp)
 		}
 	}
