@@ -49,14 +49,12 @@ func identityCmd(args []string) error {
 }
 
 func identityList() error {
-	ps, err := identity.Profiles()
+	// profiles and bindings from one read (lifecycle_fork.go)
+	view, err := provider.ReadIdentityView(false)
 	if err != nil {
 		return err
 	}
-	bound, err := identity.Bindings()
-	if err != nil {
-		return err
-	}
+	ps, bound := view.Snapshot.Profiles(), view.Snapshot.Bindings()
 	defer identityArmedNote()
 	if len(ps) == 0 {
 		fmt.Println("no identity profiles. Import one from a request a client sent:")

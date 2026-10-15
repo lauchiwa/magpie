@@ -362,6 +362,9 @@ type Provider struct {
 	// Account is set when the provider is an agent the user signed in to
 	// (see account.go); it is derived, never stored.
 	Account *Account `json:"-"`
+	// life is the lifecycle marker this value was read with (fork,
+	// lifecycle_fork.go); never stored, zero for a literal.
+	life life
 }
 
 type file struct {
@@ -381,6 +384,8 @@ type file struct {
 	// Routing page (#779), by id, found ones among them; one not in it
 	// follows those that are (see SetGroupOrder).
 	GroupOrder []string `json:"groupOrder,omitempty"`
+	// base is what the read of this file found (lifecycle_fork.go).
+	base fileBase
 }
 
 // Path is the file the user's providers live in.
@@ -416,11 +421,13 @@ func read() (file, error) {
 	var f file
 	b, err := steady.ReadFile(Path())
 	if errors.Is(err, os.ErrNotExist) {
+		f.base = absentBase
 		return f, nil
 	}
 	if err != nil {
 		return f, &unreadableError{Path(), err}
 	}
+	base := presentBase(b, false)
 	// An editor that saves with a byte-order mark leaves JSON that Go's
 	// decoder refuses; read as broken, the file fell back to its .bak, an
 	// older generation without what was saved since (#1821).
@@ -435,7 +442,9 @@ func read() (file, error) {
 		if err := json.Unmarshal(bak, &f); err != nil {
 			return file{}, &unreadableError{Path(), err}
 		}
+		base.fallback = true
 	}
+	f.base = base
 	return f, nil
 }
 
@@ -555,12 +564,18 @@ var AllBuilt atomic.Int64
 
 func allProviders() []Provider {
 	AllBuilt.Add(1)
-	f := load()
+	return allProvidersFrom(lifeLoad())
+}
+
+// allProvidersFrom is allProviders over one read of the file, its rows
+// marked as is says (lifecycle_fork.go).
+func allProvidersFrom(f file, is issue) []Provider {
 	stored := f.Providers
 	picks := map[string]Provider{}
 	var out []Provider
 	for _, p := range stored {
 		p = normalize(p)
+		p.life = is.of(p.ID)
 		if !hasEndpoint(p) {
 			picks[p.ID] = p
 			continue

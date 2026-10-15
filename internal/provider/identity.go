@@ -51,7 +51,7 @@ func (p Provider) identityListHeaders() (map[string]string, error) {
 	if !p.identityApplies() {
 		return base, nil
 	}
-	h, err := identityHeaders(p.ID)
+	h, err := p.headersFor() // by instance when marked (lifecycle_fork.go)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", p.Name, err)
 	}
@@ -110,7 +110,7 @@ func (p Provider) putIdentity(req *http.Request) error {
 	if !p.identityApplies() {
 		return nil
 	}
-	h, err := identityHeaders(p.ID)
+	h, err := p.headersFor() // by instance when marked (lifecycle_fork.go)
 	if err != nil {
 		return fmt.Errorf("%s: %w", p.Name, err)
 	}

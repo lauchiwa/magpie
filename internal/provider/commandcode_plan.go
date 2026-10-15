@@ -354,6 +354,7 @@ func cmdProvider(who, plan string, a cmdAuth) Provider {
 		}
 		keyed := p
 		keyed.Account, keyed.Key = nil, a.APIKey
+		keyed = Transient(keyed) // an account's: no binding under its id is its own
 		l, err := keyed.fetchOne(keyed.Via(ctx))
 		if err != nil {
 			return nil, err

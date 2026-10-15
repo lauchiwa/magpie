@@ -121,14 +121,12 @@ var gatewayRunning = gateway.Running
 var errNoGateway = errors.New("no gateway runs here, and a capture window belongs to the gateway that forwards the requests: start one (the app, magpie web or magpie serve), then arm it")
 
 func identityState() (identityStateJSON, error) {
-	profiles, err := identity.Profiles()
+	// one capture for profiles, bindings and providers (lifecycle_fork.go)
+	view, err := provider.ReadIdentityView(true)
 	if err != nil {
 		return identityStateJSON{}, err
 	}
-	bound, err := identity.Bindings()
-	if err != nil {
-		return identityStateJSON{}, err
-	}
+	profiles, bound := view.Snapshot.Profiles(), view.Snapshot.Bindings()
 	s := identityStateJSON{
 		Profiles:  []identityProfileJSON{},
 		Bindings:  map[string]string{},
@@ -173,7 +171,7 @@ func identityState() (identityStateJSON, error) {
 			Bindings: bindings,
 		})
 	}
-	for _, p := range provider.All() {
+	for _, p := range view.Providers() {
 		why := p.IdentityApplies()
 		s.Providers = append(s.Providers, identityProviderJSON{
 			ID: p.ID, Name: cmp.Or(p.Name, p.ID), Icon: p.Icon,

@@ -1685,6 +1685,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				p = *saved
 			}
 			p = typed(p, in, req.Proxy)
+			if in.ID == "" {
+				// a new one or a copy not saved: no binding is its own
+				p = provider.Transient(p)
+			}
 			if strings.TrimSpace(in.Decide) != "" {
 				// a decision API is asked its smallest question, at
 				// POST …/systemone (#647)
@@ -1760,7 +1764,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			if p.Name == "" {
 				p.Name = cmp.Or(strings.TrimSpace(in.Name), "the vendor")
 			}
-			p = typed(p, in, req.Proxy)
+			// not saved: a binding under the preset's id is another's
+			p = provider.Transient(typed(p, in, req.Proxy))
 			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 			defer cancel()
 			ms, err := p.List(ctx)
