@@ -154,7 +154,25 @@ and reconcile in
   means a writer died part way through, and that request takes the lock and
   finishes the journal (`lifecycle.Begin` in writable mode). This is the one
   case where a request writes, and it happens once per abandoned journal.
+- **Binding by the value read.** `provider.BindIdentity(p, profile)` and
+  `UnbindIdentity(p)` find, under the lock, the id `p`'s instance has now
+  (renamed since: its new id), and commit `identities.json` with
+  `lifecycle.json` in one journal, adopting a change made outside first. They
+  settle an undecided mark on that id: the operator chose for this provider.
+  A value whose instance is gone is `*StaleError`, and nothing is written.
+  They refuse while `providers.json` is missing or read from its `.bak`. A
+  zero value binds its id through `identity.Bind`, which settles nothing: it
+  names an id, not a provider. `UnbindOrphan(id)` removes a binding no stored
+  row holds, and its mark, and is refused while one does. The locked path
+  plans through `identity.PlanBind`/`PlanUnbind`, which take only the store's
+  mutex and write nothing.
 - **Not covered.**
+  - A Provider literal under valid metadata signs by its id and skips the
+    unreconciled check. No API hands one out for a stored provider; code that
+    builds one to sign is a caller to audit.
+  - A rename whose journal fails after it is written is finished by the next
+    recovery, but its fetched list stays under the old id and is fetched
+    again under the new one.
   - An id deleted and re-added outside magpie with the same bytes in between
     can't be detected.
   - Recovery from an identity store `.bak` can still restore the latest unbind

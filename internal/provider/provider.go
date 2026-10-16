@@ -666,7 +666,7 @@ func Slug(name string) string {
 }
 
 // Save adds or replaces a provider.
-func Save(p Provider) error {
+func Save(p Provider, opts ...WriteOption) error {
 	// a key given a Vertex AI provider is refused here, before normalize
 	// drops it: it would never be sent
 	if p.IsVertex() && (strings.TrimSpace(p.Key) != "" || len(p.Keys) > 0) {
@@ -699,7 +699,9 @@ func Save(p Provider) error {
 	if p.Name == "" {
 		p.Name = p.ID
 	}
+	l, account := p.life, false // fork: its marker, before an account's literal drops it (lifecycle_api.go)
 	if _, ok := find(Accounts(), p.ID); ok || p.ID == "kiro" && (p.Key != "" || stored(p.ID)) {
+		account = true
 		// an account keeps only the user's model picks; the rest is the
 		// agent's own sign-in. One the user removed stays removed: only
 		// ShowAccount brings it back. Kiro's alone also keeps a key, which
@@ -751,7 +753,7 @@ func Save(p Provider) error {
 	} else {
 		f.Providers = append(f.Providers, p)
 	}
-	if err := store(f); err != nil {
+	if err := saveCommit(f, p, l, account, opts); err != nil {
 		return err
 	}
 	if p.ID == "claude" {
@@ -792,7 +794,7 @@ func Add(p Provider) (string, error) {
 	return add(p, true)
 }
 
-func add(p Provider, once bool) (string, error) {
+func add(p Provider, once bool, opts ...WriteOption) (string, error) {
 	p.ID = strings.ToLower(strings.TrimSpace(p.ID))
 	if p.ID == "" {
 		p.ID = Slug(p.Name)
@@ -810,8 +812,10 @@ func add(p Provider, once bool) (string, error) {
 			return "", fmt.Errorf("%s is already added with that key (%s); magpie provider key %s <key> changes its key", h.Name, h.ID, h.ID)
 		}
 	}
+	want, name := p.ID, p.Name
 	p.ID, p.Name = freeID(p.ID), freeName(p.Name)
-	if err := Save(p); err != nil {
+	p, err := saveNew(p, want, name, opts) // fork: an id taken meanwhile is not written over
+	if err != nil {
 		return p.ID, err
 	}
 	if p.Preset != "" {
@@ -868,7 +872,9 @@ func AddCopy(p Provider, from string) (string, error) {
 	if p.KeysURL == "" {
 		p.KeysURL = src.KeysURL
 	}
-	return add(p, false)
+	// fork: a new provider, with no id it never had, from src as it was read
+	p.Was = nil
+	return add(p, false, Expect(*src))
 }
 
 // hostID is an id for a provider from the host it is on: api.relay.com is
@@ -1009,7 +1015,7 @@ func ShowAccount(id string) error {
 // Delete removes a provider. An account, a built-in's or a plugin's, is
 // only hidden from magpie (its accounts and model picks kept, shown again
 // from Hidden or by signing in); signing out is each account's Remove.
-func Delete(id string) error {
+func Delete(id string, opts ...WriteOption) error {
 	f, err := read()
 	if err != nil {
 		return err
@@ -1037,7 +1043,7 @@ func Delete(id string) error {
 		return fmt.Errorf("no provider %q", id)
 	}
 	f.Providers = keep
-	return store(f)
+	return storeWith(f, opts...)
 }
 
 // keyOptional is true for local servers, which usually have no key.

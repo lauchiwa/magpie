@@ -552,16 +552,20 @@ func TestACommitCallsNothingUnderTheLock(t *testing.T) {
 	files := map[string]map[string]bool{
 		"lifecycle_commit.go": {"commitHeld": true, "commitLocked": true, "diffOf": true, "identitiesPlan": true, "commitLegacy": true,
 			"commitPlan": true, "commitManaged": true, "writeLegacy": true, "usableBak": true, "rowsByID": true,
-			"boundLocked": true, "planBindings": true, "carryUnreconciled": true},
+			"boundLocked": true, "planBindings": true, "carryUnreconciled": true, "staleUnder": true},
 		"lifecycle_ready.go": {"readyHeld": true, "readyLocked": true, "bootstrap": true, "dropCorruptMeta": true, "adopt": true,
 			"freshMeta": true, "reconcileHeld": true, "reconcileLocked": true, "unfinishable": true, "describeReconcile": true, "unwritable": true},
+		"lifecycle_api.go": {"bindHeld": true, "bindLocked": true, "orphanHeld": true, "orphanLocked": true, "commitBinding": true,
+			"unsettled": true, "identityRefused": true, "cmpName": true},
 	}
 	// plain calls, and package.func calls, that must not run under the lock
 	banned := map[string]bool{"All": true, "Accounts": true, "Find": true, "load": true, "commit": true, "store": true,
 		"lockCommit": true, "catalog.Touched": true, "lifecycle.Lock": true, "identity.Add": true,
 		"identity.Remove": true, "identity.Confirm": true, "identity.Bind": true, "identity.Unbind": true,
 		"Changed": true, "ReadyLifecycle": true, "readyLifecycle": true, "Reconcile": true, "PreviewReconcile": true,
-		"identity.ReadSnapshot": true, "readSnapshot": true, "ReadIdentityView": true}
+		"identity.ReadSnapshot": true, "readSnapshot": true, "ReadIdentityView": true,
+		"commitQuiet": true, "storeWith": true, "Save": true, "Delete": true, "Rename": true, "changeBinding": true,
+		"UnbindOrphan": true, "BindIdentity": true, "UnbindIdentity": true, "identity.Bindings": true}
 	for file, locked := range files {
 		checkLockedCalls(t, file, locked, banned)
 	}

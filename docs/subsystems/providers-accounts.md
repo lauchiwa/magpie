@@ -96,6 +96,24 @@ Only [`ReadyLifecycle`](../../internal/provider/lifecycle_ready.go) creates
 the metadata; the adoption rules and `magpie identity reconcile` are described
 in [identity profiles](identity-profiles.md#provider-lifecycle-state).
 
+A value read with a lifecycle marker is written back as the provider it was
+read as ([`lifecycle_api.go`](../../internal/provider/lifecycle_api.go)).
+`Save` of a marked value checks its instance and rev (or, read while the file
+differed from the metadata, its row's digest) and refuses a mismatch with
+`*StaleError`; its id changes only through `Rename`. `SaveChecked` and
+`RenameChecked` return the provider with the marker of the commit they made,
+so the next write builds on it. `DeleteChecked` checks the instance. A zero
+value (a literal, or any read without metadata) is written by id, as before;
+`Transient` values can only be saved. `Add` that finds its free id taken at
+commit moves on to the next one once. `AddCopy` drops the source's aliases
+(`Was`). The background learners (`LearnAuthHeader`, `LearnZhipuCoding`,
+`fixV1`, `dropGonePicks`) pass `Expect(p)` and drop a write when another
+provider holds the id. They also drop a write learned from a `Transient` value,
+with or without `lifecycle.json`, where they used to write it to a stored row
+of the same id. A rename commits before it moves the fetched lists and
+settings; a failure after the commit is `*FollowUpError` with `Committed`
+set, and is never replayed by id.
+
 ## Remote magpie
 
 The `remote-magpie` preset is of its own kind, `KindRemote` (`remote`), not

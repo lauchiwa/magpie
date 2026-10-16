@@ -224,7 +224,7 @@ func (p Provider) Refetch(ctx context.Context) ([]catalog.Model, []string, error
 	if len(now) == 0 {
 		return ms, nil, nil
 	}
-	dropped, derr := dropGonePicks(p.ID, before, now)
+	dropped, derr := dropGonePicks(p.ID, before, now, Expect(p))
 	if derr != nil {
 		log.Println(p.ID + ": " + derr.Error())
 	}
@@ -245,7 +245,7 @@ func liveIDs(id string) map[string]bool {
 
 // dropGonePicks takes out of the saved provider's picks those before had
 // and now doesn't, and answers them.
-func dropGonePicks(id string, before, now map[string]bool) ([]string, error) {
+func dropGonePicks(id string, before, now map[string]bool, opts ...WriteOption) ([]string, error) {
 	f, err := read()
 	if err != nil {
 		return nil, err
@@ -266,7 +266,7 @@ func dropGonePicks(id string, before, now map[string]bool) ([]string, error) {
 		return nil, nil
 	}
 	f.Providers[i].Models = kept
-	return dropped, store(f)
+	return dropped, storeWith(f, opts...)
 }
 
 // fetch is Fetch without the picks looked after.
@@ -1092,7 +1092,7 @@ func (p Provider) fixV1(base, at string) string {
 			}
 		}
 		if changed {
-			if err := store(f); err != nil {
+			if err := storeWith(f, Expect(p)); err != nil { // fork: only to p
 				return base
 			}
 		}

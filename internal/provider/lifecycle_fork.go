@@ -57,6 +57,12 @@ type life struct {
 	epoch    string
 	instance string
 	issuedID string
+	// rev is the instance's rev as lifecycle.json had it; row, set only when
+	// providers.json differed from lifecycle.json, is the digest of the row
+	// as read. A write of the value checks the row then, not the rev: the
+	// adoption under that write bumps the rev of every row changed outside.
+	rev uint64
+	row string
 }
 
 // fileBase is what a read of providers.json found, not serialized: present
@@ -93,8 +99,9 @@ var readSnapshot = identity.ReadSnapshot
 // issue is how rows of one providers.json read are marked.
 type issue struct {
 	unknown bool
-	meta    *lifecycle.Meta // nil: legacy
-	managed bool            // digest matched the primary file
+	meta    *lifecycle.Meta   // nil: legacy
+	managed bool              // digest matched the primary file
+	rows    map[string]string // not managed: each id's row digest as read
 }
 
 func (is issue) of(id string) life {
@@ -108,11 +115,11 @@ func (is issue) of(id string) life {
 	if !ok {
 		// an id lifecycle.json doesn't know (added outside magpie, not
 		// adopted yet): a binding under it is not known to be its own
-		return life{kind: lifeUnreconciled, epoch: is.meta.Epoch, issuedID: id}
+		return life{kind: lifeUnreconciled, epoch: is.meta.Epoch, issuedID: id, row: is.rows[id]}
 	}
 	// a known id is its instance even while providers.json differs from
 	// lifecycle.json: a change of content keeps the instance (design §6)
-	return life{kind: lifeManaged, epoch: is.meta.Epoch, instance: rec.Instance, issuedID: id}
+	return life{kind: lifeManaged, epoch: is.meta.Epoch, instance: rec.Instance, issuedID: id, rev: rec.Rev, row: is.rows[id]}
 }
 
 // issueFor is how a read of f under lifecycle state m marks its rows.
@@ -120,11 +127,35 @@ func issueFor(f file, m lifecycle.Mark) issue {
 	switch m.State() {
 	case lifecycle.MetaValid:
 		meta := m.Meta()
-		return issue{meta: meta, managed: f.base.exists && !f.base.fallback && f.base.digest == meta.Digest}
+		is := issue{meta: meta, managed: managedRead(f, meta)}
+		if !is.managed {
+			is.rows = rowDigests(f)
+		}
+		return is
 	case lifecycle.MetaAbsent, lifecycle.MetaCorrupt:
 		return issue{} // corrupt: new values are legacy, old managed ones stale
 	}
 	return issue{unknown: true}
+}
+
+// managedRead says whether f is the primary file lifecycle.json describes.
+func managedRead(f file, meta *lifecycle.Meta) bool {
+	return f.base.exists && !f.base.fallback && f.base.digest == meta.Digest
+}
+
+// rowDigests is each id's row digest in f, as a commit's adoption compares
+// them (rowsByID); nil if a row can't be encoded, which leaves a write of
+// the value checking its rev, and so stale after the adoption.
+func rowDigests(f file) map[string]string {
+	rows, err := rowsByID(f)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(rows))
+	for id, b := range rows {
+		out[id] = lifecycle.Digest(b)
+	}
+	return out
 }
 
 // lifeLoad is load with the marking its rows get, the file and the
@@ -219,15 +250,15 @@ func (p Provider) capturedHeaders() (http.Header, error) {
 		return nil, serr
 	}
 	meta := m.Meta()
-	is := issueFor(f, m)
+	managed := managedRead(f, meta) // not issueFor: a signer needs no row digests
 	var inFile map[string]bool
-	if !is.managed {
+	if !managed {
 		inFile = make(map[string]bool, len(f.Providers))
 		for _, q := range f.Providers {
 			inFile[q.ID] = true
 		}
 	}
-	return signDecision(p.life, meta, is.managed, inFile, snap)
+	return signDecision(p.life, meta, managed, inFile, snap)
 }
 
 // signDecision is design C.3's table for a marked value, decided from one

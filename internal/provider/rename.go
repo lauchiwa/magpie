@@ -3,11 +3,9 @@ package provider
 import (
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 
-	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -19,7 +17,7 @@ import (
 // old way reaches it, and its usage so far is counted with it; the agents'
 // own files are the agent package's to rewrite (agent.RenameProvider).
 // A signed-in account keeps the id of its agent.
-func Rename(from, to string) error {
+func Rename(from, to string, opts ...WriteOption) error {
 	from = strings.ToLower(strings.TrimSpace(from))
 	to = strings.ToLower(strings.TrimSpace(to))
 	if to == "" || to != Slug(to) {
@@ -95,11 +93,9 @@ func Rename(from, to string) error {
 		g.Classifier = renamedRef(g.Classifier, from, to)
 		g.Pick = renamedRef(g.Pick, from, to)
 	}
-	// the vendor's list last fetched goes with it
-	os.Rename(catalog.LivePath(from), catalog.LivePath(to))
-	os.Rename(catalog.LivePath(decisionsID(from)), catalog.LivePath(decisionsID(to)))
-	// its identity binding goes with it, in the same commit
-	if err := commit(f, intent{renames: map[string]string{from: to}}); err != nil {
+	// its identity binding goes with it, in the same commit; the vendor's
+	// list last fetched only once that is committed (lifecycle_api.go)
+	if err := renameCommit(f, i, from, to, opts); err != nil {
 		return err
 	}
 	s := settings.Load()
@@ -112,7 +108,7 @@ func Rename(from, to string) error {
 		}
 	}
 	if changed {
-		return settings.Save(s)
+		return followUp(StepSettings, settings.Save(s)) // fork: the rename is done
 	}
 	return nil
 }

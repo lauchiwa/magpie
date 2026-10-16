@@ -178,7 +178,7 @@ func LearnZhipuCoding(p Provider, from string) {
 				}
 			}
 		}
-		_ = store(f)
+		_ = storeWith(f, Expect(p)) // fork: only to the provider it was learned of
 		return
 	}
 }

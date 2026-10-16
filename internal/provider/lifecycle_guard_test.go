@@ -25,8 +25,10 @@ func watchCommitReads(t *testing.T) (assertClean func()) {
 	name := func(f any) string { return runtime.FuncForPC(reflect.ValueOf(f).Pointer()).Name() }
 	// the locked sections, and the one function in each allowed its own
 	// direct read of providers.json
-	held := map[string]bool{name(commitHeld): true, name(readyHeld): true, name(reconcileHeld): true}
-	direct := map[string]bool{name(commitLocked): true, name(readyLocked): true, name(reconcileLocked): true}
+	held := map[string]bool{name(commitHeld): true, name(readyHeld): true, name(reconcileHeld): true,
+		name(bindHeld): true, name(orphanHeld): true}
+	direct := map[string]bool{name(commitLocked): true, name(readyLocked): true, name(reconcileLocked): true,
+		name(bindLocked): true, name(orphanLocked): true}
 	readName := runtime.FuncForPC(reflect.ValueOf(read).Pointer()).Name()
 	hook := func(name string) {
 		// Grow until the entire stack fits: helpers do not evade the guard

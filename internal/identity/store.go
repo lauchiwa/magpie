@@ -595,3 +595,69 @@ func PlanBound(cur []byte, moves map[string]string, drops []string) (after []byt
 	}
 	return after, true, nil
 }
+
+// PlanBind is identities.json with providerID bound to profileID, checked
+// as Bind checks it, for a provider commit to write in its journal with
+// lifecycle.json (provider.BindIdentity). The caller holds lifecycle's
+// lock: PlanBind takes only mu, reads the store as Bind's change would
+// (its .bak when the file is cut short), and writes nothing. bound is who
+// was bound before; with changed false after is nil, as the binding is
+// there already.
+func PlanBind(providerID, profileID string) (after []byte, changed bool, bound map[string]bool, err error) {
+	if providerID == "" {
+		return nil, false, nil, fmt.Errorf("a binding needs a provider")
+	}
+	return plan(func(f *file) (bool, error) {
+		i := slices.IndexFunc(f.Profiles, func(p Profile) bool { return p.ID == profileID })
+		if i < 0 {
+			return false, fmt.Errorf("no identity profile %q", profileID)
+		}
+		if !f.Profiles[i].Usable() {
+			return false, fmt.Errorf("identity profile %q is not confirmed yet", profileID)
+		}
+		if f.Bound[providerID] == profileID {
+			return false, nil
+		}
+		if f.Bound == nil {
+			f.Bound = map[string]string{}
+		}
+		f.Bound[providerID] = profileID
+		return true, nil
+	})
+}
+
+// PlanUnbind is identities.json with providerID's binding gone, as Unbind
+// removes it, under the same terms as PlanBind.
+func PlanUnbind(providerID string) (after []byte, changed bool, bound map[string]bool, err error) {
+	return plan(func(f *file) (bool, error) {
+		if _, ok := f.Bound[providerID]; !ok {
+			return false, nil
+		}
+		delete(f.Bound, providerID)
+		return true, nil
+	})
+}
+
+// plan is change's read and modify with no lock taken and nothing written:
+// the caller holds lifecycle's lock, and commits after itself.
+func plan(modify func(f *file) (bool, error)) (after []byte, changed bool, bound map[string]bool, err error) {
+	mu.Lock()
+	defer mu.Unlock()
+	f, err := read()
+	if err != nil {
+		return nil, false, nil, err
+	}
+	bound = make(map[string]bool, len(f.Bound))
+	for id, profile := range f.Bound {
+		if profile != "" {
+			bound[id] = true
+		}
+	}
+	if changed, err = modify(&f); err != nil || !changed {
+		return nil, false, bound, err
+	}
+	if after, err = encode(f); err != nil {
+		return nil, false, nil, err
+	}
+	return after, true, bound, nil
+}

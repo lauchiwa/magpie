@@ -44,9 +44,102 @@ type intent struct {
 	renames map[string]string
 	// create are ids this write adds; one there already is a conflict.
 	create []string
-	// expect are ids that must still be the instance (and, nonzero, the
-	// rev) the caller read.
+	// expect are ids that must still be the instance the caller read, after
+	// any adoption under this write: with a nonzero Row the row must still
+	// be the one read (a read of a file lifecycle.json didn't describe),
+	// else with a nonzero Rev the rev.
 	expect map[string]lifecycle.Provider
+	// fresh are ids read before lifecycle.json knew them: still not known,
+	// before any adoption, and (a nonzero digest) the row still as read.
+	fresh map[string]string
+	// epochs is the lifecycle epoch each checked id was read under.
+	epochs map[string]string
+	// stale are ids whose value can't be matched to what holds them now:
+	// read with no lifecycle state, or read twice as two providers.
+	stale []string
+	// out, when set, is told the lifecycle state the write committed.
+	out *committed
+}
+
+// committed is what a write left: the lifecycle state it committed, nil
+// with no lifecycle.json.
+type committed struct{ meta *lifecycle.Meta }
+
+// check adds a value's marker l to the intent: the provider it was read as
+// must be the one at its id when the write commits. withRow checks its
+// content too (a draft written back whole); without it only its instance
+// (a delete, or a learner's one field). A zero or transient l adds
+// nothing: written by id, as before lifecycle.json.
+func (in *intent) check(l life, withRow bool) {
+	id := l.issuedID
+	switch l.kind {
+	case lifeUnknown:
+		in.stale = append(in.stale, id)
+		return
+	case lifeManaged:
+		want := lifecycle.Provider{Instance: l.instance}
+		if withRow {
+			if want.Row = l.row; l.row == "" {
+				want.Rev = l.rev
+			}
+		}
+		had, ok := in.expect[id]
+		_, unknown := in.fresh[id]
+		switch {
+		case unknown || ok && had.Instance != want.Instance:
+			in.stale = append(in.stale, id) // read as two providers
+			return
+		case !ok || withRow:
+			if in.expect == nil {
+				in.expect = map[string]lifecycle.Provider{}
+			}
+			in.expect[id] = want
+		}
+	case lifeUnreconciled:
+		if _, ok := in.expect[id]; ok {
+			in.stale = append(in.stale, id) // read as known and as not
+			return
+		}
+		if in.fresh == nil {
+			in.fresh = map[string]string{}
+		}
+		row := in.fresh[id]
+		if withRow {
+			row = l.row
+		}
+		in.fresh[id] = row
+	default:
+		return
+	}
+	if had, ok := in.epochs[id]; ok && had != l.epoch {
+		in.stale = append(in.stale, id)
+	}
+	if in.epochs == nil {
+		in.epochs = map[string]string{}
+	}
+	in.epochs[id] = l.epoch
+}
+
+// staleUnder is the first checked id meta can't vouch for: one read with
+// no lifecycle state, or as two providers; one read under another epoch;
+// or any checked id with no lifecycle.json now. nil when there is none.
+func (in intent) staleUnder(meta *lifecycle.Meta) error {
+	if len(in.stale) > 0 {
+		return &StaleError{ID: slices.Min(in.stale)}
+	}
+	if meta == nil {
+		ids := append(sortedKeys(in.expect), sortedKeys(in.fresh)...)
+		if len(ids) > 0 {
+			return &StaleError{ID: slices.Min(ids)}
+		}
+		return nil
+	}
+	for _, id := range sortedKeys(in.epochs) {
+		if in.epochs[id] != meta.Epoch {
+			return &StaleError{ID: id}
+		}
+	}
+	return nil
 }
 
 // ConflictError is a write refused because providers.json is not what
@@ -83,6 +176,17 @@ func notUnderCommit(name string) {
 // reads plugin icons); catalog.Touched only after it is released, since
 // what it calls back may read or write providers again.
 func commit(f file, in intent) error {
+	if err := commitQuiet(f, in); err != nil {
+		return err
+	}
+	// what agents were handed of the catalog may be out of date now
+	catalog.Touched()
+	return nil
+}
+
+// commitQuiet is commit without the Touched after it, for a write that has
+// more to move first (a rename's fetched lists) and calls Touched itself.
+func commitQuiet(f file, in intent) error {
 	p := Path()
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
@@ -110,8 +214,6 @@ func commit(f file, in intent) error {
 		Changed()
 		return err
 	}
-	// what agents were handed of the catalog may be out of date now
-	catalog.Touched()
 	return nil
 }
 
@@ -149,10 +251,8 @@ func commitLocked(f file, b []byte, in intent) error {
 	if err != nil {
 		return fmt.Errorf("providers not changed: %w", err)
 	}
-	if meta == nil && len(in.expect) > 0 {
-		for id := range in.expect {
-			return &StaleError{ID: id}
-		}
+	if err := in.staleUnder(meta); err != nil {
+		return err
 	}
 	if rerr != nil {
 		if meta != nil {
@@ -410,6 +510,15 @@ func commitManaged(cur, next file, b []byte, d diff, meta *lifecycle.Meta, in in
 		}
 		known = true
 	}
+	// an id read before lifecycle.json knew it is the row read only while
+	// still not known: an adoption meanwhile gave it an instance of its own
+	for _, id := range sortedKeys(in.fresh) {
+		_, known := meta.Providers[id]
+		row, there := d.oldRows[id]
+		if known || !there || in.fresh[id] != "" && lifecycle.Digest(row) != in.fresh[id] {
+			return &StaleError{ID: id}
+		}
+	}
 	base := meta.Clone()
 	adopted := false
 	if adopting {
@@ -419,9 +528,10 @@ func commitManaged(cur, next file, b []byte, d diff, meta *lifecycle.Meta, in in
 		}
 		adopted = true
 	}
-	for id, want := range in.expect {
+	for _, id := range sortedKeys(in.expect) {
+		want := in.expect[id]
 		got, ok := base.Providers[id]
-		if !ok || got.Instance != want.Instance || (want.Rev != 0 && got.Rev != want.Rev) {
+		if !ok || got.Instance != want.Instance || want.Row != "" && got.Row != want.Row || want.Row == "" && want.Rev != 0 && got.Rev != want.Rev {
 			return &StaleError{ID: id}
 		}
 	}
@@ -465,6 +575,7 @@ func commitManaged(cur, next file, b []byte, d diff, meta *lifecycle.Meta, in in
 	}
 	m.Unreconciled = carryUnreconciled(base, m, d, bound, known)
 	if !changed && !idsChanged && lifecycle.Digest(b) == cur.base.digest {
+		in.out.set(meta) // nothing to write: what is there is what it left
 		return nil
 	}
 	m.Digest = lifecycle.Digest(b)
@@ -475,7 +586,17 @@ func commitManaged(cur, next file, b []byte, d diff, meta *lifecycle.Meta, in in
 	if !idsChanged {
 		ids = nil
 	}
-	return commitPlan(b, ids, mb)
+	if err := commitPlan(b, ids, mb); err != nil {
+		return err
+	}
+	in.out.set(&m)
+	return nil
+}
+
+func (c *committed) set(meta *lifecycle.Meta) {
+	if c != nil {
+		c.meta = meta
+	}
 }
 
 // carryUnreconciled is base's undecided ids after this write: a renamed
