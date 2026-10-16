@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,21 @@ import (
 type Provider struct {
 	Instance string `json:"instance"`
 	Rev      uint64 `json:"rev"`
+	// Row is the Digest of the row as stored when Rev was last set, so a
+	// change made outside magpie bumps only the rows it changed. Empty is
+	// unknown: such a row's rev is bumped by the next adoption.
+	Row string `json:"row,omitempty"`
+}
+
+// Unreconciled is a provider id whose identity binding a change made
+// outside magpie left undecided: a bound id that disappeared from
+// providers.json, or a new id that an orphan binding already named. Signing
+// fails closed for it while it is bound, until magpie identity reconcile
+// decides. Instance is the instance the id had when it was marked: the
+// retired one, or the live row's (then equal to Providers[ID].Instance).
+type Unreconciled struct {
+	ID       string `json:"id"`
+	Instance string `json:"instance"`
 }
 
 // Retired describes a deleted instance, not a reusable provider ID.
@@ -23,6 +39,14 @@ type Retired struct {
 }
 
 // Meta is separate from the providers.json disk schema.
+//
+// Version 1 has not been written by a released magpie yet (nothing calls
+// provider.ReadyLifecycle at start-up before G3b), so Row and Unreconciled
+// are part of version 1 rather than a version 2. They are omitted when
+// empty, so metadata without them encodes as before. Once a release writes
+// lifecycle.json, a new field needs a new Version: the strict decoder
+// refuses unknown fields, and an older magpie would call the file corrupt
+// and bootstrap a new epoch over it.
 type Meta struct {
 	Version   int                 `json:"version"`
 	Epoch     string              `json:"epoch"`
@@ -30,6 +54,26 @@ type Meta struct {
 	Digest    string              `json:"digest"`
 	Providers map[string]Provider `json:"providers"`
 	Retired   []Retired           `json:"retired,omitempty"`
+	// Unreconciled is sorted by ID, at most one entry an id.
+	Unreconciled []Unreconciled `json:"unreconciled,omitempty"`
+}
+
+// Clone is a copy that shares no map or slice with m.
+func (m Meta) Clone() Meta {
+	c := m
+	c.Providers = make(map[string]Provider, len(m.Providers))
+	for k, v := range m.Providers {
+		c.Providers[k] = v
+	}
+	c.Retired = slices.Clone(m.Retired)
+	c.Unreconciled = slices.Clone(m.Unreconciled)
+	return c
+}
+
+// IsUnreconciled says whether id's binding is undecided (see Unreconciled).
+func (m Meta) IsUnreconciled(id string) bool {
+	_, ok := slices.BinarySearchFunc(m.Unreconciled, id, func(u Unreconciled, id string) int { return cmp.Compare(u.ID, id) })
+	return ok
 }
 
 // Retire retains the newest 256 tombstones, ordered by generation. Validation
@@ -59,10 +103,18 @@ func (m Meta) valid() bool {
 	}
 	seen := make(map[string]bool)
 	for id, p := range m.Providers {
-		if id == "" || !hexSize(p.Instance, 16) || p.Rev == 0 || seen[p.Instance] {
+		if id == "" || !hexSize(p.Instance, 16) || p.Rev == 0 || seen[p.Instance] || p.Row != "" && !hexSize(p.Row, 32) {
 			return false
 		}
 		seen[p.Instance] = true
+	}
+	for i, u := range m.Unreconciled {
+		if u.ID == "" || !hexSize(u.Instance, 16) || i > 0 && m.Unreconciled[i-1].ID >= u.ID {
+			return false
+		}
+		if p, ok := m.Providers[u.ID]; ok && p.Instance != u.Instance {
+			return false
+		}
 	}
 	var gen uint64
 	for _, r := range m.Retired {
@@ -154,6 +206,17 @@ func metaFields(b []byte) bool {
 	for _, p := range ps {
 		if _, ok := required(p, "instance", "rev"); !ok {
 			return false
+		}
+	}
+	if b, ok := obj["unreconciled"]; ok {
+		var us []json.RawMessage
+		if json.Unmarshal(b, &us) != nil {
+			return false
+		}
+		for _, u := range us {
+			if _, ok := required(u, "id", "instance"); !ok {
+				return false
+			}
 		}
 	}
 	var retired []json.RawMessage

@@ -108,6 +108,8 @@ const usage = `magpie — one place to pick every agent's model
                                   present the confirmed profile on that provider's requests
   magpie identity unbind <provider> | disarm <provider> | rm <profile-id>
                                   stop presenting, cancel capture, or remove a profile
+  magpie identity reconcile [--yes [--keep|--drop]]
+                                  after providers.json was changed outside magpie: show each provider's instance and the bindings left undecided; --yes writes it, --keep or --drop settles those bindings
   magpie claude-code [install [--yes]|remove]   the Claude Code a Claude subscription runs; install downloads Anthropic's own build, checked against its manifest, for a server or container without one
   magpie plugin [add <package>|rm|update|on|off|login <provider>|logout <provider>]
                                   OpenCode provider plugins and pi packages: subscriptions signed in to, and served, through a plugin

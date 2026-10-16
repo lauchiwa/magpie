@@ -548,17 +548,32 @@ func TestACommitTouchesTheCatalogUnlocked(t *testing.T) {
 // What commit runs under the lock lists no providers or accounts and
 // calls none of identity's writers (which take the lock again).
 func TestACommitCallsNothingUnderTheLock(t *testing.T) {
-	fs := token.NewFileSet()
-	f, err := parser.ParseFile(fs, "lifecycle_commit.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
+	// per file, the functions that run under lifecycle's lock
+	files := map[string]map[string]bool{
+		"lifecycle_commit.go": {"commitHeld": true, "commitLocked": true, "diffOf": true, "identitiesPlan": true, "commitLegacy": true,
+			"commitPlan": true, "commitManaged": true, "writeLegacy": true, "usableBak": true, "rowsByID": true,
+			"boundLocked": true, "planBindings": true, "carryUnreconciled": true},
+		"lifecycle_ready.go": {"readyHeld": true, "readyLocked": true, "bootstrap": true, "dropCorruptMeta": true, "adopt": true,
+			"freshMeta": true, "reconcileHeld": true, "reconcileLocked": true, "unfinishable": true, "describeReconcile": true, "unwritable": true},
 	}
-	locked := map[string]bool{"commitHeld": true, "commitLocked": true, "diffOf": true, "identitiesPlan": true, "commitLegacy": true,
-		"commitPlan": true, "commitManaged": true, "writeLegacy": true, "usableBak": true, "rowsByID": true}
 	// plain calls, and package.func calls, that must not run under the lock
 	banned := map[string]bool{"All": true, "Accounts": true, "Find": true, "load": true, "commit": true, "store": true,
 		"lockCommit": true, "catalog.Touched": true, "lifecycle.Lock": true, "identity.Add": true,
-		"identity.Remove": true, "identity.Confirm": true, "identity.Bind": true, "identity.Unbind": true}
+		"identity.Remove": true, "identity.Confirm": true, "identity.Bind": true, "identity.Unbind": true,
+		"Changed": true, "ReadyLifecycle": true, "readyLifecycle": true, "Reconcile": true, "PreviewReconcile": true,
+		"identity.ReadSnapshot": true, "readSnapshot": true, "ReadIdentityView": true}
+	for file, locked := range files {
+		checkLockedCalls(t, file, locked, banned)
+	}
+}
+
+func checkLockedCalls(t *testing.T, file string, locked, banned map[string]bool) {
+	t.Helper()
+	fs := token.NewFileSet()
+	f, err := parser.ParseFile(fs, file, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	seen := 0
 	for _, d := range f.Decls {
 		fn, ok := d.(*ast.FuncDecl)
@@ -587,7 +602,7 @@ func TestACommitCallsNothingUnderTheLock(t *testing.T) {
 		})
 	}
 	if seen != len(locked) {
-		t.Fatalf("found %d of the %d functions run under the lock", seen, len(locked))
+		t.Fatalf("%s: found %d of the %d functions run under the lock", file, seen, len(locked))
 	}
 }
 

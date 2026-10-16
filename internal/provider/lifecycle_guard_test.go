@@ -22,8 +22,11 @@ func watchCommitReads(t *testing.T) (assertClean func()) {
 	t.Helper()
 	var mu sync.Mutex
 	var violations []string
-	heldName := runtime.FuncForPC(reflect.ValueOf(commitHeld).Pointer()).Name()
-	lockedName := runtime.FuncForPC(reflect.ValueOf(commitLocked).Pointer()).Name()
+	name := func(f any) string { return runtime.FuncForPC(reflect.ValueOf(f).Pointer()).Name() }
+	// the locked sections, and the one function in each allowed its own
+	// direct read of providers.json
+	held := map[string]bool{name(commitHeld): true, name(readyHeld): true, name(reconcileHeld): true}
+	direct := map[string]bool{name(commitLocked): true, name(readyLocked): true, name(reconcileLocked): true}
 	readName := runtime.FuncForPC(reflect.ValueOf(read).Pointer()).Name()
 	hook := func(name string) {
 		// Grow until the entire stack fits: helpers do not evade the guard
@@ -38,13 +41,13 @@ func watchCommitReads(t *testing.T) (assertClean func()) {
 		for {
 			f, more := frames.Next()
 			if afterRead {
-				directRead = f.Function == lockedName
+				directRead = direct[f.Function]
 				afterRead = false
 			}
 			if f.Function == readName {
 				afterRead = true
 			}
-			locked = locked || f.Function == heldName
+			locked = locked || held[f.Function]
 			if !more {
 				break
 			}

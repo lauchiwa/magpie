@@ -516,6 +516,21 @@ func BoundIn(cur []byte) (map[string]bool, error) {
 	return out, nil
 }
 
+// BindingsIn is the bindings in identities.json's bytes cur (provider id
+// to profile id), nil when the file is absent; bytes that are not a valid
+// store are an error, as in BoundIn. For magpie identity reconcile to
+// name the profile a binding it settles is to.
+func BindingsIn(cur []byte) (map[string]string, error) {
+	if cur == nil {
+		return nil, nil
+	}
+	f, err := decode(cur)
+	if err != nil {
+		return nil, fmt.Errorf("%s can't be read (%v), so which providers present an identity profile is unknown; nothing was changed — fix it, or move it aside, and try again", Path(), err)
+	}
+	return maps.Clone(f.Bound), nil
+}
+
 // PlanBound is identities.json with bindings moved and dropped, for a
 // provider commit to write in its journal: it reads and writes nothing.
 // cur is the file's bytes, nil when the file is absent. moves maps an old

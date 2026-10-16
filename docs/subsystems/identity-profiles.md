@@ -93,6 +93,74 @@ A file import is available when the operator already has a request header dump:
 unconfirmed `request_import` candidate; the file is projected through the same
 closed allowlist and consistency checks.
 
+## Provider lifecycle state
+
+A binding is keyed by provider id, and an id can be reused. Optional
+`lifecycle.json` (`internal/lifecycle`) gives each stored provider row a stable
+instance, so a request signed for a value read before a rename, delete or
+re-create uses that same provider's binding and never another provider's.
+The write side is in
+[`lifecycle_commit.go`](../../internal/provider/lifecycle_commit.go), the
+signing side in
+[`lifecycle_fork.go`](../../internal/provider/lifecycle_fork.go), and start-up
+and reconcile in
+[`lifecycle_ready.go`](../../internal/provider/lifecycle_ready.go).
+
+- **Created at start-up only.** `provider.ReadyLifecycle` takes the lifecycle
+  lock (waiting at most 3s), finishes a journal a dead writer left, then:
+  - with no metadata, creates it from `providers.json` (new epoch, each id a
+    new instance at rev 1);
+  - with corrupt metadata, keeps it as `lifecycle.json.bad-<time>` and creates
+    new metadata, so values read before become stale once;
+  - with metadata from a newer magpie or one it can't read, leaves the file as
+    it is and returns the error;
+  - with no config folder, a folder it can't write, or the lock held
+    elsewhere, stays legacy and returns no error; in a folder it can't
+    write, a change made outside magpie is left unadopted (signing projects
+    it, as below) and no error is returned either
+    (`TestReadyLifecycleInAFolderItCantWrite`).
+
+  It creates no metadata while `providers.json` is missing or is being read
+  from its `.bak`. Ordinary reads and writes never create metadata, so a home
+  without it is legacy and matches bindings by current id.
+- **Changes made outside magpie.** An older magpie, an editor, or a
+  `providers.json` read from its `.bak` leaves the file's digest different
+  from the metadata. `ReadyLifecycle` adopts the change under the lock, and so
+  does the next provider write; adoption writes `lifecycle.json` only. An id
+  that is still present keeps its instance, and its rev goes up only if its row
+  changed (the metadata records each row's digest). An unbound id that was
+  added gets a new instance; an unbound id that was removed gets a tombstone.
+  A bound id that was removed, and a new id that an orphan binding already
+  names, are marked `unreconciled`.
+- **Signing while state is undecided.** Signing never writes. Before anything
+  adopts the change, signing applies the same rule to what it read. Only an
+  unreconciled id that is still bound fails, with `ErrUnknown`; every other
+  provider signs as before. A bound provider whose row was only edited
+  outside magpie keeps its profile.
+- **`magpie identity reconcile`.** With no arguments it prints each id's
+  instance and the undecided bindings, and writes nothing: no lock file, no
+  recovery and no copy. `--yes` takes the lock, then:
+  - keeps a journal it can't finish as
+    `lifecycle-journal.json.reconciled-<time>` and removes it;
+  - keeps the old metadata as `lifecycle.json.reconciled-<time>`;
+  - adopts the change and clears the undecided marks.
+
+  If any binding is undecided, `--yes` also needs `--keep` (leave those
+  bindings) or `--drop` (unbind them); with neither it writes nothing. Unknown
+  arguments and `--help` write nothing. It won't settle a `providers.json` that
+  is missing or being read from its `.bak`.
+- **Legacy signing may write once.** Signing a provider with no lifecycle
+  marker (legacy) is lock-free unless a journal is pending. A pending journal
+  means a writer died part way through, and that request takes the lock and
+  finishes the journal (`lifecycle.Begin` in writable mode). This is the one
+  case where a request writes, and it happens once per abandoned journal.
+- **Not covered.**
+  - An id deleted and re-added outside magpie with the same bytes in between
+    can't be detected.
+  - Recovery from an identity store `.bak` can still restore the latest unbind
+    or delete (recovery A). The instance mapping adds no other way back:
+    `TestRecoveryAAddsNoOtherWayBack`.
+
 ## The page
 
 The GUI does the same four steps on the Providers page, under an **Identity
@@ -183,5 +251,14 @@ anchors rather than a long-lived fork of provider or gateway structures.
   the layout. The same file covers the editor's Identity field: the profile it
   names, an unbind that leaves an unsaved draft open and saves no provider,
   the way to the panel, and an inapplicable provider's reason with no action.
+- [`lifecycle_ready_test.go`](../../internal/provider/lifecycle_ready_test.go)
+  covers `ReadyLifecycle` in each metadata state, an adoption that marks only
+  undecided bindings, a write adopting an outside change or a `.bak` read,
+  recovery A combined with renames, deletes and tombstones, and reconcile's
+  preview, `--keep`, `--drop` and refusals.
+  [`lifecycle_process_test.go`](../../internal/provider/lifecycle_process_test.go)
+  signs values held by this process after another process renames, deletes,
+  re-creates and binds. `TestIdentityReconcileCmd` (`internal/cli`) checks
+  that the preview, unknown flags and `--help` write nothing.
 - Run affected tests with an isolated home and pinned Go caches, as described
   in [Provider and plugin ownership](provider-plugins.md#verification).

@@ -104,12 +104,7 @@ func (m Mark) Meta() *Meta {
 	if m.meta == nil {
 		return nil
 	}
-	c := *m.meta
-	c.Providers = make(map[string]Provider, len(m.meta.Providers))
-	for k, v := range m.meta.Providers {
-		c.Providers[k] = v
-	}
-	c.Retired = append([]Retired(nil), m.meta.Retired...)
+	c := m.meta.Clone()
 	return &c
 }
 

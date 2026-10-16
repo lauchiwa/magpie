@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 
 	"github.com/yetone/magpie/internal/catalog"
@@ -252,17 +253,29 @@ func identitiesPlan(d diff) (after []byte, changed bool, bound map[string]bool, 
 	if !d.movesBindings() {
 		return nil, false, nil, nil
 	}
+	cur, bound, err := boundLocked()
+	if err != nil {
+		return nil, false, nil, err
+	}
+	after, changed, err = planBindings(d, cur)
+	return after, changed, bound, err
+}
+
+// boundLocked is identities.json's bytes (nil when it is not there) and
+// the ids bound in them, read under lifecycle's lock. One that is there
+// but blank or can't be read is an error: read would fall back to its
+// .bak, which may hold other bindings.
+func boundLocked() (cur []byte, bound map[string]bool, err error) {
 	// under the lock no writer is replacing identities.json (its writers
 	// take the lock too), so not there is absent: no bindings, and no
 	// wait for a replace (ReadImage's, ~20ms on Windows)
 	if _, err := os.Lstat(identity.Path()); errors.Is(err, fs.ErrNotExist) {
-		return nil, false, nil, nil
+		return nil, nil, nil
 	}
 	image, err := lifecycle.ReadImage(lifecycle.IdentitiesFile)
 	if err != nil {
-		return nil, false, nil, fmt.Errorf("providers not changed: %w", err)
+		return nil, nil, fmt.Errorf("providers not changed: %w", err)
 	}
-	var cur []byte
 	if image.Exists {
 		cur = image.Bytes
 		if cur == nil {
@@ -270,15 +283,23 @@ func identitiesPlan(d diff) (after []byte, changed bool, bound map[string]bool, 
 		}
 	}
 	if bound, err = identity.BoundIn(cur); err != nil {
-		return nil, false, nil, fmt.Errorf("providers not changed: %w", err)
+		return nil, nil, fmt.Errorf("providers not changed: %w", err)
 	}
-	// a new id's orphan binding goes; so does a deleted one's
+	return cur, bound, nil
+}
+
+// planBindings is identities.json's new bytes for d over cur: a renamed
+// id's binding moves, a deleted one's goes, and so does a new id's orphan.
+func planBindings(d diff, cur []byte) (after []byte, changed bool, err error) {
+	if !d.movesBindings() || cur == nil {
+		return nil, false, nil
+	}
 	drops := append(slices.Clone(d.drops), d.adds...)
 	after, changed, err = identity.PlanBound(cur, d.moves, drops)
 	if err != nil {
-		return nil, false, nil, fmt.Errorf("providers not changed: %w", err)
+		return nil, false, fmt.Errorf("providers not changed: %w", err)
 	}
-	return after, changed, bound, nil
+	return after, changed, nil
 }
 
 // usableBak refuses a commit when name's .bak is there but is not a plain
@@ -323,15 +344,19 @@ func commitLegacy(b []byte, d diff) error {
 	return commitPlan(b, after, nil)
 }
 
-// commitPlan prepares and commits providers.json, identities.json when
-// ids is not nil, and lifecycle.json when meta is not nil.
+// commitPlan prepares and commits providers.json when b is not nil,
+// identities.json when ids is not nil, and lifecycle.json when meta is
+// not nil.
 func commitPlan(b, ids, meta []byte) error {
 	type part struct {
 		name  string
 		after []byte
 		valid lastgood.Valid
 	}
-	parts := []part{{lifecycle.ProvidersFile, b, validProviders}}
+	var parts []part
+	if b != nil {
+		parts = append(parts, part{lifecycle.ProvidersFile, b, validProviders})
+	}
 	if ids != nil {
 		parts = append(parts, part{lifecycle.IdentitiesFile, ids, identity.ValidStore})
 	}
@@ -369,29 +394,45 @@ func commitPlan(b, ids, meta []byte) error {
 // commitManaged is a write with lifecycle.json: instances kept, revs
 // bumped, deleted instances retired, all three files in one journal.
 func commitManaged(cur, next file, b []byte, d diff, meta *lifecycle.Meta, in intent) error {
-	if cur.base.fallback || cur.base.digest != meta.Digest {
-		return fmt.Errorf("providers not changed: %w: %s differs from %s; run magpie identity reconcile", lifecycle.ErrUnknown, Path(), lifecycle.Path())
-	}
-	for id := range d.oldRows {
-		if _, ok := meta.Providers[id]; !ok {
-			return fmt.Errorf("providers not changed: %w: %s has no instance for %q; run magpie identity reconcile", lifecycle.ErrUnknown, lifecycle.Path(), id)
+	gen := meta.Gen + 1
+	// providers.json changed outside magpie (an older magpie, an editor,
+	// its .bak read instead): adopt that first, then this write on top
+	adopting := cur.base.fallback || cur.base.digest != meta.Digest
+	// which ids are bound is needed to move bindings, to adopt an added or
+	// removed id, and to settle what is undecided
+	var cur0 []byte
+	var bound map[string]bool
+	known := false
+	if d.movesBindings() || adopting {
+		var err error
+		if cur0, bound, err = boundLocked(); err != nil {
+			return err
 		}
+		known = true
+	}
+	base := meta.Clone()
+	adopted := false
+	if adopting {
+		var err error
+		if base, _, err = adopt(base, d.oldRows, bound, gen); err != nil {
+			return err
+		}
+		adopted = true
 	}
 	for id, want := range in.expect {
-		got, ok := meta.Providers[id]
+		got, ok := base.Providers[id]
 		if !ok || got.Instance != want.Instance || (want.Rev != 0 && got.Rev != want.Rev) {
 			return &StaleError{ID: id}
 		}
 	}
-	ids, idsChanged, bound, err := identitiesPlan(d)
+	ids, idsChanged, err := planBindings(d, cur0)
 	if err != nil {
 		return err
 	}
-	m := *meta
+	m := base.Clone()
 	m.Providers = make(map[string]lifecycle.Provider, len(d.newRows))
-	m.Retired = slices.Clone(meta.Retired)
-	m.Gen = meta.Gen + 1
-	changed := false
+	m.Gen = gen
+	changed := adopted
 	for id, row := range d.newRows {
 		old, was := id, true
 		for from, to := range d.moves {
@@ -399,7 +440,7 @@ func commitManaged(cur, next file, b []byte, d diff, meta *lifecycle.Meta, in in
 				old = from
 			}
 		}
-		rec, ok := meta.Providers[old]
+		rec, ok := base.Providers[old]
 		if _, kept := d.oldRows[old]; !kept || !ok {
 			was = false
 		}
@@ -413,12 +454,16 @@ func commitManaged(cur, next file, b []byte, d diff, meta *lifecycle.Meta, in in
 		case old != id || !bytes.Equal(d.oldRows[old], row):
 			rec.Rev, changed = rec.Rev+1, true
 		}
+		// the row as stored now: what a later change outside magpie is
+		// told apart from (not a change on its own)
+		rec.Row = lifecycle.Digest(row)
 		m.Providers[id] = rec
 	}
 	for _, id := range d.drops {
-		m.Retire(lifecycle.Retired{Instance: meta.Providers[id].Instance, Bound: bound[id], Gen: m.Gen})
+		m.Retire(lifecycle.Retired{Instance: base.Providers[id].Instance, Bound: bound[id], Gen: m.Gen})
 		changed = true
 	}
+	m.Unreconciled = carryUnreconciled(base, m, d, bound, known)
 	if !changed && !idsChanged && lifecycle.Digest(b) == cur.base.digest {
 		return nil
 	}
@@ -431,4 +476,49 @@ func commitManaged(cur, next file, b []byte, d diff, meta *lifecycle.Meta, in in
 		ids = nil
 	}
 	return commitPlan(b, ids, mb)
+}
+
+// carryUnreconciled is base's undecided ids after this write: a renamed
+// one goes with its new id, a deleted or newly added one goes (its
+// binding went with it), and with the bindings known only those still
+// bound stay. An entry whose id now holds another instance is dropped:
+// the binding there is not the one that was undecided.
+func carryUnreconciled(base, next lifecycle.Meta, d diff, bound map[string]bool, known bool) []lifecycle.Unreconciled {
+	gone := map[string]bool{}
+	for _, id := range d.drops {
+		gone[id] = true
+	}
+	for _, id := range d.adds {
+		gone[id] = true
+	}
+	// bound after: renamed bindings at their new ids, dropped ones gone
+	after := map[string]bool{}
+	for id := range bound {
+		if _, moving := d.moves[id]; !moving && !gone[id] {
+			after[id] = true
+		}
+	}
+	for from, to := range d.moves {
+		delete(after, to)
+		if bound[from] {
+			after[to] = true
+		}
+	}
+	var out []lifecycle.Unreconciled
+	for _, u := range base.Unreconciled {
+		if to, ok := d.moves[u.ID]; ok {
+			u.ID = to
+		} else if gone[u.ID] {
+			continue
+		}
+		if known && !after[u.ID] {
+			continue
+		}
+		if p, ok := next.Providers[u.ID]; ok && p.Instance != u.Instance {
+			continue
+		}
+		out = append(out, u)
+	}
+	slices.SortFunc(out, func(a, b lifecycle.Unreconciled) int { return strings.Compare(a.ID, b.ID) })
+	return slices.CompactFunc(out, func(a, b lifecycle.Unreconciled) bool { return a.ID == b.ID })
 }

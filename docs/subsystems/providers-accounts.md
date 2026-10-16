@@ -88,6 +88,14 @@ signs the renamed provider. `TestAnUnusableBackupRefusesTheWrite` in
 [`lifecycle_commit_test.go`](../../internal/provider/lifecycle_commit_test.go)
 checks the backup error and unchanged files and link targets.
 
+With lifecycle metadata, a provider file changed outside magpie (an older
+magpie, an editor, its `.bak` read in its place) no longer matches the
+metadata's digest. The next write adopts that change under the lock before
+applying its own, in one journal and one generation.
+Only [`ReadyLifecycle`](../../internal/provider/lifecycle_ready.go) creates
+the metadata; the adoption rules and `magpie identity reconcile` are described
+in [identity profiles](identity-profiles.md#provider-lifecycle-state).
+
 ## Remote magpie
 
 The `remote-magpie` preset is of its own kind, `KindRemote` (`remote`), not

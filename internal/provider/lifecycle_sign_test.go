@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -349,33 +350,52 @@ func TestUnusableLifecycleStateFailsClosed(t *testing.T) {
 }
 
 // providers.json changed by something that didn't update lifecycle.json
-// (an older magpie, an editor): a bound provider is unknown, not guessed.
+// (an older magpie, an editor), before anything adopted it: a provider in
+// the file and in lifecycle.json signs as its instance, whatever changed
+// (G2b-1's U1: one added row failed every bound provider closed). Only an
+// id the change leaves a binding undecided for fails closed: a bound one
+// gone from the file, and a new one an orphan binding already names.
 func TestAnUnreconciledProviderFailsClosedWhenBound(t *testing.T) {
 	h := newLifeHome(t)
-	h.write([]Provider{h.row("relay"), h.row("plain")}, map[string]string{"relay": newInstance(t), "plain": newInstance(t)})
-	if err := identity.Bind("relay", h.a.ID); err != nil {
-		t.Fatal(err)
+	h.write([]Provider{h.row("relay"), h.row("plain"), h.row("gone")}, map[string]string{"relay": newInstance(t), "plain": newInstance(t), "gone": newInstance(t)})
+	for id, p := range map[string]identity.Profile{"relay": h.a, "gone": h.b, "orphan": h.b} {
+		if err := identity.Bind(id, p.ID); err != nil {
+			t.Fatal(err)
+		}
 	}
-	managed := h.find("relay")
-	// an editor adds a row: the file no longer matches lifecycle.json
-	b, _ := os.ReadFile(Path())
-	var f file
-	_ = json.Unmarshal(b, &f)
-	f.Providers = append(f.Providers, h.row("added"))
-	b, _ = json.MarshalIndent(f, "", "  ")
+	managed, gone := h.find("relay"), h.find("gone")
+	// an editor adds rows, edits relay's and removes gone's: the file no
+	// longer matches lifecycle.json
+	relay := h.row("relay")
+	relay.Name = "edited by hand"
+	b, _ := json.MarshalIndent(file{Providers: []Provider{relay, h.row("plain"), h.row("added"), h.row("orphan")}}, "", "  ")
 	if err := os.WriteFile(Path(), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	meta0, _ := os.ReadFile(lifecycle.Path())
 	for name, p := range map[string]Provider{"old managed": managed, "new read": h.find("relay")} {
-		if _, err := h.sign(p); !errors.Is(err, lifecycle.ErrUnknown) {
-			t.Errorf("%s bound relay under a mismatched digest: %v, want ErrUnknown", name, err)
+		if got, err := h.sign(p); err != nil || got != uaOf(h.a) {
+			t.Errorf("%s bound relay, edited outside magpie, sent %q (%v), want its profile %q", name, got, err, uaOf(h.a))
 		}
 	}
 	if got, err := h.sign(h.find("plain")); err != nil || got == "" || got == uaOf(h.a) {
 		t.Errorf("an unbound provider under a mismatched digest sent %q (%v), want magpie's own", got, err)
 	}
-	if got, err := h.sign(h.find("added")); err != nil || got == uaOf(h.a) {
-		t.Errorf("a provider lifecycle.json doesn't know sent %q (%v)", got, err)
+	if got, err := h.sign(h.find("added")); err != nil || got == uaOf(h.a) || got == uaOf(h.b) {
+		t.Errorf("an unbound provider lifecycle.json doesn't know sent %q (%v)", got, err)
+	}
+	if got, err := h.sign(h.find("orphan")); !errors.Is(err, lifecycle.ErrUnknown) {
+		t.Errorf("a new id an orphan binding names sent %q (%v), want ErrUnknown", got, err)
+	}
+	if got, err := h.sign(gone); !errors.Is(err, lifecycle.ErrUnknown) {
+		t.Errorf("a bound provider removed outside magpie sent %q (%v), want ErrUnknown", got, err)
+	}
+	if _, err := os.Stat(lifecycle.JournalPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("signing wrote a journal (%v)", err)
+	}
+	// a request never adopts: that is a writer's, under the lock
+	if meta1, _ := os.ReadFile(lifecycle.Path()); !bytes.Equal(meta0, meta1) {
+		t.Errorf("signing wrote lifecycle.json")
 	}
 }
 

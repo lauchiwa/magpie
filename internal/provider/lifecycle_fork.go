@@ -43,8 +43,8 @@ type lifeKind uint8
 
 const (
 	lifeLegacy       lifeKind = iota // zero: sign by the current id
-	lifeManaged                      // read with lifecycle.json matching providers.json
-	lifeUnreconciled                 // read while providers.json differs from lifecycle.json
+	lifeManaged                      // read under an id lifecycle.json gives an instance
+	lifeUnreconciled                 // read under an id lifecycle.json doesn't know (changed outside magpie)
 	lifeTransient                    // not saved: no binding is used
 	lifeUnknown                      // the lifecycle state could not be read: fail closed
 )
@@ -105,9 +105,13 @@ func (is issue) of(id string) life {
 		return life{}
 	}
 	rec, ok := is.meta.Providers[id]
-	if !is.managed || !ok {
-		return life{kind: lifeUnreconciled, epoch: is.meta.Epoch, instance: rec.Instance, issuedID: id}
+	if !ok {
+		// an id lifecycle.json doesn't know (added outside magpie, not
+		// adopted yet): a binding under it is not known to be its own
+		return life{kind: lifeUnreconciled, epoch: is.meta.Epoch, issuedID: id}
 	}
+	// a known id is its instance even while providers.json differs from
+	// lifecycle.json: a change of content keeps the instance (design §6)
 	return life{kind: lifeManaged, epoch: is.meta.Epoch, instance: rec.Instance, issuedID: id}
 }
 
@@ -215,20 +219,40 @@ func (p Provider) capturedHeaders() (http.Header, error) {
 		return nil, serr
 	}
 	meta := m.Meta()
-	return signDecision(p.life, meta, issueFor(f, m).managed, snap)
+	is := issueFor(f, m)
+	var inFile map[string]bool
+	if !is.managed {
+		inFile = make(map[string]bool, len(f.Providers))
+		for _, q := range f.Providers {
+			inFile[q.ID] = true
+		}
+	}
+	return signDecision(p.life, meta, is.managed, inFile, snap)
 }
 
 // signDecision is design C.3's table for a marked value, decided from one
-// lifecycle state, one providers.json digest check and one identity snapshot.
-func signDecision(l life, meta *lifecycle.Meta, managed bool, snap identity.Snapshot) (http.Header, error) {
+// lifecycle state, one providers.json read and one identity snapshot.
+//
+// providers.json that differs from lifecycle.json (managed false; inFile
+// is its ids then) is projected as an adoption would settle it, without
+// writing: an id in both is its instance, whatever its content; a bound id
+// lifecycle.json lists that is no longer in the file, and a new id an
+// orphan binding already names, are unreconciled and fail closed while
+// bound. Every other provider signs as before. Ids an adoption marked
+// (meta.Unreconciled) fail closed while bound.
+func signDecision(l life, meta *lifecycle.Meta, managed bool, inFile map[string]bool, snap identity.Snapshot) (http.Header, error) {
 	if meta.Epoch != l.epoch {
 		return nil, &StaleError{ID: l.issuedID}
+	}
+	bindings := snap.Bindings()
+	unknown := func(id string) error {
+		return fmt.Errorf("%w: provider %q is not reconciled; run magpie identity reconcile", lifecycle.ErrUnknown, id)
 	}
 	if l.instance == "" {
 		// read while unreconciled under an id the lifecycle state didn't
 		// know: a binding under that id is not known to be its own
-		if _, bound := snap.Bindings()[l.issuedID]; bound {
-			return nil, fmt.Errorf("%w: provider %q is not reconciled; run magpie identity reconcile", lifecycle.ErrUnknown, l.issuedID)
+		if _, bound := bindings[l.issuedID]; bound {
+			return nil, unknown(l.issuedID)
 		}
 		return nil, nil
 	}
@@ -247,11 +271,14 @@ func signDecision(l life, meta *lifecycle.Meta, managed bool, snap identity.Snap
 		}
 		return nil, nil // deleted unbound: signed as it was, with none
 	}
-	if !managed || l.kind == lifeUnreconciled {
-		if _, bound := snap.Bindings()[cur]; bound {
-			return nil, fmt.Errorf("%w: provider %q is not reconciled; run magpie identity reconcile", lifecycle.ErrUnknown, cur)
-		}
-		return nil, nil
+	_, bound := bindings[cur]
+	if bound && (meta.IsUnreconciled(cur) || !managed && !inFile[cur]) {
+		// marked undecided, or removed outside magpie while bound and
+		// not adopted yet
+		return nil, unknown(cur)
+	}
+	if !managed && !inFile[cur] {
+		return nil, nil // removed outside magpie unbound: as a tombstone would
 	}
 	return snap.HeaderFor(cur)
 }
