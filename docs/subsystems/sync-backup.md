@@ -43,6 +43,35 @@ on both sides keeps the newer version while retaining the replaced copy.
 A conditional write refused because another computer committed in between
 is retried through this same merge.
 
+What a sync brings in was decided from the local setup as `collect` read it.
+A provider write made here before the bring (a rename, delete, re-create or
+edit) must not be undone by that decision. So `backup.Collect` keeps
+`providers.json`'s base (`Bundle.Base()`, never sealed), and `bring` passes it
+to `provider.Mirror` as `provider.OnBase`
+([`lifecycle_fork.go`](../../internal/davsync/lifecycle_fork.go),
+[`lifecycle_sync.go`](../../internal/provider/lifecycle_sync.go)). The base
+covers the file's bytes, and under `lifecycle.json` its epoch and gen, so a
+provider deleted and re-added with the same bytes still counts as a change. If
+either changed, the Mirror is refused with `*provider.ConflictError` and
+nothing is written. `syncNow` then runs the sync once more, as it does for
+`errChanged`, over the file as it is now. Providers are the first part brought
+in, so the only earlier writes are missing icons filled in and the copies kept
+in the sync folder before a merge that takes one side. The second run decides
+by the usual rules: providers changed on both sides keep the newer, with the
+other kept in the sync folder, and on a first sync the server's come in. A
+second refusal is the sync's error, and the next round tries again. A Restore or Undo from the
+server that is refused this way returns the error (`bringing in the providers:
+…; nothing was changed — read it again and retry`). An opened bundle carries
+no base, so its Mirror is checked only against its own read, as before.
+
+`backup.Restore` ("make it the backup") merges into a fresh read of
+`providers.json`. If another write lands between that read and the commit, it
+reads and merges once more; a second conflict is its error. Neither sync nor
+restore carries `lifecycle.json` or `identities.json`. Their effect on
+instances and bindings is the commit's: see
+[identity profiles](identity-profiles.md#provider-lifecycle-state). The
+`.bak` files still keep the generation before each write.
+
 When a remote file is empty, damaged or another app's format, sync stops and
 describes it through `ServerFile`. Settings and the backend's `upload` command
 can replace it with this computer's setup, keeping the old file first.
@@ -93,6 +122,14 @@ go test -tags nogui ./internal/davsync
 go test -tags nogui ./internal/cli -run 'TestGitHubCmd|TestWebdavCmd|TestS3Cmd'
 node --test internal/gui/tests/github-sync.test.cjs internal/gui/tests/s3-sync.test.cjs internal/gui/tests/sync-other-kind.test.cjs
 ```
+
+`TestASyncDoesNotUndoARenameMadeMeanwhile` and
+`TestARestoreRefusesOverARenameMadeMeanwhile` (`internal/davsync`) cover a
+rename made between collect and bring. `TestACollectedBundleCarriesItsBase`
+(`internal/backup`) covers a collected bundle's base and an opened bundle's
+missing one. `TestAMirrorOnAnOlderBaseIsRefused`,
+`TestAManagedMirrorKeepsInstancesByID` and `TestARestoreMergesAgainOnce`
+(`internal/provider`) cover the provider side.
 
 `TestGitHubEmptyRepository` covers the first encrypted backup initializing an
 empty repository and an unchanged second sync. `TestGitHubEmptyRepositoryFailures`

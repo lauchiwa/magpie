@@ -53,7 +53,14 @@ keys and accounts per request is in [Gateway routing and fallback](gateway-routi
 [`lifecycle_commit.go`](../../internal/provider/lifecycle_commit.go). Under the
 cross-process lifecycle lock it recovers an unfinished journal, rereads the
 provider file and refuses a change built on an out-of-date read with
-`*ConflictError` (`errors.Is(err, ErrStale)`). There is no automatic retry.
+`*ConflictError` (`errors.Is(err, ErrStale)`). There is no automatic retry,
+except in `Restore` (a backup, put back over a fresh read) and a sync, which
+each read and merge again once
+([`lifecycle_sync.go`](../../internal/provider/lifecycle_sync.go)). A write can
+be checked against an older read instead of its own: `StoredBase` gives that
+read's base, and `Mirror(ps, gs, OnBase(base))` refuses the write if
+`providers.json` changed since, or if `lifecycle.json` moved on to another
+epoch or gen ([sync and backup](sync-backup.md#runtime-and-state)).
 The provider and identity disk schemas are unchanged. Without lifecycle
 metadata, a write that changes no binding still keeps the previous generation
 before replacing the primary, as the original store did; it does not create
@@ -112,7 +119,14 @@ provider holds the id. They also drop a write learned from a `Transient` value,
 with or without `lifecycle.json`, where they used to write it to a stored row
 of the same id. A rename commits before it moves the fetched lists and
 settings; a failure after the commit is `*FollowUpError` with `Committed`
-set, and is never replayed by id.
+set, and is never replayed by id. A commit that fails after its journal was
+written returns its error as it is. The next write or start-up finishes the
+journal forward, so the rename has already moved the fetched lists to the new
+id. Its settings step is left (the old id stays in `Was`). A commit refused
+before its journal moves nothing.
+
+Commit errors name the store they are for: `providers not changed: …`, or
+`identity store not changed: …` for a binding change, never both.
 
 ## Remote magpie
 

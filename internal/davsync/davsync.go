@@ -657,7 +657,7 @@ func syncNow(ctx context.Context, force bool) error {
 		st = state{Key: stateKey(c)}
 	}
 	err = syncOnce(ctx, c, &st)
-	if errors.Is(err, errChanged) { // another computer got in between: again, over its version
+	if errors.Is(err, errChanged) || changedHere(err) { // another computer, or a write here, got in between: again, over its version
 		err = syncOnce(ctx, c, &st)
 	}
 	st.Error, st.File = "", nil
@@ -942,8 +942,9 @@ func changed(part string, keys bool) time.Time {
 }
 
 // bring puts the server's part in here: providers and profiles mirrored,
-// so what went elsewhere goes here too.
-func bring(b backup.Bundle, part string) error {
+// so what went elsewhere goes here too. opts check the providers' write
+// (fork: provider.OnBase of the collect the decision was made from).
+func bring(b backup.Bundle, part string, opts ...provider.WriteOption) error {
 	switch part {
 	case "providers":
 		for name, data := range b.Icons {
@@ -954,7 +955,7 @@ func bring(b backup.Bundle, part string) error {
 				}
 			}
 		}
-		if err := provider.Mirror(b.Providers, b.Groups); err != nil {
+		if err := provider.Mirror(b.Providers, b.Groups, opts...); err != nil {
 			return err
 		}
 		if err := provider.MirrorOrder(b.Order); err != nil {
@@ -1179,7 +1180,7 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		saved = dir
 	}
 	for _, p := range bringIn {
-		if err := bring(remote, p); err != nil {
+		if err := bring(remote, p, onCollected(local)); err != nil {
 			return fmt.Errorf("bringing in the %s: %w", p, err)
 		}
 	}

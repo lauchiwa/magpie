@@ -226,7 +226,7 @@ func readyLocked() (readyOutcome, error) {
 	if err != nil {
 		return readyFailed, err
 	}
-	_, bound, err := boundLocked()
+	_, bound, err := boundLocked(whatProviders)
 	if err != nil {
 		return readyFailed, err
 	}
@@ -239,7 +239,7 @@ func readyLocked() (readyOutcome, error) {
 	if err != nil {
 		return readyFailed, err
 	}
-	if err := commitPlan(nil, nil, mb); err != nil {
+	if err := commitPlan(whatProviders, nil, nil, mb); err != nil {
 		if unwritable(err) {
 			// signing projects the same rule from what it reads; the next
 			// write that can go through adopts
@@ -290,7 +290,7 @@ func bootstrap(f file, rerr error, corrupt bool) (readyOutcome, error) {
 		return readyFailed, err
 	}
 	// a corrupt one is kept as lifecycle.json.bad-<time> by the commit
-	if err := commitPlan(nil, nil, mb); err != nil {
+	if err := commitPlan(whatProviders, nil, nil, mb); err != nil {
 		return readyFailed, err
 	}
 	if corrupt {
@@ -525,7 +525,7 @@ func reconcileLocked(choice ReconcileChoice) (ReconcilePlan, error) {
 	if err != nil {
 		return plan, err
 	}
-	cur, bound, err := boundLocked()
+	cur, bound, err := boundLocked(whatProviders)
 	if err != nil {
 		return plan, err
 	}
@@ -575,7 +575,7 @@ func reconcileLocked(choice ReconcileChoice) (ReconcilePlan, error) {
 	if err != nil {
 		return plan, err
 	}
-	if err := commitPlan(nil, ids, mb); err != nil {
+	if err := commitPlan(whatProviders, nil, ids, mb); err != nil {
 		return plan, err
 	}
 	plan.Wrote = true

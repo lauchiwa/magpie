@@ -123,6 +123,17 @@ and reconcile in
   It creates no metadata while `providers.json` is missing or is being read
   from its `.bak`. Ordinary reads and writes never create metadata, so a home
   without it is legacy and matches bindings by current id.
+
+  `run` in `internal/cli/main.go` calls it once, through `readyAtStart`
+  ([`lifecycle_cli.go`](../../internal/cli/lifecycle_cli.go)): after
+  `settings.Migrate`, before the providers are held. Every entry point (GUI,
+  tray, gateway, TUI, subcommands) goes through `run`. `--help`,
+  `healthcheck`, the Agents page's dry run and accounts discovery return before
+  the call. `magpie identity reconcile` skips it, so its preview writes
+  nothing. A test binary skips it too (`MAGPIE_TEST_SANDBOX` is set, as it is in
+  the dry run's child), so a test's home stays legacy unless the test calls
+  `ReadyLifecycle` itself. An error is printed as `magpie: lifecycle: …` on
+  stderr, and the command runs anyway.
 - **Changes made outside magpie.** An older magpie, an editor, or a
   `providers.json` read from its `.bak` leaves the file's digest different
   from the metadata. `ReadyLifecycle` adopts the change under the lock, and so
@@ -165,16 +176,35 @@ and reconcile in
   names an id, not a provider. `UnbindOrphan(id)` removes a binding no stored
   row holds, and its mark, and is refused while one does. The locked path
   plans through `identity.PlanBind`/`PlanUnbind`, which take only the store's
-  mutex and write nothing.
+  mutex and write nothing. When the commit adopts a change made outside
+  magpie, it reads who was bound the same way every adoption does
+  (`boundLocked`): from `identities.json` itself. If that file is blank or
+  can't be read, the change is refused and its `.bak` is never used, because
+  the `.bak` may hold bindings the file no longer has. The error names the
+  identity store once, never `providers`.
+- **Sync and restore.** Neither carries `lifecycle.json` or `identities.json`.
+  A Mirror (sync) or restore writes through the same commit as any other
+  write, so an id here that the server or backup also has keeps its instance
+  and binding. An id renamed elsewhere comes back as a delete plus an add: the
+  binding stays behind and goes with the deleted id, and the deleted instance
+  is retired. See [Sync and backup](sync-backup.md) for how a sync refuses to
+  undo a change made here while it ran.
 - **Not covered.**
   - A Provider literal under valid metadata signs by its id and skips the
     unreconciled check. No API hands one out for a stored provider; code that
     builds one to sign is a caller to audit.
-  - A rename whose journal fails after it is written is finished by the next
-    recovery, but its fetched list stays under the old id and is fetched
-    again under the new one.
+  - A rename whose journal fails after it is written returns its error and is
+    finished by the next write or start-up. Its fetched list moves to the new
+    id at once. Its settings step (model preferences, agent lists) is not
+    done, but the old id stays in the row's `Was`, so references to it still
+    resolve.
   - An id deleted and re-added outside magpie with the same bytes in between
     can't be detected.
+  - A remote or backup row deleted and re-added under the same id looks like
+    an edit, so the local instance and binding stay.
+  - An agent form with a flag it doesn't take (`magpie snow --verbose`) is
+    refused only after start-up bookkeeping has run, including
+    `ReadyLifecycle`. Its agent's files stay as they were.
   - Recovery from an identity store `.bak` can still restore the latest unbind
     or delete (recovery A). The instance mapping adds no other way back:
     `TestRecoveryAAddsNoOtherWayBack`.
@@ -278,5 +308,12 @@ anchors rather than a long-lived fork of provider or gateway structures.
   signs values held by this process after another process renames, deletes,
   re-creates and binds. `TestIdentityReconcileCmd` (`internal/cli`) checks
   that the preview, unknown flags and `--help` write nothing.
+  [`lifecycle_cli_test.go`](../../internal/cli/lifecycle_cli_test.go) checks
+  that `run` readies only outside a test binary, that the reconcile preview
+  isn't readied first, that `--help` readies nothing, and that a failed ready
+  doesn't stop start-up.
+  [`lifecycle_handoff_test.go`](../../internal/provider/lifecycle_handoff_test.go)
+  covers the strict adoption read, the error naming the identity store once,
+  and a rename that is pending in its journal.
 - Run affected tests with an isolated home and pinned Go caches, as described
   in [Provider and plugin ownership](provider-plugins.md#verification).

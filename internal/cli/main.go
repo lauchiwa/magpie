@@ -237,6 +237,7 @@ func run(args []string) error {
 	update.AwaitPredecessor()
 	makeDirs()
 	settings.Migrate()
+	readyAtStart(args) // fork: provider lifecycle (lifecycle_cli.go)
 	// a new install starts with the Essentials preset of built-in plugins
 	// (plugins.yml), one that ran before with all of them, told by no file
 	// of a magpie run before: so before anything below writes one

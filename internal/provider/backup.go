@@ -22,11 +22,9 @@ func Stored() ([]Provider, error) {
 	return f.Providers, err
 }
 
-// Restore puts providers from a backup in. Each replaces the one here with
-// its id; one that came without keys keeps the keys already here, and
-// one without an access key or balance token keeps those (KeepSecrets). It
-// returns how many were new and how many replaced one here.
-func Restore(ps []Provider) (added, replaced int, err error) {
+// restoreOnce is Restore's one read and write (fork: Restore is in
+// lifecycle_sync.go).
+func restoreOnce(ps []Provider) (added, replaced int, err error) {
 	f, err := read()
 	if err != nil {
 		return 0, 0, err
@@ -91,8 +89,9 @@ func RestoreGroups(gs []Group) error {
 // Mirror makes the providers and groups exactly these, as sync brings them
 // from another computer: one not among them goes, one that came without
 // keys keeps the keys it has here, and an access key or balance token it
-// came without is kept too (KeepSecrets).
-func Mirror(ps []Provider, gs []Group) error {
+// came without is kept too (KeepSecrets). opts check the write (fork:
+// OnBase, lifecycle_sync.go).
+func Mirror(ps []Provider, gs []Group, opts ...WriteOption) error {
 	f, err := read()
 	if err != nil {
 		return err
@@ -114,7 +113,7 @@ func Mirror(ps []Provider, gs []Group) error {
 	}
 	f.Providers = out
 	f.Groups = slices.DeleteFunc(slices.Clone(gs), func(g Group) bool { return g.ID == "" || g.ID != GroupSlug(g.ID) })
-	return store(f)
+	return storeWith(f, opts...)
 }
 
 // Carried is the plugins a backup or a sync carries: those added from npm

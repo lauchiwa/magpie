@@ -59,6 +59,9 @@ type intent struct {
 	stale []string
 	// out, when set, is told the lifecycle state the write committed.
 	out *committed
+	// meta, when read, is lifecycle.json as the read the write was decided
+	// from found it (OnBase): one moved on since is a conflict.
+	meta metaBase
 }
 
 // committed is what a write left: the lifecycle state it committed, nil
@@ -251,6 +254,9 @@ func commitLocked(f file, b []byte, in intent) error {
 	if err != nil {
 		return fmt.Errorf("providers not changed: %w", err)
 	}
+	if err := in.meta.since(meta); err != nil {
+		return err
+	}
 	if err := in.staleUnder(meta); err != nil {
 		return err
 	}
@@ -353,7 +359,7 @@ func identitiesPlan(d diff) (after []byte, changed bool, bound map[string]bool, 
 	if !d.movesBindings() {
 		return nil, false, nil, nil
 	}
-	cur, bound, err := boundLocked()
+	cur, bound, err := boundLocked(whatProviders)
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -364,8 +370,9 @@ func identitiesPlan(d diff) (after []byte, changed bool, bound map[string]bool, 
 // boundLocked is identities.json's bytes (nil when it is not there) and
 // the ids bound in them, read under lifecycle's lock. One that is there
 // but blank or can't be read is an error: read would fall back to its
-// .bak, which may hold other bindings.
-func boundLocked() (cur []byte, bound map[string]bool, err error) {
+// .bak, which may hold other bindings. what names the store the change is
+// for in its errors.
+func boundLocked(what string) (cur []byte, bound map[string]bool, err error) {
 	// under the lock no writer is replacing identities.json (its writers
 	// take the lock too), so not there is absent: no bindings, and no
 	// wait for a replace (ReadImage's, ~20ms on Windows)
@@ -374,7 +381,7 @@ func boundLocked() (cur []byte, bound map[string]bool, err error) {
 	}
 	image, err := lifecycle.ReadImage(lifecycle.IdentitiesFile)
 	if err != nil {
-		return nil, nil, fmt.Errorf("providers not changed: %w", err)
+		return nil, nil, fmt.Errorf("%s not changed: %w", what, err)
 	}
 	if image.Exists {
 		cur = image.Bytes
@@ -383,7 +390,7 @@ func boundLocked() (cur []byte, bound map[string]bool, err error) {
 		}
 	}
 	if bound, err = identity.BoundIn(cur); err != nil {
-		return nil, nil, fmt.Errorf("providers not changed: %w", err)
+		return nil, nil, fmt.Errorf("%s not changed: %w", what, err)
 	}
 	return cur, bound, nil
 }
@@ -403,20 +410,45 @@ func planBindings(d diff, cur []byte) (after []byte, changed bool, err error) {
 }
 
 // usableBak refuses a commit when name's .bak is there but is not a plain
-// file: its last good generation could not be kept (design C.3a).
-func usableBak(name string) error {
+// file: its last good generation could not be kept (design C.3a). what is
+// the store the commit is for, as its errors name it.
+func usableBak(what, name string) error {
 	bak := lastgood.Bak(filepath.Join(filepath.Dir(Path()), name))
 	fi, err := os.Lstat(bak)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("providers not changed: %s can't be checked: %w", bak, err)
+		return fmt.Errorf("%s not changed: %s can't be checked: %w", what, bak, err)
 	}
 	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("providers not changed: %s is not a plain file, so the last good generation can't be kept; move it aside and try again", bak)
+		return fmt.Errorf("%s not changed: %s is not a plain file, so the last good generation can't be kept; move it aside and try again", what, bak)
 	}
 	return nil
+}
+
+// Which store a commit is for, as its errors name it.
+const (
+	whatProviders = "providers"
+	whatIdentity  = "identity store"
+)
+
+// journalPending is a commit that failed after its journal was written:
+// the next Recover (the next write, or start-up) finishes it, so what
+// follows a rename's commit (its fetched lists) is moved as for one that
+// went through. It unwraps to the commit's own error.
+type journalPending struct{ err error }
+
+func (e *journalPending) Error() string {
+	return e.err.Error() + " (it is finished by the next provider write or start-up)"
+}
+func (e *journalPending) Unwrap() error { return e.err }
+
+// pendingJournal is whether err left a journal for Recover to finish. A
+// commit runs under the lock and after its own Recover, so a journal there
+// now is the one this commit wrote.
+func pendingJournal(err error) bool {
+	return errors.As(err, new(*journalPending))
 }
 
 // writeLegacy is the write store always made: the file there now kept as
@@ -441,13 +473,13 @@ func commitLegacy(b []byte, d diff) error {
 	if !changed {
 		return writeLegacy(b)
 	}
-	return commitPlan(b, after, nil)
+	return commitPlan(whatProviders, b, after, nil)
 }
 
 // commitPlan prepares and commits providers.json when b is not nil,
 // identities.json when ids is not nil, and lifecycle.json when meta is
-// not nil.
-func commitPlan(b, ids, meta []byte) error {
+// not nil. what names the store the change is for in its errors.
+func commitPlan(what string, b, ids, meta []byte) error {
 	type part struct {
 		name  string
 		after []byte
@@ -467,7 +499,7 @@ func commitPlan(b, ids, meta []byte) error {
 	// a folder or a link without saying what to do about it (C.3a)
 	for _, p := range parts {
 		if p.valid != nil {
-			if err := usableBak(p.name); err != nil {
+			if err := usableBak(what, p.name); err != nil {
 				return err
 			}
 		}
@@ -476,7 +508,7 @@ func commitPlan(b, ids, meta []byte) error {
 	for _, part := range parts {
 		p, err := lifecycle.Prepare(part.name, lifecycle.Present(part.after), part.valid)
 		if err != nil {
-			return fmt.Errorf("providers not changed: %w", err)
+			return fmt.Errorf("%s not changed: %w", what, err)
 		}
 		if !p.Before.Exists || !bytes.Equal(p.Before.Bytes, part.after) {
 			ps = append(ps, p)
@@ -486,7 +518,12 @@ func commitPlan(b, ids, meta []byte) error {
 		return nil
 	}
 	if err := lifecycle.Commit(lifecycle.Plan{Participants: ps}); err != nil {
-		return fmt.Errorf("providers: %w", err)
+		busy := errors.Is(err, lifecycle.ErrBusy) // another's journal, not this one
+		err = fmt.Errorf("%s: %w", what, err)
+		if _, jerr := os.Lstat(lifecycle.JournalPath()); jerr == nil && !busy {
+			return &journalPending{err}
+		}
+		return err
 	}
 	return nil
 }
@@ -505,7 +542,7 @@ func commitManaged(cur, next file, b []byte, d diff, meta *lifecycle.Meta, in in
 	known := false
 	if d.movesBindings() || adopting {
 		var err error
-		if cur0, bound, err = boundLocked(); err != nil {
+		if cur0, bound, err = boundLocked(whatProviders); err != nil {
 			return err
 		}
 		known = true
@@ -586,7 +623,7 @@ func commitManaged(cur, next file, b []byte, d diff, meta *lifecycle.Meta, in in
 	if !idsChanged {
 		ids = nil
 	}
-	if err := commitPlan(b, ids, mb); err != nil {
+	if err := commitPlan(whatProviders, b, ids, mb); err != nil {
 		return err
 	}
 	in.out.set(&m)

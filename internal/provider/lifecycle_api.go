@@ -66,6 +66,7 @@ type writeOpts struct {
 	refuse error     // the write is not made: a value never saved
 	create bool      // Add's: the id must not be there yet
 	snap   *Provider // a Checked write's committed value
+	base   fileBase  // OnBase's: checked instead of the write's own read
 }
 
 func writeOptsOf(opts []WriteOption) writeOpts {
@@ -98,6 +99,9 @@ func storeWith(f file, opts ...WriteOption) error {
 	o := writeOptsOf(opts)
 	if o.refuse != nil {
 		return o.refuse
+	}
+	if o.base.read {
+		f.base = o.base
 	}
 	return commit(f, o.in)
 }
@@ -207,11 +211,15 @@ func renameCommit(f file, i int, from, to string, opts []WriteOption) error {
 	in.renames = map[string]string{from: to}
 	var out committed
 	in.out = &out
-	if err := commitQuiet(f, in); err != nil {
+	err := commitQuiet(f, in)
+	pending := pendingJournal(err)
+	if err != nil && !pending {
 		return err
 	}
 	// the vendor's lists last fetched go with it: one that can't is fetched
-	// again under the new id; the rename stands either way
+	// again under the new id; the rename stands either way. One whose
+	// journal is written is finished forward by the next write or start-up,
+	// so its lists go now too, or they would stay under an id gone then.
 	for _, id := range []string{from, decisionsID(from)} {
 		dst := to
 		if id != from {
@@ -222,6 +230,9 @@ func renameCommit(f file, i int, from, to string, opts []WriteOption) error {
 		}
 	}
 	catalog.Touched()
+	if pending {
+		return err // its settings step is left: the old id stays in Was
+	}
 	if o.snap != nil {
 		*o.snap = normalize(f.Providers[i]).clone()
 		o.snap.life = committedLife(out.meta, to)
@@ -385,16 +396,15 @@ func bindLocked(l life, profile string) error {
 	}
 	var after []byte
 	var changed bool
-	var bound map[string]bool
 	if profile != "" {
-		after, changed, bound, err = identity.PlanBind(id, profile)
+		after, changed, _, err = identity.PlanBind(id, profile)
 	} else {
-		after, changed, bound, err = identity.PlanUnbind(id)
+		after, changed, _, err = identity.PlanUnbind(id)
 	}
 	if err != nil {
 		return err
 	}
-	return commitBinding(cur, rows, meta, id, after, changed, bound)
+	return commitBinding(cur, rows, meta, id, after, changed)
 }
 
 // orphanLocked is UnbindOrphan's, under lifecycle's lock: refused while
@@ -423,7 +433,7 @@ func orphanLocked(id string) error {
 			return fmt.Errorf("provider %q is stored: unbind it as that provider, not as an orphan", id)
 		}
 	}
-	after, changed, bound, err := identity.PlanUnbind(id)
+	after, changed, _, err := identity.PlanUnbind(id)
 	if err != nil {
 		return err
 	}
@@ -431,25 +441,30 @@ func orphanLocked(id string) error {
 		if !changed {
 			return nil
 		}
-		return commitPlan(nil, after, nil)
+		return commitPlan(whatIdentity, nil, after, nil)
 	}
 	rows, err := rowsByID(cur)
 	if err != nil {
 		return err
 	}
-	return commitBinding(cur, rows, meta, id, after, changed, bound)
+	return commitBinding(cur, rows, meta, id, after, changed)
 }
 
 // commitBinding commits identities.json's after (when changed) with
 // lifecycle.json advanced over providers.json cur as it is: a change made
-// outside magpie adopted (bound is who was bound before this change), and
-// id's undecided mark settled. Nothing to change writes nothing.
-func commitBinding(cur file, rows map[string][]byte, meta *lifecycle.Meta, id string, after []byte, changed bool, bound map[string]bool) error {
+// outside magpie adopted, and id's undecided mark settled. Nothing to
+// change writes nothing. Who was bound before, for the adoption, is read
+// as every adoption reads it (boundLocked): identities.json itself, never
+// its .bak, which may hold bindings the file no longer has.
+func commitBinding(cur file, rows map[string][]byte, meta *lifecycle.Meta, id string, after []byte, changed bool) error {
 	gen := meta.Gen + 1
 	m := meta.Clone()
 	adopting := cur.base.digest != meta.Digest
 	if adopting {
-		var err error
+		_, bound, err := boundLocked(whatIdentity)
+		if err != nil {
+			return err
+		}
 		if m, _, err = adopt(m, rows, bound, gen); err != nil {
 			return err
 		}
@@ -467,10 +482,7 @@ func commitBinding(cur file, rows map[string][]byte, meta *lifecycle.Meta, id st
 	if !changed {
 		after = nil
 	}
-	if err := commitPlan(nil, after, mb); err != nil {
-		return fmt.Errorf("identity store not changed: %w", err)
-	}
-	return nil
+	return commitPlan(whatIdentity, nil, after, mb)
 }
 
 // unsettled refuses a binding change over providers.json that is not

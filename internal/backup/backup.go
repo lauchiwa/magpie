@@ -94,7 +94,15 @@ type Bundle struct {
 	ProvidersKeys *bool `json:"providersKeys,omitempty"`
 	SettingsKeys  *bool `json:"settingsKeys,omitempty"`
 	LibraryKeys   *bool `json:"libraryKeys,omitempty"`
+	// base is providers.json as Collect read it (fork: Base); never
+	// sealed, so an opened bundle has none.
+	base provider.FileBase
 }
+
+// Base is providers.json as Collect read it: what a write of a decision
+// made from this bundle checks the file against (provider.OnBase). An
+// opened bundle's is the zero FileBase, which checks nothing.
+func (b Bundle) Base() provider.FileBase { return b.base }
 
 type envelope struct {
 	Format     string `json:"format"`
@@ -157,10 +165,11 @@ func Collect(keys bool, app string) (Bundle, error) {
 	// a providers.json that can't be read stops the backup: carried as no
 	// providers, it would take them all away where it is put back, or where
 	// sync mirrors it
-	stored, err := provider.Stored()
+	stored, base, err := provider.StoredBase()
 	if err != nil {
 		return b, err
 	}
+	b.base = base
 	if b.Groups, err = provider.StoredGroups(); err != nil {
 		return b, err
 	}

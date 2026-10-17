@@ -557,6 +557,7 @@ func TestACommitCallsNothingUnderTheLock(t *testing.T) {
 			"freshMeta": true, "reconcileHeld": true, "reconcileLocked": true, "unfinishable": true, "describeReconcile": true, "unwritable": true},
 		"lifecycle_api.go": {"bindHeld": true, "bindLocked": true, "orphanHeld": true, "orphanLocked": true, "commitBinding": true,
 			"unsettled": true, "identityRefused": true, "cmpName": true},
+		"lifecycle_sync.go": {"since": true},
 	}
 	// plain calls, and package.func calls, that must not run under the lock
 	banned := map[string]bool{"All": true, "Accounts": true, "Find": true, "load": true, "commit": true, "store": true,
