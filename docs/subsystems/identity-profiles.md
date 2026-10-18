@@ -229,7 +229,7 @@ viewer.
 | `POST /api/identity/arm` | asks the running gateway for a one-shot window |
 | `POST /api/identity/disarm` | cancels one |
 | `POST /api/identity/confirm` | makes a candidate usable |
-| `POST /api/identity/bind`, `/unbind` | starts and stops presentation |
+| `POST /api/identity/bind`, `/unbind` | starts and stops presentation; with the provider's `rev` from `GET /api/identity`, on the provider listed, refused (`code: "stale"`) once another holds its id; with none, by id |
 | `POST /api/identity/remove` | removes a profile and every binding to it |
 
 What the panel will not do:
@@ -290,7 +290,10 @@ anchors rather than a long-lived fork of provider or gateway structures.
   candidate, binding and unbinding, removal cascading to bindings, the
   sensitive fields left out, a provider no profile applies to, a gateway that
   is down, an older gateway without window details, a failed armed read and
-  fail-closed behaviour. Its real-control tests send arm, disarm and armed
+  fail-closed behaviour. `TestBindAndUnbindAsRead`
+  (`internal/gui/lifecycle_fork_test.go`) binds with the listed `rev`, refuses
+  a bind and an unbind with it once the provider is deleted and made again,
+  and binds and unbinds by id with no `rev`. Its real-control tests send arm, disarm and armed
   reads through `gateway.ArmIdentity`, `DisarmIdentity` and
   `ArmedIdentities` to a local fake gateway, checking the returned client and
   expiry, refused actions and bounded calls that receive no gateway response.

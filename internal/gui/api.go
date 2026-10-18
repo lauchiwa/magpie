@@ -2202,6 +2202,7 @@ func fail(rw http.ResponseWriter, err error) {
 	rw.Header().Set("Content-Type", "application/json")
 	rw.WriteHeader(http.StatusBadRequest)
 	out := map[string]string{"error": err.Error()}
+	lifecycleFail(out, err) // fork: stale, pending, follow_up (lifecycle_fork.go)
 	var unavailable *agent.RuntimeUnavailableError
 	if errors.As(err, &unavailable) {
 		out["code"] = "runtime_unavailable"

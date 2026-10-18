@@ -69,6 +69,9 @@ type identityProviderJSON struct {
 	Applicable bool   `json:"applicable"`
 	Why        string `json:"why,omitempty"`
 	ProfileID  string `json:"profileId,omitempty"`
+	// Rev is its lifecycle marker from the same capture (provider.Token),
+	// which a bind or unbind sends back; "" for none
+	Rev string `json:"rev,omitempty"`
 }
 
 // identityArmedJSON is a live capture window. ExpiresAt is absent from an
@@ -175,7 +178,7 @@ func identityState() (identityStateJSON, error) {
 		why := p.IdentityApplies()
 		s.Providers = append(s.Providers, identityProviderJSON{
 			ID: p.ID, Name: cmp.Or(p.Name, p.ID), Icon: p.Icon,
-			Applicable: why == "", Why: why, ProfileID: s.Bindings[p.ID],
+			Applicable: why == "", Why: why, ProfileID: s.Bindings[p.ID], Rev: p.Token(),
 		})
 	}
 	s.Gateway = gatewayRunning()
@@ -300,7 +303,7 @@ func identityRoutes(mux *http.ServeMux) {
 	// Binding is refused for a provider a profile would never be sent on,
 	// rather than saved and silently never used.
 	mux.HandleFunc("POST /api/identity/bind", func(rw http.ResponseWriter, r *http.Request) {
-		var in struct{ Provider, Profile string }
+		var in struct{ Provider, Profile, Rev string }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
 			return
@@ -310,21 +313,24 @@ func identityRoutes(mux *http.ServeMux) {
 			fail(rw, err)
 			return
 		}
-		if err := identity.Bind(p.ID, in.Profile); err != nil {
+		// as the page read it: refused (stale) once another provider holds
+		// its id; with no rev, by id as before
+		if err := provider.BindIdentity(provider.FromToken(p, in.Rev), in.Profile); err != nil {
 			fail(rw, err)
 			return
 		}
 		answerIdentity(rw)
 	})
 	mux.HandleFunc("POST /api/identity/unbind", func(rw http.ResponseWriter, r *http.Request) {
-		var in struct{ Provider string }
+		var in struct{ Provider, Rev string }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
 			return
 		}
 		// a provider since removed can still hold a binding: unbinding it
-		// is exactly what clears that, so the id is taken as it is
-		if err := identity.Unbind(in.Provider); err != nil {
+		// is exactly what clears that, so with no rev the id is taken as it
+		// is; with one, the provider the page read is unbound, or refused
+		if err := unbindAsRead(in.Provider, in.Rev); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -344,6 +350,16 @@ func identityRoutes(mux *http.ServeMux) {
 		}
 		answerIdentity(rw)
 	})
+}
+
+// unbindAsRead unbinds id as the page read it: with rev, that provider
+// (provider.UnbindIdentity, stale once another holds its id); with none,
+// the id as it is, which is how a binding a removed provider left goes.
+func unbindAsRead(id, rev string) error {
+	if rev == "" {
+		return identity.Unbind(id)
+	}
+	return provider.UnbindIdentity(provider.FromToken(provider.Provider{ID: id}, rev))
 }
 
 // answerIdentity gives the state back after a change.

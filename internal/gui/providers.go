@@ -233,6 +233,9 @@ type providerJSON struct {
 	// Move is where a built-in subscription stands with the community
 	// plugin that can run it (provider.Move): set for those that have one
 	Move *moveJSON `json:"move,omitempty"`
+	// fork: Rev is its lifecycle marker (provider.Token), which a save,
+	// delete or off/on sends back; "" for none (lifecycle_fork.go)
+	Rev string `json:"rev,omitempty"`
 }
 
 type moveJSON struct {
@@ -538,6 +541,7 @@ func providerInfo(p provider.Provider, agents []agentUse) providerJSON {
 		AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM,
 		Outputs: provider.OutputsOf(p.ID), Compacts: provider.CompactsOf(p.ID),
 	}
+	out.Rev = p.Token() // fork: lifecycle_fork.go
 	if p.Account != nil {
 		for _, r := range p.AccountRefs() {
 			if s := provider.SeatNameOf(p.ID, r); s != "" {
@@ -1131,6 +1135,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// NoModels, for save: the editor's Select none, kept with no
 			// model picked (#1818); a save that leaves it out keeps it
 			NoModels *bool `json:"noModels"`
+			// fork: Rev, for save, delete, off and on: the provider's
+			// marker as the page read it (lifecycle_fork.go)
+			Rev string `json:"rev"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			fail(rw, err)
@@ -1305,22 +1312,23 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			}
 			in.SecretAccessKey = strings.TrimSpace(in.SecretAccessKey)
 			var old *provider.Provider
+			var snap provider.Provider // fork: as the save committed it, which each step after it checks
 			if req.New {
 				// a second one of a preset, or a name already in use, is
 				// added beside the first under the next free id
 				if req.Proxy != nil {
 					in.Proxy = *req.Proxy
 				}
-				add := provider.Add
+				add := provider.AddChecked
 				if req.CopyOf != "" {
-					add = func(p provider.Provider) (string, error) { return provider.AddCopy(p, req.CopyOf) }
+					add = func(p provider.Provider) (provider.Provider, error) { return provider.AddCopyChecked(p, req.CopyOf) }
 				}
-				id, err := add(in)
+				added, err := add(in)
 				if err != nil {
 					fail(rw, err)
 					return
 				}
-				in.ID = id
+				snap, in.ID = added, added.ID
 			} else {
 				// a rename saves the rest under the id it had, then moves it
 				to := strings.ToLower(strings.TrimSpace(in.ID))
@@ -1459,12 +1467,12 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				if in.Icon == "" && old != nil && in.Preset == "" {
 					in.Icon = old.Icon
 				}
-				if err := provider.Save(in); err != nil {
+				if snap, err = provider.SaveChecked(provider.FromToken(in, req.Rev)); err != nil {
 					fail(rw, err)
 					return
 				}
 				if rename {
-					if _, err := agent.RenameProvider(in.ID, to); err != nil {
+					if snap, err = renameSaved(snap, to); err != nil {
 						fail(rw, err)
 						return
 					}
@@ -1473,13 +1481,13 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			}
 			if len(moreKeys) > 0 {
 				// those it has already are passed over, not an error
-				if added, had, err := provider.AddKeys(in.ID, moreKeys, in.KeyProtocol); err != nil && !(added == 0 && had > 0) {
+				if added, had, err := addKeysTo(snap, moreKeys, in.KeyProtocol); err != nil && !(added == 0 && had > 0) {
 					fail(rw, err)
 					return
 				}
 			}
 			if len(req.ModelPrefs) > 0 {
-				if err := provider.SetModelPrefs(in.ID, req.ModelPrefs); err != nil {
+				if err := stepOn(snap, stepPrefs, func() error { return provider.SetModelPrefs(in.ID, req.ModelPrefs) }); err != nil {
 					fail(rw, err)
 					return
 				}
@@ -1490,20 +1498,20 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				provider.ForgetPlanQuotas()
 			}
 			// a new key means a new vendor list is worth a try; keep it short
-			if p, err := provider.Find(in.ID); err == nil && p.Ready() && (old == nil || old.Key != p.Key) {
+			if p, err := savedFind(snap); err == nil && p.Ready() && (old == nil || old.Key != p.Key) {
 				ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 				p.Fetch(ctx)
 				cancel()
 			}
 			// after the list is fetched: a limit has to name a model it has
 			if req.Outputs != nil {
-				if err := provider.SetModelOutputs(in.ID, req.Outputs); err != nil {
+				if err := stepOn(snap, stepOutputs, func() error { return provider.SetModelOutputs(in.ID, req.Outputs) }); err != nil {
 					fail(rw, err)
 					return
 				}
 			}
 			if req.Compacts != nil {
-				if err := provider.SetModelCompacts(in.ID, req.Compacts); err != nil {
+				if err := stepOn(snap, stepCompacts, func() error { return provider.SetModelCompacts(in.ID, req.Compacts) }); err != nil {
 					fail(rw, err)
 					return
 				}
@@ -1592,7 +1600,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// are moved to another
 			var err error
 			if moved, err = agent.Reseat(func() error {
-				return provider.SetOff(in.ID, r.PathValue("action") == "off")
+				return provider.SetOff(in.ID, r.PathValue("action") == "off", provider.Expect(provider.FromToken(in, req.Rev)))
 			}); err != nil {
 				fail(rw, err)
 				return
@@ -1635,7 +1643,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			}
 		case "delete":
 			var err error
-			if moved, err = agent.Reseat(func() error { return provider.Delete(in.ID) }); err != nil {
+			if moved, err = agent.Reseat(func() error { return provider.DeleteChecked(provider.FromToken(in, req.Rev)) }); err != nil {
 				fail(rw, err)
 				return
 			}

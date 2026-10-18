@@ -165,11 +165,53 @@ The command line and the TUI write the value they read, in the same process
   the page says so.
 - Without `lifecycle.json`, every one of these goes by id, as before.
 
-Some writes still go by id, in the CLI and the TUI alike: the account,
-queue, RPM, quota-rest, model-name and price setters, and refetch. These are
-read-modify-writes inside `provider` itself. A concurrent change shows up as
-`*ConflictError`, but the instance isn't checked. The GUI's writes still go
-by id.
+The GUI carries the marker through the page
+([`lifecycle_fork.go`](../../internal/gui/lifecycle_fork.go),
+[`lifecycle_token.go`](../../internal/provider/lifecycle_token.go)):
+
+- `/api/providers` gives each provider a `rev`: its marker as an opaque
+  string (`Provider.Token`), or none without `lifecycle.json`. The identity
+  panel's `GET /api/identity` gives each provider its `rev` from the same
+  capture as the profiles and bindings.
+- A save, a delete, an off or on, and a bind or unbind send that `rev` back.
+  `provider.FromToken` puts it on the value the request names. It carries no
+  authority: a write with it is checked under the commit lock, like any
+  marked value. A token that doesn't decode, or that names another id, is
+  refused as stale. A request with no `rev` goes by id, as before, so a page
+  that sends none works unchanged.
+- An editor's Save is a chain of steps, each checked against the provider
+  the first one committed:
+  - the provider: `SaveChecked`, or for a new one `AddChecked`/`AddCopyChecked`;
+  - its rename: `agent.RenameChecked`;
+  - its pasted keys: `AddKeys` with `Expect`;
+  - its model names, reply limits and compaction thresholds. These write
+    `settings.json` by id, so each one is made only after `CheckCurrent`
+    finds the same instance at that id.
+- If a delete and a re-create land between two steps, the steps after that
+  point are refused, and the new provider gets none of them. Steps already
+  made stay. The model list fetched after a new key is the saved
+  provider's; one made under its id since isn't asked for its list there.
+- A rename's settings and agents step that fails is done again once, as on
+  the CLI.
+- `fail()` adds a `code` that the page can tell apart, still as a 400:
+  - `pending` (`ErrPending`): finished by the next write or start-up; don't
+    make it again.
+  - `stale` (`ErrStale`, a `ConflictError` included): changed since the page
+    read it. This includes a restore or undo refused over a change made
+    here.
+  - `follow_up`: saved, but a step after it failed.
+  A step that fails after the save also gives `step` and `committed: "1"`,
+  even when its code is `stale` or `pending`. Nothing is retried, and the
+  page keeps its draft.
+
+Some writes still go by id, in the CLI, the TUI and the GUI alike: the
+account, queue, RPM, quota-rest, model-name and price setters, a
+provider's keys (`/api/keys/*`, an import included), routing and the other
+one-field toggles, and refetch. These are read-modify-writes
+inside `provider` itself. A concurrent change shows up as `*ConflictError`,
+but the instance isn't checked. `CheckCurrent` and the settings write after
+it are two steps, so a re-create in the milliseconds between them isn't
+seen.
 
 Commit errors name the store they are for: `providers not changed: …`, or
 `identity store not changed: …` for a binding change, never both.

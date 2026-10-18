@@ -180,7 +180,7 @@ func SplitKeys(text string) []string {
 // AddKeys saves several keys at once, on, after the ones the provider has,
 // with the protocol given: those it has already are passed over. added is
 // how many were new, had how many it had.
-func AddKeys(id string, keys []string, proto Protocol) (added, had int, err error) {
+func AddKeys(id string, keys []string, proto Protocol, opts ...WriteOption) (added, had int, err error) {
 	if err := keyProtocolOK(proto); err != nil {
 		return 0, 0, err
 	}
@@ -218,7 +218,7 @@ func AddKeys(id string, keys []string, proto Protocol) (added, had int, err erro
 		}
 		return 0, 0, errors.New("paste the keys to add")
 	}
-	return added, had, Save(*p)
+	return added, had, Save(*p, opts...) // fork: opts check the provider it is added to
 }
 
 // first is the first key as a KeyAccount, and setFirst makes k the first.

@@ -831,7 +831,7 @@ func add(p Provider, once bool, opts ...WriteOption) (string, error) {
 // p leaves it out. The same key on the same host is taken, the copy being
 // asked for (another model list, another endpoint). A signed-in account is
 // never copied: its sign-in is the agent's.
-func AddCopy(p Provider, from string) (string, error) {
+func AddCopy(p Provider, from string, opts ...WriteOption) (string, error) {
 	src, err := Find(from)
 	if err != nil {
 		return "", err
@@ -874,7 +874,7 @@ func AddCopy(p Provider, from string) (string, error) {
 	}
 	// fork: a new provider, with no id it never had, from src as it was read
 	p.Was = nil
-	return add(p, false, Expect(*src))
+	return add(p, false, append(slices.Clip(opts), Expect(*src))...)
 }
 
 // hostID is an id for a provider from the host it is on: api.relay.com is
