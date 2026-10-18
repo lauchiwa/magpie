@@ -24,11 +24,13 @@ type streamVendor struct {
 	mu    sync.Mutex
 	seen  int
 	at    []time.Time // when each request arrived
+	order []int64     // each request's arrival, in order (writeOrder)
 	fail  int
 	block chan struct{} // the first request waits on it, if set
 	later time.Duration // the requests after the first wait this, quiet
 	// when it began to answer each request, after block and later
-	answered []time.Time
+	answered   []time.Time
+	answeredAt []int64 // the same, in order (writeOrder)
 }
 
 // arrived is when the vendor's n-th request (from 0) arrived.
@@ -41,11 +43,23 @@ func (v *streamVendor) arrived(n int) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// arrivedAt is where the vendor's n-th request (from 0) arrived among the
+// gateway's writes (writeOrder).
+func (v *streamVendor) arrivedAt(n int) (int64, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if n < len(v.order) {
+		return v.order[n], true
+	}
+	return 0, false
+}
+
 func (v *streamVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	io.Copy(io.Discard, r.Body)
 	v.mu.Lock()
 	v.seen++
 	v.at = append(v.at, time.Now())
+	v.order = append(v.order, writeOrder.Add(1))
 	n := v.seen
 	failing := n > 1 && v.fail > 0
 	if failing {
@@ -68,6 +82,7 @@ func (v *streamVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	v.mu.Lock()
 	v.answered = append(v.answered, time.Now())
+	v.answeredAt = append(v.answeredAt, writeOrder.Add(1))
 	v.mu.Unlock()
 	if failing {
 		w.Header().Set("Content-Type", "application/json")
@@ -116,10 +131,12 @@ func queueGateway(t *testing.T, v *streamVendor, set func(*provider.Provider)) s
 	return gw.URL
 }
 
-// wrote is when the gateway first wrote to each agent's connection, by
-// the agent's address: the time the gateway sent it, which a client's own
-// read can't tell under load, its goroutine waiting to run.
-var wrote sync.Map // string -> *atomic.Int64
+// writeOrder numbers the gateway's writes to its agents and the vendor's
+// requests and answers as each happens, so the tests ask which came first
+// by number, not by time: on Windows two of them can read the same clock
+// tick, and a write just before the vendor was asked then read as none
+// before it.
+var writeOrder atomic.Int64
 
 type wroteListener struct{ net.Listener }
 
@@ -128,28 +145,46 @@ func (l wroteListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return c, err
 	}
-	at, all := new(atomic.Int64), new(writeLog)
-	wrote.Store(c.RemoteAddr().String(), at)
+	all := new(writeLog)
 	writes.Store(c.RemoteAddr().String(), all)
-	return wroteConn{c, at, all}, nil
+	return wroteConn{c, all}, nil
 }
 
-// writes is every time the gateway wrote to each agent's connection, by
-// the agent's address.
+// writes is every write of the gateway to each agent's connection, by the
+// agent's address: when the gateway sent it, which a client's own read
+// can't tell under load, its goroutine waiting to run.
 var writes sync.Map // string -> *writeLog
 
 type writeLog struct {
-	mu sync.Mutex
-	at []time.Time
+	mu    sync.Mutex
+	at    []time.Time
+	order []int64 // writeOrder's, for each
 }
 
-// within says how many writes were after from and before to.
-func (l *writeLog) within(from, to time.Time) int {
+// wrote is a write of the gateway's: when, and where among writeOrder's.
+type wrote struct {
+	at    time.Time
+	order int64
+}
+
+// first is the gateway's first write, if any.
+func (l *writeLog) first() wrote {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.at) == 0 {
+		return wrote{}
+	}
+	return wrote{l.at[0], l.order[0]}
+}
+
+// within says how many writes came after from and before to, in
+// writeOrder's numbers (0 from: since the start).
+func (l *writeLog) within(from, to int64) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	n := 0
-	for _, t := range l.at {
-		if t.After(from) && t.Before(to) {
+	for _, o := range l.order {
+		if o > from && o < to {
 			n++
 		}
 	}
@@ -158,17 +193,15 @@ func (l *writeLog) within(from, to time.Time) int {
 
 type wroteConn struct {
 	net.Conn
-	at  *atomic.Int64
 	all *writeLog
 }
 
 func (c wroteConn) Write(b []byte) (int, error) {
 	n, err := c.Conn.Write(b)
 	if n > 0 {
-		now := time.Now()
-		c.at.CompareAndSwap(0, now.UnixNano())
 		c.all.mu.Lock()
-		c.all.at = append(c.all.at, now)
+		c.all.at = append(c.all.at, time.Now())
+		c.all.order = append(c.all.order, writeOrder.Add(1))
 		c.all.mu.Unlock()
 	}
 	return n, err
@@ -188,9 +221,9 @@ var queueAsks = []struct{ name, path, body string }{
 const queueMinute = 3 * time.Second
 
 // askHeard sends body to path as an agent would and returns the status, the
-// stream read, when the gateway first wrote to the agent (wrote), and the
+// stream read, the gateway's first write to the agent (writes), and the
 // read's error. heard, if set, is called once the agent has a first byte.
-func askHeard(gw, path, body string, heard func()) (int, string, time.Time, error) {
+func askHeard(gw, path, body string, heard func()) (int, string, wrote, error) {
 	req, _ := http.NewRequest("POST", gw+path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	var from string
@@ -204,16 +237,14 @@ func askHeard(gw, path, body string, heard func()) (int, string, time.Time, erro
 	}))
 	res, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
-		return 0, "", time.Time{}, err
+		return 0, "", wrote{}, err
 	}
 	defer res.Body.Close()
 	var b strings.Builder
 	_, err = io.Copy(&b, bufio.NewReader(res.Body))
-	var first time.Time
-	if at, ok := wrote.Load(from); ok {
-		if n := at.(*atomic.Int64).Load(); n != 0 {
-			first = time.Unix(0, n)
-		}
+	var first wrote
+	if l, ok := writes.Load(from); ok {
+		first = l.(*writeLog).first()
 	}
 	return res.StatusCode, b.String(), first, err
 }
@@ -255,8 +286,9 @@ func TestQueuedStreamKeptAliveForTheMinute(t *testing.T) {
 			}
 			first, _ := v.arrived(0)
 			asked, ok := v.arrived(1)
-			if !ok || heard.IsZero() || !heard.Before(asked) {
-				t.Fatalf("the gateway first wrote to the agent at %s, the vendor was asked at %s: nothing reached it while it waited", heard.Format("15:04:05.000"), asked.Format("15:04:05.000"))
+			askedAt, _ := v.arrivedAt(1)
+			if !ok || heard.order == 0 || heard.order > askedAt {
+				t.Fatalf("the gateway first wrote to the agent at %s, the vendor was asked at %s: nothing reached it while it waited", heard.at.Format("15:04:05.000"), asked.Format("15:04:05.000"))
 			}
 			// it waited for the minute: the vendor sees the first late
 			// under load (rpmSlack, zero here), so half of it
@@ -317,11 +349,12 @@ func TestQueuedStreamKeptAliveOnceSentToItsVendor(t *testing.T) {
 			log := l.(*writeLog)
 			v.mu.Lock()
 			asked, answered := v.at[1], v.answered[1]
+			askedAt, answeredAt := v.order[1], v.answeredAt[1]
 			v.mu.Unlock()
-			if log.within(time.Time{}, asked) == 0 {
+			if log.within(0, askedAt) == 0 {
 				t.Fatalf("the agent wasn't kept alive before the vendor was asked")
 			}
-			if n := log.within(asked, answered); n == 0 {
+			if n := log.within(askedAt, answeredAt); n == 0 {
 				t.Fatalf("the gateway wrote nothing to the kept-alive agent in the %s between the vendor being asked and its answer, want a keepalive every %s", answered.Sub(asked).Round(time.Millisecond), keepaliveEvery)
 			}
 		})
@@ -383,8 +416,9 @@ func TestQueuedStreamKeptAliveForASlot(t *testing.T) {
 	if err != nil || code != 200 || !strings.Contains(body, ": keepalive") || !strings.Contains(body, "queued ok") {
 		t.Fatalf("queued for a slot = %d %v %q, want 200, keepalives, then the reply", code, err, body)
 	}
-	if asked, ok := v.arrived(1); !ok || heard.IsZero() || !heard.Before(asked) {
-		t.Fatalf("the gateway first wrote to the agent at %s, the vendor was asked at %s: nothing reached it while it waited", heard.Format("15:04:05.000"), asked.Format("15:04:05.000"))
+	asked, ok := v.arrived(1)
+	if askedAt, _ := v.arrivedAt(1); !ok || heard.order == 0 || heard.order > askedAt {
+		t.Fatalf("the gateway first wrote to the agent at %s, the vendor was asked at %s: nothing reached it while it waited", heard.at.Format("15:04:05.000"), asked.Format("15:04:05.000"))
 	}
 	if err := <-first; err != nil {
 		t.Fatal(err)
