@@ -392,11 +392,12 @@ func providerCmd(args []string) error {
 		}
 		to := strings.ToLower(strings.TrimSpace(p.ID))
 		p.ID = from
-		if err := provider.Save(*p); err != nil {
+		saved, err := saveFound(*p) // fork: as read, and the rename checked against this save
+		if err != nil {
 			return err
 		}
 		if to != from {
-			moved, err := agent.RenameProvider(from, to)
+			moved, err := renameSaved(saved, to)
 			if err != nil {
 				return err
 			}
@@ -493,7 +494,7 @@ func providerCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		moved, err := agent.Reseat(func() error { return provider.Delete(p.ID) })
+		moved, err := agent.Reseat(func() error { return deleteFound(*p) })
 		if err != nil {
 			return err
 		}
@@ -588,7 +589,7 @@ func providerCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		moved, err := agent.Reseat(func() error { return provider.SetOff(p.ID, verb == "off") })
+		moved, err := agent.Reseat(func() error { return provider.SetOff(p.ID, verb == "off", provider.Expect(*p)) })
 		if err != nil {
 			return err
 		}

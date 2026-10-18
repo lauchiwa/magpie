@@ -1528,13 +1528,13 @@ func (p Provider) On() bool { return p.Ready() && !p.Off }
 
 // SetOff switches a provider off, or on again (see Provider.Off). Saving
 // it brings the model lists written into agents' files up to date.
-func SetOff(id string, off bool) error {
+func SetOff(id string, off bool, opts ...WriteOption) error {
 	p, err := Find(id)
 	if err != nil {
 		return err
 	}
 	p.Off = off
-	return Save(*p)
+	return Save(*p, opts...)
 }
 
 // SwitchedOff is the provider switched off in magpie that a model id

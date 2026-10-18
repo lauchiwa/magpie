@@ -34,8 +34,9 @@ import (
 // the change (a rename replayed by id could move another provider).
 type FollowUpError struct {
 	Committed bool
-	Step      string // StepSettings, or a step its caller names (G4: agents)
+	Step      string // StepSettings, or a step its caller names (agent.StepAgents)
 	Err       error
+	redo      func() error
 }
 
 // StepSettings is settings.json's model preferences and agent lists,
@@ -50,12 +51,24 @@ func (e *FollowUpError) Error() string {
 }
 func (e *FollowUpError) Unwrap() error { return e.Err }
 
-// followUp is err after a committed change, as a *FollowUpError.
-func followUp(step string, err error) error {
+// Redo does Step again, and only Step: the change before it stays as it was
+// committed. nil once the step went through; with no way known to redo it,
+// the step's own error.
+func (e *FollowUpError) Redo() error {
+	if e.redo == nil {
+		return e.Err
+	}
+	return e.redo()
+}
+
+// FollowUp is err, from step after a committed change, as a *FollowUpError
+// whose Redo is redo; nil when err is. A step that follows a rename outside
+// this package (the agents') says so with it.
+func FollowUp(step string, err error, redo func() error) error {
 	if err == nil {
 		return nil
 	}
-	return &FollowUpError{Committed: true, Step: step, Err: err}
+	return &FollowUpError{Committed: true, Step: step, Err: err, redo: redo}
 }
 
 // WriteOption adds a check, or asks for the result, of one write.

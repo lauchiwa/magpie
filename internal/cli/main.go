@@ -187,7 +187,8 @@ func Main(v string) {
 	gateway.Version = version
 	netproxy.Install()
 	update.GUI = hasGUI
-	err = run(os.Args[1:])
+	// fork: a write refused as stale says to run it again
+	err = lifecycleSaid(run(os.Args[1:]))
 	proc.EndProbes() // a CLI still being asked something isn't left to init
 	sessions.Saved() // the session index kept, for the next run
 	if err != nil {

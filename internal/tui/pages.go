@@ -142,7 +142,7 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openAsk(ask{crumbs: []string{"providers", p.Name, "key"}, input: in,
 			hint: "now " + dash(provider.Mask(p.Key)) + " · the key is kept in magpie's providers file",
 			onEnter: func(v string) tea.Cmd {
-				return saveProvider(p.ID, func(p *provider.Provider) { p.Key = v; provider.ForgetBalances() }, p.Name+" key "+provider.Mask(v))
+				return saveProvider(p, func(p *provider.Provider) { p.Key = v; provider.ForgetBalances() }, p.Name+" key "+provider.Mask(v))
 			}})
 	case "w":
 		if p.IsVertex() {
@@ -151,7 +151,7 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		pr := provider.Preset(p.Preset)
 		if pr != nil && pr.Kind == provider.KindLocal {
-			id, name := p.ID, p.Name
+			name := p.Name
 			now := provider.AddressOf(p.Chat, p.Responses, p.Anthropic)
 			m.openAsk(localAddressAsk(*pr, []string{"providers", name, "address"}, now, func(v string) tea.Cmd {
 				q := p
@@ -161,7 +161,7 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if at := provider.AddressOf(q.Chat, q.Responses, q.Anthropic); v == "" || at == now {
 					return func() tea.Msg { return flashMsg{text: name + " address unchanged", ok: true} }
 				}
-				return saveProvider(id, func(p *provider.Provider) {
+				return saveProvider(p, func(p *provider.Provider) {
 					_ = p.AtAddress(v)
 					provider.ForgetBalances()
 				}, name+" address "+provider.AddressOf(q.Chat, q.Responses, q.Anthropic))
@@ -179,9 +179,9 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p.IsRemoteMagpie() {
 			now = p.Anthropic // the address as typed, without /v1
 		}
-		id, name := p.ID, p.Name
+		name := p.Name
 		m.openAsk(endpointAsk(*pr, []string{"providers", name, "address"}, now, func(v string) tea.Cmd {
-			return saveProvider(id, func(p *provider.Provider) {
+			return saveProvider(p, func(p *provider.Provider) {
 				p.Chat, p.Responses = v, v
 				if p.IsRemoteMagpie() {
 					p.Anthropic = "" // put again from the address typed
@@ -195,7 +195,7 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openAsk(ask{crumbs: []string{"providers", p.Name, "family"}, input: in, empty: true,
 			hint: "agents can be shown only some families: magpie visible <agent> <family>",
 			onEnter: func(v string) tea.Cmd {
-				return saveProvider(p.ID, func(p *provider.Provider) { p.Family = v }, p.Name+" family "+dash(v))
+				return saveProvider(p, func(p *provider.Provider) { p.Family = v }, p.Name+" family "+dash(v))
 			}})
 	case "u":
 		on := !p.Unlisted
@@ -203,7 +203,7 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if on {
 			what = "serves only through routing groups"
 		}
-		return m, saveProvider(p.ID, func(p *provider.Provider) { p.Unlisted = on }, p.Name+" "+what)
+		return m, saveProvider(p, func(p *provider.Provider) { p.Unlisted = on }, p.Name+" "+what)
 	case "o":
 		off := !p.Off
 		what := "switched on"
@@ -211,7 +211,7 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			what = "switched off: agents are given none of its models"
 		}
 		id := p.ID
-		return m, reseatCmd(func() error { return provider.SetOff(id, off) }, p.Name+" "+what)
+		return m, reseatCmd(func() error { return provider.SetOff(id, off, provider.Expect(p)) }, p.Name+" "+what)
 	case "t":
 		m.flash, m.flashOK = "testing "+p.Name+"…", true
 		return m, testCmd(p)
@@ -222,12 +222,13 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		if m.confirm != "provider/"+p.ID {
 			m.confirm = "provider/" + p.ID
+			m.confirmProv = p // fork: the second d removes this one, as it was read
 			m.flash, m.flashOK = "press d again to remove "+p.Name, false
 			return m, nil
 		}
 		m.confirm = ""
-		id := p.ID
-		return m, reseatCmd(func() error { return provider.Delete(id) }, "removed "+p.Name)
+		sel := m.confirmProv
+		return m, reseatCmd(func() error { return provider.DeleteChecked(sel) }, "removed "+p.Name)
 	}
 	return m, nil
 }
@@ -251,15 +252,17 @@ func reseatCmd(change func() error, done string) tea.Cmd {
 	}
 }
 
-// saveProvider changes one provider and saves it.
-func saveProvider(id string, change func(*provider.Provider), done string) tea.Cmd {
+// saveProvider changes one provider, sel as the list read it, and saves
+// it: the change is made to it as it is now, and refused when another
+// provider has its id since (renamed, deleted or made anew).
+func saveProvider(sel provider.Provider, change func(*provider.Provider), done string) tea.Cmd {
 	return func() tea.Msg {
-		p, err := provider.Find(id)
+		p, err := provider.Find(sel.ID)
 		if err != nil {
 			return flashMsg{text: err.Error()}
 		}
 		change(p)
-		if err := provider.Save(*p); err != nil {
+		if err := provider.Save(*p, provider.Expect(sel)); err != nil {
 			return flashMsg{text: err.Error()}
 		}
 		return flashMsg{text: done, ok: true}
@@ -384,6 +387,7 @@ func modelOptions(id string) []agent.Option {
 // for agents, and the list stays open.
 func (m *model) openProviderModels(id string) {
 	p := m.provs[m.prow]
+	opened := p // fork: what the toggles save is checked against
 	m.pk = picker{
 		crumbs: []string{"providers", p.Name, "models"},
 		input:  newInput("filter models"),
@@ -412,7 +416,7 @@ func (m *model) openProviderModels(id string) {
 				ids = append(slices.Clone(ids), model)
 			}
 			p.Models = ids
-			if err := provider.Save(*p); err != nil {
+			if err := provider.Save(*p, provider.Expect(opened)); err != nil {
 				return nil, err.Error(), false
 			}
 			items := modelOptions(id)

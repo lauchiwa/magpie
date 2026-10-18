@@ -125,6 +125,52 @@ journal forward, so the rename has already moved the fetched lists to the new
 id. Its settings step is left (the old id stays in `Was`). A commit refused
 before its journal moves nothing.
 
+A caller tells these apart with `errors.Is`/`errors.As`, never by the text.
+A commit left in its journal is `errors.Is(err, ErrPending)`. Its words are
+unchanged, and it is never `ErrStale`. A caller says it is finished by the
+next write or start-up and doesn't make it again. `FollowUpError.Redo` does
+its `Step` once more, and only that step. For `StepSettings` that means
+moving the model preferences and agent lists, never the commit. A
+`FollowUpError` built without a step to redo answers its own `Err`.
+`agent.RenameChecked` renames through `provider.RenameChecked` and then moves
+the agents on the provider's models, using values worked out before the
+commit. Unlike `agent.RenameProvider`, it moves them even when the settings
+step failed, because the commit is already in. A failure there is a
+`FollowUpError` with `Step` `agent.StepAgents`, or `"settings, agents"` when
+both failed, and its `Redo` does both again. On a refusal or `ErrPending` it
+moves no agent.
+
+The command line and the TUI write the value they read, in the same process
+([`lifecycle_cli.go`](../../internal/cli/lifecycle_cli.go),
+[`pages.go`](../../internal/tui/pages.go)):
+
+- `magpie provider set` uses `SaveChecked`. With `id=`, it then calls
+  `agent.RenameChecked` on the value that save returned, so the rename is
+  checked against that save. A committed `FollowUpError` is said, and its
+  `Redo` runs once. If the redo fails too, the command exits nonzero and
+  says the rename is in, and that only the step is left to do. A pending
+  rename is said as not done yet, and the command exits nonzero.
+- `provider rm` uses `DeleteChecked`. `provider off`/`on` use
+  `SetOff(id, off, Expect(p))`. `identity bind`/`unbind` use
+  `BindIdentity`/`UnbindIdentity`.
+- `Main` adds to a stale or conflicting refusal that it changed since the
+  command read it, and to run the command again. To a pending one it adds
+  not to run it again. Nothing is retried.
+- In the TUI, the first `d` keeps the row it confirmed (`confirmProv`), and
+  the second `d` deletes that value. A delete and re-create in between
+  leaves the new provider alone. The line edits (key, address, family,
+  unlisted), `o`, and the model list's toggles make their change on the
+  provider as it is now. They save it with `Expect` of the value the list
+  read, so a provider renamed, deleted or made anew since is refused, and
+  the page says so.
+- Without `lifecycle.json`, every one of these goes by id, as before.
+
+Some writes still go by id, in the CLI and the TUI alike: the account,
+queue, RPM, quota-rest, model-name and price setters, and refetch. These are
+read-modify-writes inside `provider` itself. A concurrent change shows up as
+`*ConflictError`, but the instance isn't checked. The GUI's writes still go
+by id.
+
 Commit errors name the store they are for: `providers not changed: …`, or
 `identity store not changed: …` for a binding change, never both.
 

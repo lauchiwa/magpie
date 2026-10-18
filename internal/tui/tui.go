@@ -137,6 +137,9 @@ type model struct {
 	libView   *library.View
 	libAgents []library.AgentView
 	libErr    string
+
+	// fork: the provider a second d removes, as the first d read it
+	confirmProv provider.Provider
 }
 
 type flashMsg struct {

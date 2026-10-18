@@ -444,6 +444,16 @@ func (e *journalPending) Error() string {
 }
 func (e *journalPending) Unwrap() error { return e.err }
 
+// Is makes errors.Is(err, ErrPending) true of it.
+func (e *journalPending) Is(target error) bool { return target == ErrPending }
+
+// ErrPending is a write that failed after its journal was written: the next
+// provider write or start-up finishes it forward, so it must not be made
+// again (a rename replayed by id would find its old id gone, or another
+// provider on it). errors.Is(err, ErrPending) says so; the error itself is
+// the commit's, as it was.
+var ErrPending = errors.New("the change is written to the lifecycle journal and is finished by the next provider write or start-up")
+
 // pendingJournal is whether err left a journal for Recover to finish. A
 // commit runs under the lock and after its own Recover, so a journal there
 // now is the one this commit wrote.

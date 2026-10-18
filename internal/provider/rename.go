@@ -98,19 +98,22 @@ func Rename(from, to string, opts ...WriteOption) error {
 	if err := renameCommit(f, i, from, to, opts); err != nil {
 		return err
 	}
-	s := settings.Load()
-	changed := renameModelPrefs(&s, from, to)
-	for a, names := range s.Visible {
-		for k, n := range names {
-			if strings.EqualFold(n, from) {
-				s.Visible[a][k], changed = to, true
+	moveSettings := func() error { // fork: FollowUpError.Redo runs it alone
+		s := settings.Load()
+		changed := renameModelPrefs(&s, from, to)
+		for a, names := range s.Visible {
+			for k, n := range names {
+				if strings.EqualFold(n, from) {
+					s.Visible[a][k], changed = to, true
+				}
 			}
 		}
+		if changed {
+			return settings.Save(s)
+		}
+		return nil
 	}
-	if changed {
-		return followUp(StepSettings, settings.Save(s)) // fork: the rename is done
-	}
-	return nil
+	return FollowUp(StepSettings, moveSettings(), moveSettings) // fork: the rename is done
 }
 
 // renamedRef is a model id ("provider/model", "magpie/provider/model")

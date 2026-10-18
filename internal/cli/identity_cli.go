@@ -267,12 +267,12 @@ func identityBind(args []string) error {
 	if err != nil {
 		return err
 	}
-	// said here rather than at the first request: a profile bound to an
-	// account or a plugin's provider would be read and never sent
-	if why := p.IdentityApplies(); why != "" {
-		return fmt.Errorf("%s: %s", p.Name, why)
-	}
-	if err := identity.Bind(p.ID, args[1]); err != nil {
+	// bound as the provider read here: renamed since, under its new id;
+	// deleted or made anew, refused. BindIdentity says first, rather than
+	// the first request, that a profile bound to an account or a plugin's
+	// provider would be read and never sent
+	between("bind")
+	if err := provider.BindIdentity(*p, args[1]); err != nil {
 		return err
 	}
 	fmt.Printf("%s now presents %s on every request magpie makes to it\n", p.Name, args[1])
@@ -285,12 +285,34 @@ func identityUnbind(args []string) error {
 	}
 	p, err := provider.Find(args[0])
 	if err != nil {
-		return err
+		return unbindOrphan(args[0], err)
 	}
-	if err := identity.Unbind(p.ID); err != nil {
+	between("unbind")
+	if err := provider.UnbindIdentity(*p); err != nil {
 		return err
 	}
 	fmt.Printf("%s presents no identity profile\n", p.Name)
+	return nil
+}
+
+// unbindOrphan removes the binding a provider no longer stored left under
+// id (deleted, or bound by hand): there is no provider to unbind it as.
+// With no binding there either, notFound is the answer; bindings that can't
+// be read are said, never taken for none.
+func unbindOrphan(id string, notFound error) error {
+	id = strings.ToLower(strings.TrimSpace(id))
+	bound, err := identity.Bindings()
+	if err != nil {
+		return fmt.Errorf("%w; whether a binding is left under %q is unknown: %v", notFound, id, err)
+	}
+	if _, ok := bound[id]; !ok {
+		return notFound
+	}
+	between("unbind")
+	if err := provider.UnbindOrphan(id); err != nil {
+		return err
+	}
+	fmt.Printf("no provider %s is stored; the binding left under it is removed\n", id)
 	return nil
 }
 

@@ -174,7 +174,12 @@ and reconcile in
   They refuse while `providers.json` is missing or read from its `.bak`. A
   zero value binds its id through `identity.Bind`, which settles nothing: it
   names an id, not a provider. `UnbindOrphan(id)` removes a binding no stored
-  row holds, and its mark, and is refused while one does. The locked path
+  row holds, and its mark, and is refused while one does. `magpie identity
+  bind`/`unbind` call these with the value `provider.Find` read in the same
+  command. A rename made in between binds or unbinds the new id, and a delete
+  or re-create is refused with "run the command again". An `unbind` of an id
+  no provider has removes the binding left under it through `UnbindOrphan`.
+  If the bindings can't be read, it says so and writes nothing. The locked path
   plans through `identity.PlanBind`/`PlanUnbind`, which take only the store's
   mutex and write nothing. When the commit adopts a change made outside
   magpie, it reads who was bound the same way every adoption does
@@ -315,5 +320,13 @@ anchors rather than a long-lived fork of provider or gateway structures.
   [`lifecycle_handoff_test.go`](../../internal/provider/lifecycle_handoff_test.go)
   covers the strict adoption read, the error naming the identity store once,
   and a rename that is pending in its journal.
+  [`lifecycle_writes_cli_test.go`](../../internal/cli/lifecycle_writes_cli_test.go)
+  has another process rename, delete and re-create a provider between a
+  command's read and its write, and covers `identity bind`/`unbind` following a
+  rename, refusing a re-created provider, removing an orphan binding,
+  unreadable bindings, and the legacy by-id path.
+  [`lifecycle_test.go`](../../internal/tui/lifecycle_test.go) (TUI) covers a
+  delete and re-create between the two `d` presses, and the edits and model
+  toggles after one.
 - Run affected tests with an isolated home and pinned Go caches, as described
   in [Provider and plugin ownership](provider-plugins.md#verification).
