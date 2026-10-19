@@ -50,6 +50,8 @@ func TestAsideOfflineDisconnectRestoresWithoutDaemon(t *testing.T) {
 		t.Fatal("fixture must have no Aside executable")
 	}
 	missing := &Agent{ID: "dsh", Name: "Native fixture", Bin: "magpie-test-missing-native", Dir: a.Dir, Path: a.Path, Native: a.Native}
+	// on Windows a folder dsh's desktop app may read is never gone (#2300)
+	judgeOffWindows(t)
 	if !missing.CLIMissing() {
 		t.Fatal("native fixture must report missing CLI")
 	}
