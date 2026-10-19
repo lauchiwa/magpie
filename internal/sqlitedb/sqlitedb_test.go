@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,6 +27,11 @@ const childDB = "MAGPIE_SQLITEDB_CHILD"
 // print TODOTODO and os.Exit(1) on that entry (on macOS, Windows and the
 // BSDs; Linux's musl-based getenv skips it). Now the open works.
 func TestSQLiteSurvivesMalformedEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// CreateProcess refuses such a block (ERROR_INVALID_PARAMETER,
+		// "The parameter is incorrect"): no process there has the entry
+		t.Skip("Windows starts no process with an environment entry without \"=\"")
+	}
 	db := filepath.Join(t.TempDir(), "x.db")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
