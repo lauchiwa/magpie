@@ -31,8 +31,18 @@ type heldValue struct {
 
 func init() {
 	catalog.Forget = Changed
-	// a plugin's sign-in saved or renewed, a plugin added
-	plugin.OnChange(Changed)
+	// a plugin's sign-in saved or renewed, a plugin added, and the models
+	// a plugin lists once the host has answered: the catalog may be
+	// another, so the model lists agents keep in their own files follow,
+	// as for a provider saved (catalog.Changed). Dropping only what is
+	// held left Pi's models.json without a plugin's models signed in to
+	// after it was written (#2373).
+	plugin.OnChange(catalog.Touched)
+	plugin.OnListed(catalog.Touched)
+	// and what a request holds goes at once: a SyncCatalog running holds
+	// the plugins as they were before a sign-in, and a look at the
+	// accounts right after it was given those for a second (#2449)
+	plugin.OnChangeNow(dropHeld)
 }
 
 // heldFor is how long a held catalog is used before it is built again,
@@ -58,6 +68,12 @@ func Hold() (release func()) {
 // setting was written.
 func Changed() {
 	filememo.Forget()
+	dropHeld()
+}
+
+// dropHeld is Changed for what is built on the plugins alone, which
+// read their files afresh each time.
+func dropHeld() {
 	held.Lock()
 	held.gen++
 	held.built = nil
@@ -98,6 +114,50 @@ func heldEntries(build func() []Entry) []Entry {
 // sign-ins each time, and PluginOf asks for every model.
 func heldPlugins() []plugin.Provider {
 	return heldOf("plugins", func() []plugin.Provider { return slices.Clip(plugin.Cached()) })
+}
+
+// fromEntries is what was built from a catalog, and which catalog: its
+// first entry and its length.
+type fromEntries[T any] struct {
+	at *Entry
+	n  int
+	v  T
+}
+
+// heldFrom is heldOf for what is built from entries: held while a request
+// holds the catalog, and built again for another catalog than it was built
+// from (providerEntries built afresh after heldFor, or one a caller made).
+// A request asks for the groups' entries several times (Catalog, Served),
+// and each built them from every member of every group again (the CPU a
+// request to a group took at once, with many providers).
+func heldFrom[T any](key string, entries []Entry, build func([]Entry) T) T {
+	var at *Entry
+	if len(entries) > 0 {
+		at = &entries[0]
+	}
+	held.Lock()
+	if held.holds == 0 {
+		held.Unlock()
+		return build(entries)
+	}
+	if h, ok := held.built[key]; ok && time.Since(h.at) < heldFor {
+		if f := h.v.(fromEntries[T]); f.at == at && f.n == len(entries) {
+			held.Unlock()
+			return f.v
+		}
+	}
+	gen := held.gen
+	held.Unlock()
+	v := build(entries)
+	held.Lock()
+	if held.holds > 0 && held.gen == gen {
+		if held.built == nil {
+			held.built = map[string]heldValue{}
+		}
+		held.built[key] = heldValue{fromEntries[T]{at, len(entries), v}, time.Now()}
+	}
+	held.Unlock()
+	return v
 }
 
 // heldSettings is the settings, read once while a request holds the

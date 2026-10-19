@@ -278,11 +278,7 @@ func noPrediction(said string) string {
 // or unusable answer is no prediction.
 func predictionJSON(said string) (string, bool) {
 	t := strings.TrimSpace(said)
-	if rest, ok := strings.CutPrefix(t, "<think>"); ok {
-		if _, after, ok := strings.Cut(rest, "</think>"); ok {
-			t = strings.TrimSpace(after)
-		}
-	}
+	t = afterThought(t)
 	if strings.HasPrefix(t, "```") {
 		t = strings.TrimPrefix(t, "```")
 		if i := strings.IndexByte(t, '\n'); i >= 0 && !strings.Contains(t[:i], "{") {
@@ -324,11 +320,7 @@ func noDescription(said string) string {
 // object Codex asks for. An unusable answer returns an empty string.
 func descriptionJSON(said string) string {
 	t := strings.TrimSpace(said)
-	if rest, ok := strings.CutPrefix(t, "<think>"); ok {
-		if _, after, ok := strings.Cut(rest, "</think>"); ok {
-			t = strings.TrimSpace(after)
-		}
-	}
+	t = afterThought(t)
 	if strings.HasPrefix(t, "```") {
 		t = strings.TrimPrefix(t, "```")
 		if i := strings.IndexByte(t, '\n'); i >= 0 && !strings.Contains(t[:i], "{") {
@@ -408,7 +400,7 @@ func (s *Server) sentNowhere(w http.ResponseWriter, r *http.Request, body []byte
 		t.Tries[0].Done, t.Tries[0].Status, t.Tries[0].Millis, t.Tries[0].Error = true, 200, ms, why
 		t.Done, t.Status, t.Error, t.Millis = true, 200, why, ms
 	})
-	s.record(Call{Time: start, From: provider.Responses, To: provider.Responses, Model: model, Provider: "magpie",
+	s.record(Call{Route: tr.ID, Time: start, From: provider.Responses, To: provider.Responses, Model: model, Provider: "magpie",
 		Agent: agentOf(r), Kind: kind, Status: 200, Millis: ms, Error: why})
 	appendUsage(r, usage.Record{RouteID: tr.ID, Time: start, Agent: agentOf(r), Provider: "magpie", Model: model, Requested: model,
 		Millis: ms, Status: 200, Rejected: true, Error: why, Session: sessionOf(r.Header), NativeSession: nativeSessionOf(r.Header),
@@ -492,11 +484,7 @@ func titleShapeOf(body []byte) titleShape {
 func titleJSON(said string, shape titleShape) string {
 	t := strings.TrimSpace(said)
 	// a reasoning model's thoughts, where its API leaves them in the text
-	if rest, ok := strings.CutPrefix(t, "<think>"); ok {
-		if _, after, ok := strings.Cut(rest, "</think>"); ok {
-			t = strings.TrimSpace(after)
-		}
-	}
+	t = afterThought(t)
 	if strings.HasPrefix(t, "```") {
 		t = strings.TrimPrefix(t, "```")
 		if i := strings.IndexByte(t, '\n'); i >= 0 && !strings.Contains(t[:i], "{") {

@@ -6,11 +6,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/gwmw"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -128,7 +130,6 @@ func TestReject(t *testing.T) {
 
 func TestFailOpen(t *testing.T) {
 	was := requestLimit
-	requestLimit = 50 * time.Millisecond
 	defer func() { requestLimit = was }()
 	e := file(t, `
 let n = 0;
@@ -143,6 +144,12 @@ export function onRequest(body) {
 	use(t, e)
 	for _, kind := range []string{"throw", "spin", "string"} {
 		in := `{"kind":"` + kind + `"}`
+		// Only the spin is cut short: under a full run's load a throw or a
+		// string can take longer than 50ms, and would fail for the limit.
+		requestLimit = was
+		if kind == "spin" {
+			requestLimit = 50 * time.Millisecond
+		}
 		r := Begin(info())
 		start := time.Now()
 		body, rej := r.Request([]byte(in))
@@ -164,6 +171,57 @@ export function onRequest(body) {
 	body, _ := r.Request([]byte(`{"kind":"fine"}`))
 	if !strings.Contains(string(body), `"ok"`) {
 		t.Fatalf("after failures: %s", body)
+	}
+}
+
+func TestOnProvider(t *testing.T) {
+	e := file(t, `
+export function onProvider(body, ctx) {
+  const p = ctx.provider;
+  if (p.account === "antigravity") body.system = body.system.replace("SDK", "S\u200bDK");
+  if (p.id === "throw") throw new Error("bad");
+  if (p.id === "null") return null;
+  if (p.id === "reject") ctx.reject(429, "no");
+  body.to = p.id + "/" + p.model;
+  return body;
+}`)
+	use(t, e)
+	r := Begin(info())
+	if r == nil {
+		t.Fatal("a middleware with only onProvider began no run")
+	}
+	defer r.End()
+	in := `{"system":"Claude Agent SDK"}`
+	// onRequest isn't exported, so the agent's body goes on as it is
+	if body, rej := r.Request([]byte(in)); string(body) != in || rej != nil {
+		t.Fatalf("request %s %v", body, rej)
+	}
+	for _, c := range []struct {
+		to   gwmw.To
+		want string
+	}{
+		{gwmw.To{ID: "ag", Account: "antigravity", Model: "gemini-3-flash"}, `{"system":"Claude Agent S\u200bDK","to":"ag/gemini-3-flash"}`},
+		// the next try starts from the agent's body, not the last try's
+		{gwmw.To{ID: "k", Model: "m1"}, `{"system":"Claude Agent SDK","to":"k/m1"}`},
+		{gwmw.To{ID: "throw"}, in},
+		{gwmw.To{ID: "null"}, in},
+		// a reject has nothing to turn away once the request is routed
+		{gwmw.To{ID: "reject", Model: "m"}, `{"system":"Claude Agent SDK","to":"reject/m"}`},
+	} {
+		var got, want any
+		json.Unmarshal(r.Tried([]byte(in), c.to), &got)
+		json.Unmarshal([]byte(c.want), &want)
+		if g, _ := json.Marshal(got); string(g) != func() string { w, _ := json.Marshal(want); return string(w) }() {
+			t.Fatalf("%s: got %s, want %s", c.to.ID, g, c.want)
+		}
+	}
+	st := States()[e.Spec]
+	if st.Failures != 2 || !slices.Contains(st.Hooks, "onProvider") || !strings.Contains(st.Last, "null") {
+		t.Fatalf("state %+v", st)
+	}
+	var none *Run
+	if body := none.Tried([]byte(in), gwmw.To{}); string(body) != in {
+		t.Fatalf("a nil Run changed %s", body)
 	}
 }
 
@@ -304,6 +362,32 @@ func TestStreamUnchangedPassesBytes(t *testing.T) {
 		if st.Failures != 0 || st.Calls != 2 {
 			t.Fatalf("state %+v", st)
 		}
+	}
+}
+
+// A keepalive comment goes to the agent as it is written, not with the
+// event after it: held, a proxy in front of magpie heard nothing while the
+// vendor reasoned silently and hung up (#2402).
+func TestStreamKeepaliveNotHeld(t *testing.T) {
+	use(t, file(t, `export function onEvent(ev) { ev.seen = true; return ev; }`))
+	r := Begin(info())
+	defer r.End()
+	rec := httptest.NewRecorder()
+	w, done := r.Wrap(rec)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(200)
+	for i, s := range []string{": keepalive\n", ": keepalive\r\n", "\n", "data: {\"a\":1}\n", ": keep"} {
+		w.Write([]byte(s))
+		if want := []int{1, 2, 2, 2, 2}[i]; strings.Count(rec.Body.String(), ": keepalive") != want {
+			t.Fatalf("after %q: %q", s, rec.Body.String())
+		}
+	}
+	w.Write([]byte("alive\n\n"))
+	done()
+	// a comment inside an event stays in it, the event changed around it
+	want := ": keepalive\n: keepalive\r\n\n" + `data: {"a":1,"seen":true}` + "\n: keepalive\n\n"
+	if got := rec.Body.String(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 

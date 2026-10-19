@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -358,6 +359,34 @@ func TestKeyUsageWithAccessToken(t *testing.T) {
 	}
 }
 
+// A login token beside sub2api's /v1/usage, which takes only the key, is
+// never sent there either: the panel's query for the account is named in
+// its place, as new-api's is above.
+func TestSub2APIKeyUsageWithLoginToken(t *testing.T) {
+	asked := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = true
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"invalid API key"}`))
+	}))
+	defer srv.Close()
+	p := Provider{ID: "panel", Chat: srv.URL, Key: "sk-two",
+		BalanceToken: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzIn0.sig",
+		BalanceURL:   srv.URL + "/v1/usage"}
+	_, ok, err := Balance(context.Background(), p)
+	if !ok || err == nil || asked {
+		t.Fatalf("ok %v, err %v, asked %v", ok, err, asked)
+	}
+	if want := srv.URL + "/api/v1/user/profile (Balance field $data.balance)"; !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "takes the API key, not the login token") {
+		t.Fatalf("err = %v", err)
+	}
+	// the key alone still asks it
+	p.BalanceToken = ""
+	if _, _, err := Balance(context.Background(), p); !asked || err == nil {
+		t.Fatalf("without the token: asked %v, err %v", asked, err)
+	}
+}
+
 // new-api's /api/user/self with its field left out reads the quota as
 // new-api counts it, $1 to 500000.
 func TestUserSelfDefaultField(t *testing.T) {
@@ -565,5 +594,184 @@ func TestSiliconFlowRetiredBalanceQuery(t *testing.T) {
 		if got, _, err := Balance(context.Background(), p); err != nil || !strings.HasSuffix(got, "88.88") {
 			t.Errorf("%s 200: %q %v", c.base, got, err)
 		}
+	}
+}
+
+// A key usage query that takes only "Authorization: Bearer <key>"
+// (lx_78654 on Discord: a header of "Bearer {token}" went as written, and
+// the vendor said "Authorization header format must be 'Bearer {token}'").
+// The key is put in for each of its names, and the key pasted as the
+// balance token goes as a Bearer too, not bare as an access token.
+func TestBalanceKeyAsBearer(t *testing.T) {
+	const key = "sk-tt-1"
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") != "Bearer "+key {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"code":"INVALID_AUTH_HEADER","message":"Authorization header format must be 'Bearer {token}'"}`))
+			return
+		}
+		w.Write([]byte(`{"data":{"remain":8.5}}`))
+	}))
+	defer srv.Close()
+	base := Provider{ID: "relay", Chat: srv.URL + "/v1", Key: key, BalanceURL: srv.URL + "/key/usage", BalancePath: "$data.remain"}
+	for _, c := range []struct {
+		name    string
+		headers map[string]string
+		token   string
+	}{
+		{name: "no header"},
+		{name: "{token}", headers: map[string]string{"Authorization": "Bearer {token}"}},
+		{name: "{key}", headers: map[string]string{"Authorization": "Bearer {key}"}},
+		{name: "{API_KEY}", headers: map[string]string{"authorization": "Bearer {API_KEY}"}},
+		{name: "{{apikey}}", headers: map[string]string{"Authorization": "Bearer {{apikey}}"}},
+		{name: "${API_KEY}", headers: map[string]string{"Authorization": "Bearer ${API_KEY}"}},
+		{name: "key as token", token: key},
+		{name: "Bearer key as token", token: "Bearer " + key},
+	} {
+		p := base
+		p.Headers, p.BalanceToken = c.headers, c.token
+		got = nil
+		if amount, ok, err := Balance(context.Background(), p); err != nil || !ok || amount != "$8.50" {
+			t.Errorf("%s: balance = %q %v %v, sent %q", c.name, amount, ok, err, got)
+		}
+	}
+	// the key in the URL is escaped there, under any of its names
+	p := base
+	p.BalanceURL = srv.URL + "/key/usage?k={TOKEN}"
+	p.Key = "sk-tt 1"
+	if u := withBalanceKey(p.BalanceURL, p.Key, true); !strings.HasSuffix(u, "?k=sk-tt+1") {
+		t.Fatalf("url = %q", u)
+	}
+	// a token of the account's own, not the key, still goes as it is
+	p = base
+	p.BalanceToken = "tok"
+	got = nil
+	if _, _, err := Balance(context.Background(), p); err == nil || len(got) != 1 || got[0] != "tok" {
+		t.Fatalf("an access token went as %q (%v)", got, err)
+	}
+}
+
+// A balance endpoint that answers only a POST is asked with one, with no
+// body, when the provider says so (#2368, yaofeng); a GET is still what
+// every other Balance URL gets, and a method that is neither is refused
+// rather than sent. The reply's amount comes as a string, read as any other
+// field is.
+func TestBalanceMethod(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		asked = append(asked, r.Method+" "+string(b))
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			w.Write([]byte(`{"error":"Method not allowed"}`))
+			return
+		}
+		w.Write([]byte(`{"usd_balance":"0.94306040","nano_balance":"1.5"}`))
+	}))
+	defer srv.Close()
+	base := Provider{ID: "relay", Chat: srv.URL + "/v1", Key: "sk-1", BalanceURL: srv.URL + "/api/check-balance", BalancePath: "$usd_balance"}
+	for _, c := range []struct {
+		method, want string
+		ok           bool
+	}{
+		{"POST", "POST ", true},
+		{" post ", "POST ", true},
+		{"", "GET ", false},
+		{"GET", "GET ", false},
+	} {
+		p := base
+		p.BalanceMethod = c.method
+		asked = nil
+		amount, ok, err := Balance(context.Background(), p)
+		if len(asked) != 1 || asked[0] != c.want {
+			t.Errorf("%q: asked %q, want %q", c.method, asked, c.want)
+		}
+		if c.ok && (err != nil || !ok || amount != "$0.94") {
+			t.Errorf("%q: balance = %q %v %v", c.method, amount, ok, err)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("%q: a 405 read as %q", c.method, amount)
+		}
+	}
+	for _, m := range []string{"PUT", "DELETE", "POST\r\nX: y"} {
+		p := base
+		p.BalanceMethod = m
+		asked = nil
+		if _, _, err := Balance(context.Background(), p); err == nil || len(asked) != 0 {
+			t.Errorf("%q: err %v, asked %q", m, err, asked)
+		}
+	}
+}
+
+// DeepSeek's card tells its granted credit apart from the money topped
+// up (wwcraft_ on Discord), under the total, which stays the figure the
+// trend follows and an alert reads; an account with nothing granted has
+// no split, all of it topped up.
+func TestDeepSeekBalanceSplit(t *testing.T) {
+	isolate(t)
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
+	t.Setenv("PATH", h)
+	for _, v := range agentenv.Vars {
+		t.Setenv(v, "")
+	}
+	keyBalanceCache.data = nil
+	t.Cleanup(func() { keyBalanceCache.data = nil })
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "api.deepseek.com" || r.URL.Path != "/user/balance" {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.Header.Get("Authorization") {
+		case "Bearer sk-gift":
+			w.Write([]byte(`{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"110.00","granted_balance":"10.00","topped_up_balance":"100.00"}]}`))
+		case "Bearer sk-two":
+			w.Write([]byte(`{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"0.00","granted_balance":"0.00","topped_up_balance":"0.00"},{"currency":"CNY","total_balance":"7.50","granted_balance":"2.50","topped_up_balance":"5.00"}]}`))
+		default:
+			w.Write([]byte(`{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"42.00","granted_balance":"0.00","topped_up_balance":"42.00"}]}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	addr := srv.Listener.Addr().String()
+	old := http.DefaultClient.Transport
+	http.DefaultClient.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
+		},
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	t.Cleanup(func() { http.DefaultClient.Transport = old })
+
+	if err := Save(Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com", Key: "sk-gift", KeyName: "gift",
+		Keys: []KeyAccount{{Name: "two", Key: "sk-two"}, {Name: "paid", Key: "sk-paid"}}}); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]SubscriptionQuota{}
+	for _, q := range KeyBalances(context.Background()) {
+		got[q.User] = q
+	}
+	gift := got["gift"]
+	if gift.Error != "" || gift.Balance != "¥110.00" || len(gift.BalanceParts) != 0 {
+		t.Fatalf("gift = %+v", gift)
+	}
+	if w := "granted ¥10.00 · topped up ¥100.00"; SplitWords(gift.BalanceSplit) != w {
+		t.Fatalf("gift's split = %q, want %q", SplitWords(gift.BalanceSplit), w)
+	}
+	// two currencies: the one with money first, its split alone
+	if two := got["two"]; two.Balance != "¥7.50 · $0.00" || SplitWords(two.BalanceSplit) != "granted ¥2.50 · topped up ¥5.00" {
+		t.Fatalf("two = %q %q", two.Balance, SplitWords(two.BalanceSplit))
+	}
+	if paid := got["paid"]; paid.Balance != "¥42.00" || paid.BalanceSplit != nil {
+		t.Fatalf("paid = %q %+v, want no split", paid.Balance, paid.BalanceSplit)
+	}
+	// the total is still kept over time
+	if pts := readBalanceHist()[quotaHistKey("deepseek", "gift")]; len(pts) != 1 || pts[0].Amount != 110 {
+		t.Fatalf("gift's balance history = %+v", pts)
 	}
 }

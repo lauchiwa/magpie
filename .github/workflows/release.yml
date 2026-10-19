@@ -263,6 +263,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write # to say a release went out without Chinese notes
     env:
       VERSION: ${{ needs.validate.outputs.version }}
 
