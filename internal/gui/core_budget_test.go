@@ -16,7 +16,7 @@ import (
 // raises them and says why in its commit.
 const (
 	appScriptBudget  = 1_292_000 // app.js: 1,198,239 after Usage left (P2); 1,218,098 with the 10-15 fixes to pages still in the core; 1,232,466 with the provider editor's Advanced fold and every dialog holding its place, the core's own (10-16); 1,250,533 with the quota refresh kept through redraws, the core's own since the tray panel draws it too, plus 1.5% (#2397); 1,272,497 with this fork's identity profiles panel, the editor's identity summary and the update mirror, all on core pages (Providers, Settings), plus 1.5%
-	coreScriptBudget = 1_485_000 // every core script: 1,358,034 after Usage left; 1,380,003 with them; 1,405,937 with the fold; 1,426,102 with 10-16's core work (the GitHub list loading, the move to plugins, Settings › Long conversations), plus 1.5% (#2612); 1,462,824 with this fork's, plus 1.5%
+	coreScriptBudget = 1_485_000 // every core script: 1,358,034 after Usage left; 1,380,003 with them; 1,405,937 with the fold; 1,426,102 with 10-16's core work (the GitHub list loading, the move to plugins, Settings › Long conversations), plus 1.5% (#2612); 1,462,824 with this fork's, plus 1.5%; 1,469,693 with upstream v0.1.1294's loadBack (the window's one state read per return) and OpenCode Zen's balance note, inside it
 )
 
 func TestCoreScriptBudget(t *testing.T) {

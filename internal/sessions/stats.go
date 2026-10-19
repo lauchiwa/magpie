@@ -131,12 +131,12 @@ func statsIn(days int, now time.Time, native map[string]bool) Stats {
 	}
 	out := Stats{From: from, To: today.Format(time.DateOnly), Days: []Day{}, Sessions: []Summary{}, Keys: []string{}}
 
-	dbReadMu.Lock()
-	defer dbReadMu.Unlock()
+	storeMu.RLock()
+	defer storeMu.RUnlock()
 	mu.Lock()
 	defer mu.Unlock()
 	loadCache()
-	defer closeDBs()
+	defer useDBs()()
 	files := allFiles()
 	// every changed file, whatever the range, so a wider range picked later
 	// finds them read rather than starting another run

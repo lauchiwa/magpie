@@ -470,7 +470,7 @@
       b.classList.add("go");
       b.textContent = t("Sign in");
       b.title = subs.length > 1 ? t("Sign in to {name}", { name: out.name }) : "";
-      b.onclick = (ev) => { ev.stopPropagation(); pluginSignIn(out.id); };
+      b.onclick = (ev) => { ev.stopPropagation(); pluginSignIn(out.id, ev); };
       return b;
     }
     // an update out: the one button says so in place of Signed in or
@@ -1229,7 +1229,7 @@
       // button names the one it signs in to and stays quiet
       const out = subs.find((x) => !x.signedIn), some = subs.some((x) => x.signedIn);
       const s = el("button", "text" + (here || some ? "" : " primary"), some ? t("Sign in to {name}", { name: out.name }) : t("Sign in"));
-      s.onclick = () => pluginSignIn(out.id);
+      s.onclick = (ev) => pluginSignIn(out.id, ev);
       val.append(s);
     }
     // switched on again: a built-in it can carry is offered its way, in

@@ -62,13 +62,30 @@ var claudeAboutEnv = func() []string {
 // own endpoint, which magpie's take the place of while it is wired in and
 // gives back when it steps out, with what the user's env says about each
 // tier's model. ANTHROPIC_MODEL, their main model, too: magpie takes it
-// out while wired in (writeTiers), and it was lost for good.
+// out while wired in (writeTiers), and it was lost for good. So is their
+// auto mode classifier's model (claudeAutoModeEnv), which isn't in
+// claudeEnv: one set while magpie is wired in is left to the user.
 var claudeOwnEnv = append([]string{
 	"ANTHROPIC_MODEL",
 	"ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
 	"ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL",
 	"ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL",
+	claudeAutoModeEnv,
 }, claudeAboutEnv...)
+
+// claudeAutoModeEnv is the model Claude Code's client-side auto mode
+// classifier runs on, the one that judges each action before it runs
+// (2.1.302; Linka on Discord). Unset, Claude Code picks its own (the
+// sonnet tier's model, else Sonnet). It doesn't move server-side auto
+// mode, and a classifier model Anthropic configures for the account
+// comes before it.
+const claudeAutoModeEnv = "CLAUDE_CODE_AUTO_MODE_MODEL"
+
+// claudeNoClassifier are the Claude models Claude Code 2.1.303 won't run
+// its classifier on from claudeAutoModeEnv ("the API's safeguards refuse
+// the classifier's escalated check on it"): it warns and takes its own
+// pick instead, so the auto mode field doesn't offer them.
+var claudeNoClassifier = []string{"claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5"}
 
 // claudeClouds are the clouds Claude Code's provider switches
 // (agentenv.ClaudeProviders) send its requests to, named as Claude Code
@@ -509,7 +526,7 @@ func tierEnv(tier string) string { return "ANTHROPIC_DEFAULT_" + strings.ToUpper
 // claudeModelEnv are the keys of Claude Code's env that name a model, each
 // written as Claude Code is given it (provider.ClaudeSpelled).
 var claudeModelEnv = []string{
-	"ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL",
+	"ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL", claudeAutoModeEnv,
 	"ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
 	"ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL",
 }
@@ -648,6 +665,14 @@ func claudeIn(at place) *Agent {
 	// model changes
 	ownKey := func(t string) string { return at.key("claude.tier_own." + t) }
 	own := func(t string) bool { return stashLoad()[ownKey(t)] != "" }
+	// the auto mode classifier's model as magpie last wrote it (the auto
+	// mode field); autoOurs: the env's is that one or another of magpie's
+	// models, which goes when magpie steps out. Any other is the user's.
+	autoKey := at.key("claude.auto_mode_model")
+	autoOurs := func() bool {
+		v := rawEnv(claudeAutoModeEnv)
+		return v != "" && (v == stashLoad()[autoKey] || isMagpie(env(claudeAutoModeEnv)))
+	}
 	// set once magpie has taken what the env said about each tier's model
 	// from before it routed Claude Code (claudeAbout): what is there after
 	// that the user wrote about magpie's model, and stays while the tier
@@ -1344,10 +1369,18 @@ func claudeIn(at place) *Agent {
 			return "", err
 		}
 		forget(aboutKey)
+		// the auto mode classifier's model goes only where it is magpie's
+		if autoOurs() {
+			if err := edit.DelJSON(path, "env."+claudeAutoModeEnv); err != nil {
+				return "", err
+			}
+		}
+		forget(autoKey)
 		was := unstash(at.key("claude.model"))
 		var back []edit.KV
 		for _, k := range claudeOwnEnv {
-			if v := unstash(at.key("claude.env." + k)); v != "" {
+			// one the user set again since is theirs as it is
+			if v := unstash(at.key("claude.env." + k)); v != "" && rawEnv(k) == "" {
 				back = append(back, edit.KV{Path: "env." + k, Value: v})
 			}
 		}
@@ -1407,7 +1440,19 @@ func claudeIn(at place) *Agent {
 						// as the user wrote it, never respelled
 						kept[at.key("claude.env."+k)] = rawEnv(k)
 					}
+					// the auto mode classifier's model of their own
+					// endpoint waits in the stash, out of the env, as
+					// their tiers' do; one of magpie's stays as it is
+					theirs := rawEnv(claudeAutoModeEnv) != "" && !autoOurs()
+					if !theirs {
+						kept[at.key("claude.env."+claudeAutoModeEnv)] = ""
+					}
 					stash(kept)
+					if theirs {
+						if err := edit.DelJSON(path, "env."+claudeAutoModeEnv); err != nil {
+							return err
+						}
+					}
 				}
 			}
 			// tiers that followed the old model follow the new one; the
@@ -1870,6 +1915,49 @@ func claudeIn(at place) *Agent {
 		fields = append(fields, effortField(tier+"_effort", tier+" effort", tier, at, put))
 	}
 	fields = append(fields, effortField("subagent_effort", "subagent effort", "its subagents", subagentAt, setSubagent))
+	// auto mode: the model Claude Code's client-side auto mode classifier
+	// runs on (claudeAutoModeEnv). Unset, Claude Code's own pick; it
+	// follows no field, so it isn't Follows "model". The env is read as a
+	// session goes, so a pick needs no restart.
+	fields = append(fields, Field{
+		Key: "auto_mode", Label: "auto mode", Quiet: true,
+		Get: func() string {
+			if !routed() {
+				return ""
+			}
+			return env(claudeAutoModeEnv)
+		},
+		Set: func(v string) error {
+			v = strings.TrimSpace(v)
+			if !routed() {
+				if v == "" {
+					return nil
+				}
+				return fmt.Errorf("pick a model through magpie for Claude Code first; its auto mode can then have a model of its own")
+			}
+			if v != "" && !isMagpie(v) {
+				return fmt.Errorf("auto mode: %q is not a model magpie serves", v)
+			}
+			if contains(claudeNoClassifier, claudeName(v)) {
+				return fmt.Errorf("auto mode: Claude Code doesn't run its classifier on %s, and would take its own pick instead", v)
+			}
+			if v == "" {
+				forget(autoKey)
+				return edit.DelJSON(path, "env."+claudeAutoModeEnv)
+			}
+			w := spell(v)
+			stash(map[string]string{autoKey: w})
+			return edit.SetJSON(path, edit.KV{Path: "env." + claudeAutoModeEnv, Value: w})
+		},
+		Options: func(map[string]string) []Option {
+			if !routed() {
+				return nil
+			}
+			return slices.DeleteFunc(claudeViaMagpie(false), func(o Option) bool {
+				return contains(claudeNoClassifier, claudeName(o.Value))
+			})
+		},
+	})
 	// its sign-in while it runs through magpie: magpie's key, or its own
 	// claude.ai sign-in kept (loginKey), where the gateway takes any key
 	fields = append(fields, Field{

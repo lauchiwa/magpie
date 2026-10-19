@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -215,11 +216,22 @@ var searchHosts = map[provider.Protocol][]string{
 // searchAsked is whether a body offers the model web search, looked for
 // cheaply before it is parsed.
 func searchAsked(proto provider.Protocol, body []byte) bool {
-	if !strings.Contains(string(body), "web_search") && !strings.Contains(string(body), "oogle_search") && !strings.Contains(string(body), "googleSearch") {
+	// bytes, not string(body): each conversion copied the whole body, three
+	// times a request (a 200KB body: 640KB and 3ms)
+	if !bytes.Contains(body, []byte("web_search")) && !bytes.Contains(body, []byte("oogle_search")) && !bytes.Contains(body, []byte("googleSearch")) {
 		return false
 	}
 	req, err := parse(proto, body)
 	return err == nil && req.WebSearch
+}
+
+// searchedForIt is whether a relayed request's web search is done by magpie
+// for the provider, which can't be relayed: a body offering it to a model
+// that doesn't search by itself. What is known of the provider is asked
+// first: Codex offers web_search on every turn, and each relayed turn was
+// parsed whole to learn it, for a provider that searches by itself.
+func searchedForIt(p provider.Provider, from provider.Protocol, model string, body []byte) bool {
+	return (from == provider.Chat && !p.IsRemoteMagpie() || !searchesModel(p, from, model)) && searchAsked(from, body)
 }
 
 // searcher is the model magpie searches with: the one Settings names, while
@@ -380,7 +392,7 @@ func Searchers() []SearcherChoice {
 		}
 		var ms []catalog.Model
 		for _, m := range p.Available() {
-			if !strings.HasPrefix(m.ID, provider.GroupPrefix) && searchableModel(p, m.ID) {
+			if !provider.IsGroupRef(m.ID) && searchableModel(p, m.ID) {
 				ms = append(ms, m)
 			}
 		}
@@ -446,7 +458,7 @@ func smallReady(p provider.Provider, keep func(catalog.Model) bool, from provide
 		}
 		l := strings.ToLower(m.ID)
 		// a subscription's list can have what magpie wrote into its agent
-		if strings.HasPrefix(m.ID, provider.GroupPrefix) || (p.Account != nil && strings.Contains(m.ID, "/")) ||
+		if strings.HasPrefix(m.ID, provider.GroupPrefix) || strings.HasPrefix(m.ID, provider.AutoPrefix) || (p.Account != nil && strings.Contains(m.ID, "/")) ||
 			strings.ContainsAny(l, ":~") || slices.ContainsFunc([]string{"nano", "lite", "image", "audio", "tts", "embed", "free"}, func(w string) bool { return strings.Contains(l, w) }) {
 			continue
 		}
