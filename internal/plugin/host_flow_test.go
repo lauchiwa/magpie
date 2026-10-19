@@ -20,8 +20,8 @@ import (
 )
 
 func TestHostJSCancellation(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
+	node := realNode // the program, not a version manager's shim
+	if node == "" {
 		t.Skip("no node on PATH")
 	}
 	for _, name := range []string{"stopped-gate", "split-chunk", "terminal", "blocked-head", "blocked-head-cancel-error", "ready-wait", "ready-success", "ready-error", "local-error", "local-error-cancel", "normal-reply", "held-window"} {
@@ -649,8 +649,8 @@ func TestFlowBigReplyProd(t *testing.T) {
 // side of the lifecycle: the host's slots come back, and the JS side's own
 // finally (covered by construction) lets each request's controller and gate go.
 func TestFlowAbortDuringSetupStaysHealthy(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
+	node := realNode
+	if node == "" {
 		t.Skip("no node on PATH")
 	}
 	if out, err := runHostJSCase(t, node, "mid-setup"); err != nil {
