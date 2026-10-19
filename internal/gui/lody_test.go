@@ -29,7 +29,9 @@ func TestLodyImportHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Cindy, beside it, still says whether it has magpie: false is said,
-	// not left out as unknown
+	// not left out as unknown. Its folder is os.UserConfigDir's, which on
+	// Windows is %AppData%, and sandboxHome leaves that empty.
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 	cfg, err := os.UserConfigDir()
 	if err != nil {
 		t.Fatal(err)
