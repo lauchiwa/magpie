@@ -30,12 +30,13 @@ func TestCopilotFolderFromAnIDEPluginIsNotTheCLI(t *testing.T) {
 	if copilot(home).Detected() {
 		t.Errorf("a ~/.copilot holding only the JetBrains plugin's folders is taken for the Copilot CLI")
 	}
-	writeAt(t, filepath.Join(bin, "copilot"), "#!/bin/sh\n")
-	os.Chmod(filepath.Join(bin, "copilot"), 0o755)
+	// exe: on Windows a command on PATH is found by its .exe
+	writeAt(t, filepath.Join(bin, exe("copilot")), "#!/bin/sh\n")
+	os.Chmod(filepath.Join(bin, exe("copilot")), 0o755)
 	if !copilot(home).Detected() {
 		t.Error("the copilot command on PATH no longer finds the Copilot CLI")
 	}
-	os.Remove(filepath.Join(bin, "copilot"))
+	os.Remove(filepath.Join(bin, exe("copilot")))
 	writeAt(t, a.Path, `{"model":"auto"}`)
 	if !copilot(home).Detected() {
 		t.Error("~/.copilot/settings.json no longer finds the Copilot CLI")
@@ -80,8 +81,8 @@ func TestQoderSettingsFromAnIDEPluginIsNotTheCLI(t *testing.T) {
 				}
 			}
 			writeAt(t, a.Path, plugin)
-			writeAt(t, filepath.Join(bin, c.bin), "#!/bin/sh\n")
-			os.Chmod(filepath.Join(bin, c.bin), 0o755)
+			writeAt(t, filepath.Join(bin, exe(c.bin)), "#!/bin/sh\n")
+			os.Chmod(filepath.Join(bin, exe(c.bin)), 0o755)
 			if !c.mk(home).Detected() {
 				t.Errorf("%s on PATH no longer finds %s", c.bin, a.Name)
 			}

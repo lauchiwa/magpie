@@ -38,6 +38,49 @@ func TestAllProxyFromTheEnvironment(t *testing.T) {
 	}
 }
 
+// A host NO_PROXY keeps off the proxy the environment names goes direct,
+// as curl and Go send it, not through the system's proxy instead: on a
+// Windows with Clash in Internet Options, Settings › Proxy's Test of a
+// proxy NO_PROXY passes by went to Clash. A NO_PROXY with no proxy named
+// beside it leaves the system's to decide.
+func TestNoProxyGoesDirectNotThroughTheSystems(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(k, "")
+	}
+	sysCache.at, sysCache.p = farFuture, Proxy{URL: "http://127.0.0.1:7890"}
+	t.Cleanup(func() { sysCache.at = zero })
+	chat, _ := url.Parse("https://chatgpt.com/backend-api")
+	other, _ := url.Parse("https://vendor.example/v1")
+
+	t.Setenv("NO_PROXY", "chatgpt.com")
+	if p, _ := For(chat); p == nil || p.String() != "http://127.0.0.1:7890" {
+		t.Fatalf("NO_PROXY alone: %v, want the system's", p)
+	}
+
+	t.Setenv("ALL_PROXY", "socks5://127.0.0.1:1080")
+	if p, _ := For(chat); p != nil {
+		t.Fatalf("ALL_PROXY passed by: %v, want direct", p)
+	}
+	if proxy, source := Describe(); proxy != "" || source != "none" {
+		t.Fatalf("described as %q (%s), want direct", proxy, source)
+	}
+	if p, _ := For(other); p == nil || p.String() != "socks5://127.0.0.1:1080" {
+		t.Fatalf("a host NO_PROXY doesn't name: %v", p)
+	}
+
+	// HTTPS_PROXY names one for https alone: http is still the system's
+	t.Setenv("ALL_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:8080")
+	if p, _ := For(chat); p != nil {
+		t.Fatalf("HTTPS_PROXY passed by: %v, want direct", p)
+	}
+	plain, _ := url.Parse("http://chatgpt.com/x")
+	if p, _ := For(plain); p == nil || p.String() != "http://127.0.0.1:7890" {
+		t.Fatalf("http with only HTTPS_PROXY: %v, want the system's", p)
+	}
+}
+
 func TestNoProxyList(t *testing.T) {
 	for _, c := range []struct {
 		host, list string
