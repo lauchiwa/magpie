@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/desktopdir"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 )
@@ -59,8 +60,13 @@ func TestDesktopSessionAccountMetadata(t *testing.T) {
 	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
-	root := sessions.DesktopDataDirs()[0]
-	root3p := sessions.DesktopDataDirs()[1]
+	// Desktop's own folder and its 3p mode's, by name: on Windows the
+	// second of DesktopDataDirs is %LOCALAPPDATA%\Claude (Mode), not 3p
+	dirs := desktopdir.Here()
+	root, root3p := dirs.Data, dirs.ThreeP
+	if !slices.Contains(sessions.DesktopDataDirs(), root) || !slices.Contains(sessions.DesktopDataDirs(), root3p) {
+		t.Fatalf("Desktop's folders %v aren't read: %v", dirs, sessions.DesktopDataDirs())
+	}
 	account, org := "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
 	write := func(path, text string) {
 		t.Helper()
