@@ -5,7 +5,9 @@
 //
 // In order: the proxy set in magpie's settings (or "direct" for none), the
 // usual *_PROXY variables, then the system's proxy (macOS network
-// settings, Windows Internet Options). Loopback is never proxied, nor,
+// settings, Windows Internet Options). A host NO_PROXY keeps off a proxy
+// the variables name goes direct, not through the system's. Loopback is
+// never proxied, nor,
 // unless a provider has a proxy of its own, a host on the user's own
 // network (lan.go).
 package netproxy
@@ -228,7 +230,7 @@ func For(u *url.URL) (*url.URL, error) {
 	default:
 		return Parse(s)
 	}
-	if p, err := fromEnv(u); p != nil || err != nil {
+	if p, named, err := fromEnv(u); named || err != nil {
 		return p, err
 	}
 	sys := System()
@@ -338,8 +340,10 @@ func Describe() (proxy, source string) {
 		return s, "settings"
 	}
 	u, _ := url.Parse("https://chatgpt.com")
-	if p, _ := fromEnv(u); p != nil {
+	if p, named, _ := fromEnv(u); p != nil {
 		return p.String(), "environment"
+	} else if named {
+		return "", "none" // NO_PROXY keeps it direct, as For does
 	}
 	if sys := System(); sys.URL != "" {
 		return sys.URL, "system"
@@ -373,16 +377,23 @@ func Redact(raw string) string {
 // HTTP_PROXY as Go reads them, else ALL_PROXY (curl's, which Go doesn't
 // read: a shell with only ALL_PROXY=socks5://… set has curl go through it,
 // and magpie, its updates among its requests, too). NO_PROXY is kept for
-// it as well.
-func fromEnv(u *url.URL) (*url.URL, error) {
+// it as well. named says the environment names a proxy for u's scheme at
+// all: a nil proxy is then direct, NO_PROXY having kept u off it, and not
+// the system's to decide, as curl and Go read it.
+func fromEnv(u *url.URL) (p *url.URL, named bool, err error) {
 	if p, err := http.ProxyFromEnvironment(&http.Request{URL: u}); p != nil || err != nil {
-		return p, err
+		return p, true, err
 	}
 	all := envOf("ALL_PROXY", "all_proxy")
+	// Go reads HTTPS_PROXY for https alone and HTTP_PROXY for http alone
+	named = all != "" ||
+		u.Scheme == "https" && envOf("HTTPS_PROXY", "https_proxy") != "" ||
+		u.Scheme == "http" && envOf("HTTP_PROXY", "http_proxy") != ""
 	if all == "" || noProxy(u.Hostname(), envOf("NO_PROXY", "no_proxy")) {
-		return nil, nil
+		return nil, named, nil
 	}
-	return Parse(all)
+	p, err = Parse(all)
+	return p, true, err
 }
 
 func envOf(keys ...string) string {
