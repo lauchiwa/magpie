@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/testenv"
 )
 
@@ -14,6 +15,10 @@ import (
 // and a host started in a home without a models.dev catalog fetched the
 // real one for up to 30s (#1922).
 func TestMain(m *testing.M) {
+	// fork: and with no WSL but a test's FakeWSL (agent.NoWSL): run's
+	// start-up ran the real wsl.exe on a Windows machine with a distro up,
+	// and wrote wsl.json into the home of a test that checks what run wrote
+	agent.NoWSL()
 	os.Exit(testenv.RunIn(m, func(string) { testenv.Offline() }))
 }
 
