@@ -472,13 +472,17 @@ func (c claudeCLI) command(ctx context.Context, args ...string) *exec.Cmd {
 // claudeEuid is the user magpie runs as; a var for tests.
 var claudeEuid = os.Geteuid
 
+// claudeRootOS is the system root is asked on; a var for tests, which
+// check the root env on Windows too (fork).
+var claudeRootOS = runtime.GOOS
+
 // root is whether this Claude Code runs as root: magpie itself as root
 // (a server's or a container's), or a WSL distro's default user root.
 func (c claudeCLI) root() bool {
 	if c.wsl != nil {
 		return c.wsl.Root
 	}
-	return runtime.GOOS != "windows" && claudeEuid() == 0
+	return claudeRootOS != "windows" && claudeEuid() == 0
 }
 
 // asRoot is env for a bridge run (claudeCLIArgs) by a Claude Code run as
