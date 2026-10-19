@@ -59,6 +59,12 @@ type intent struct {
 	stale []string
 	// out, when set, is told the lifecycle state the write committed.
 	out *committed
+	// unchanged is a Save of what providers.json holds already (#1962):
+	// still checked as any write is, it writes nothing unless lifecycle.json
+	// adopts a change made outside magpie first, and tells no agent unless
+	// it wrote (wrote, when set, says so).
+	unchanged bool
+	wrote     *bool
 	// meta, when read, is lifecycle.json as the read the write was decided
 	// from found it (OnBase): one moved on since is a conflict.
 	meta metaBase
@@ -179,11 +185,17 @@ func notUnderCommit(name string) {
 // reads plugin icons); catalog.Touched only after it is released, since
 // what it calls back may read or write providers again.
 func commit(f file, in intent) error {
+	wrote := !in.unchanged
+	if in.unchanged {
+		in.wrote = &wrote
+	}
 	if err := commitQuiet(f, in); err != nil {
 		return err
 	}
 	// what agents were handed of the catalog may be out of date now
-	catalog.Touched()
+	if wrote {
+		catalog.Touched()
+	}
 	return nil
 }
 
@@ -259,6 +271,9 @@ func commitLocked(f file, b []byte, in intent) error {
 	}
 	if err := in.staleUnder(meta); err != nil {
 		return err
+	}
+	if in.unchanged && meta == nil {
+		return nil // by id only, and what is there is what it would write
 	}
 	if rerr != nil {
 		if meta != nil {
@@ -621,9 +636,12 @@ func commitManaged(cur, next file, b []byte, d diff, meta *lifecycle.Meta, in in
 		changed = true
 	}
 	m.Unreconciled = carryUnreconciled(base, m, d, bound, known)
-	if !changed && !idsChanged && lifecycle.Digest(b) == cur.base.digest {
+	if !changed && !idsChanged && (in.unchanged || lifecycle.Digest(b) == cur.base.digest) {
 		in.out.set(meta) // nothing to write: what is there is what it left
 		return nil
+	}
+	if in.wrote != nil {
+		*in.wrote = true
 	}
 	m.Digest = lifecycle.Digest(b)
 	mb, err := lifecycle.EncodeMeta(m)

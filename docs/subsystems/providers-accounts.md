@@ -117,7 +117,12 @@ read as ([`lifecycle_api.go`](../../internal/provider/lifecycle_api.go)).
 differed from the metadata, its row's digest) and refuses a mismatch with
 `*StaleError`; its id changes only through `Rename`. `SaveChecked` and
 `RenameChecked` return the provider with the marker of the commit they made,
-so the next write builds on it. `DeleteChecked` checks the instance. A zero
+so the next write builds on it. A `Save` of what `providers.json` holds
+already (#1962) writes nothing and tells no agent unless `lifecycle.json`
+adopts a change made outside magpie first, and is checked all the same:
+refused when stale, and `SaveChecked` returns it with its marker, which the
+editor's steps after the save write by (`TestAnUnchangedSaveIsStillChecked`).
+`DeleteChecked` checks the instance. A zero
 value (a literal, or any read without metadata) is written by id, as before;
 `Transient` values can only be saved. `Add` that finds its free id taken at
 commit moves on to the next one once. `AddCopy` drops the source's aliases

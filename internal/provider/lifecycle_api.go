@@ -137,13 +137,15 @@ func errIDChanged(l life, id string) error {
 
 // saveCommit is Save's write of p into f, by its marker l: as the provider
 // it was read as, or by id (a zero or transient l). account is p saved as
-// a signed-in account's picks: by id, whatever l is.
-func saveCommit(f file, p Provider, l life, account bool, opts []WriteOption) error {
+// a signed-in account's picks: by id, whatever l is. unchanged is p as
+// providers.json holds it already: checked the same, written not (#1962).
+func saveCommit(f file, p Provider, l life, account, unchanged bool, opts []WriteOption) error {
 	o := writeOptsOf(opts)
 	if o.refuse != nil {
 		return o.refuse
 	}
 	in := o.in
+	in.unchanged = unchanged
 	if account {
 		l = life{}
 	}

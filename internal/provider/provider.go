@@ -824,25 +824,26 @@ func Save(p Provider, opts ...WriteOption) error {
 		was = &f.Providers[i]
 	}
 	p.PickedFrom = listedWith(p, was)
+	unchanged := false
 	if was != nil {
 		if p.Was == nil {
 			p.Was = was.Was
 		}
-		if sameStored(*was, p) {
-			// Save pressed on an editor left as it was: providers.json
-			// would be written byte for byte as it is, and its write
-			// handed the catalog to every agent again (agent.SyncCatalog),
-			// seconds of CPU with many agents set up (#1962, witt-bit)
-			return nil
-		}
+		// Save pressed on an editor left as it was: providers.json would
+		// be written byte for byte as it is, and its write handed the
+		// catalog to every agent again (agent.SyncCatalog), seconds of CPU
+		// with many agents set up (#1962, witt-bit). fork: it is still
+		// checked as read, and a Checked save still gets its value back,
+		// which the steps after it write by (saveCommit writes nothing).
+		unchanged = sameStored(*was, p)
 		f.Providers[i] = p
 	} else {
 		f.Providers = append(f.Providers, p)
 	}
-	if err := saveCommit(f, p, l, account, opts); err != nil {
+	if err := saveCommit(f, p, l, account, unchanged, opts); err != nil {
 		return err
 	}
-	if p.ID == "claude" {
+	if p.ID == "claude" && !unchanged {
 		// an account's proxy picked in the editor reaches Claude Code at
 		// once, not at the gateway's next look (#1807)
 		syncClaudeProxyEnvNow()
