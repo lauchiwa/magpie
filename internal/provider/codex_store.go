@@ -189,31 +189,45 @@ type codexStoreSetting struct {
 	Secrets bool   // [features] secret_auth_storage
 }
 
+// codexStoreFile is what config.toml itself says: Secrets is nil when it
+// doesn't set secret_auth_storage.
+type codexStoreFile struct {
+	Mode    string
+	Secrets *bool
+}
+
 // readCodexStoreSetting reads config.toml as Codex does: no file or no
 // key is "file". A file that doesn't parse, or a value Codex doesn't
 // know (it would refuse to start), is an error: where the sign-in is
 // isn't known.
 func readCodexStoreSetting(home string) (codexStoreSetting, error) {
 	path := filepath.Join(home, "config.toml")
-	s, err := filememo.Read("codex credential store", path, func(b []byte) (codexStoreSetting, error) {
+	// what the file says is kept, not the default it is read with: the
+	// default is applied at each read, so a kept read never holds one
+	// another read set
+	c, err := filememo.Read("codex credential store", path, func(b []byte) (codexStoreFile, error) {
 		var c struct {
 			Store    string         `toml:"cli_auth_credentials_store"`
 			Features map[string]any `toml:"features"`
 		}
 		if err := toml.Unmarshal(b, &c); err != nil {
-			return codexStoreSetting{}, fmt.Errorf("%s doesn't read as TOML", path)
+			return codexStoreFile{}, fmt.Errorf("%s doesn't read as TOML", path)
 		}
-		s := codexStoreSetting{Mode: c.Store, Secrets: secretAuthStorageDefault}
+		f := codexStoreFile{Mode: c.Store}
 		if v, ok := c.Features["secret_auth_storage"].(bool); ok {
-			s.Secrets = v
+			f.Secrets = &v
 		}
-		return s, nil
+		return f, nil
 	})
 	if errors.Is(err, fs.ErrNotExist) {
 		return codexStoreSetting{Mode: "file", Secrets: secretAuthStorageDefault}, nil
 	}
 	if err != nil {
 		return codexStoreSetting{}, err
+	}
+	s := codexStoreSetting{Mode: c.Mode, Secrets: secretAuthStorageDefault}
+	if c.Secrets != nil {
+		s.Secrets = *c.Secrets
 	}
 	switch s.Mode {
 	case "":
@@ -674,13 +688,15 @@ func CodexSignIn(dir string) (b []byte, ok bool) {
 }
 
 // CodexKeychainForTest has Codex's keychain item read through find (no
-// item: fs.ErrNotExist) on every system, until restore.
+// item: fs.ErrNotExist) on every system, until restore. It is the macOS
+// path, so secret_auth_storage defaults off as there: on Windows it is on,
+// and the item would never be asked for.
 func CodexKeychainForTest(find func(service, account string) ([]byte, error)) (restore func()) {
-	old, oldHere := codexKeychain, codexKeychainHere
-	codexKeychain, codexKeychainHere = findOnly(find), true
+	old, oldHere, oldSecrets := codexKeychain, codexKeychainHere, secretAuthStorageDefault
+	codexKeychain, codexKeychainHere, secretAuthStorageDefault = findOnly(find), true, false
 	resetCodexKeychain()
 	return func() {
-		codexKeychain, codexKeychainHere = old, oldHere
+		codexKeychain, codexKeychainHere, secretAuthStorageDefault = old, oldHere, oldSecrets
 		resetCodexKeychain()
 	}
 }

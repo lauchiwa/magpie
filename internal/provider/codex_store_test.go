@@ -194,6 +194,41 @@ func TestCodexSignedInInKeychain(t *testing.T) {
 	}
 }
 
+// Windows' default: secret_auth_storage is on unless config.toml turns it
+// off, so keyring with no [features] is Codex's encrypted storage, which
+// magpie neither reads nor writes, even where the keychain item is read.
+// Turned off by hand, the item is read again.
+func TestCodexSecretStorageDefaultOn(t *testing.T) {
+	home := signIn(t)
+	dir := filepath.Join(home, ".codex")
+	k, _ := codexInKeychain(t, home, "keyring")
+	secretAuthStorageDefault = true // isolate puts it back
+	forgetCodexKeychain()
+	if _, ok := codexAccount(home); ok {
+		t.Fatal("default on: read as signed in")
+	}
+	if err := saveCodexLogin(dir, []byte(`{"tokens":{"access_token":"y"}}`)); err == nil || !strings.Contains(err.Error(), "encrypted auth storage") {
+		t.Fatalf("default on: saved, or not said where: %v", err)
+	}
+	if k.finds != 0 || k.puts != 0 {
+		t.Fatalf("the item was reached: %d finds, %d puts", k.finds, k.puts)
+	}
+	// the default is the system's, not the file's: a config.toml read
+	// under one default isn't kept with it (the agent's tests read it
+	// before CodexKeychainForTest)
+	secretAuthStorageDefault = false
+	forgetCodexKeychain()
+	if p, ok := codexAccount(home); !ok || p.Account.User != "me@example.com" {
+		t.Fatalf("default off, same file: the item wasn't read: %v", ok)
+	}
+	secretAuthStorageDefault = true
+	os.WriteFile(filepath.Join(dir, "config.toml"), []byte("cli_auth_credentials_store = \"keyring\"\n[features]\nsecret_auth_storage = false\n"), 0o600)
+	forgetCodexKeychain()
+	if p, ok := codexAccount(home); !ok || p.Account.User != "me@example.com" {
+		t.Fatalf("turned off: the item wasn't read: %v", ok)
+	}
+}
+
 // auto with no item is auth.json, as Codex falls back to it; keyring with
 // no item is signed out, whatever auth.json is left.
 func TestCodexKeychainFallback(t *testing.T) {

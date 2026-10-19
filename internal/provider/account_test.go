@@ -84,6 +84,11 @@ func isolate(t testing.TB) {
 	oldCodexKeychain, oldCodexHere := codexKeychain, codexKeychainHere
 	codexKeychain = &fakeKeychain{}
 	resetCodexKeychain()
+	// and Codex's default for secret_auth_storage is macOS' (off), as the
+	// keychain path a test turns on is macOS': on Windows it is on, and a
+	// config.toml without [features] would mean the encrypted storage
+	oldSecrets := secretAuthStorageDefault
+	secretAuthStorageDefault = false
 	// a test's keychain answers at once: however loaded the machine, a
 	// read isn't taken for one waiting on a prompt
 	oldHold := keychainHold
@@ -105,6 +110,7 @@ func isolate(t testing.TB) {
 		claudeKeychain, claudeBase, claudeExecutable = oldKeychain, oldBase, oldExe
 		DevinExecutable = oldDevin
 		codexKeychain, codexKeychainHere = oldCodexKeychain, oldCodexHere
+		secretAuthStorageDefault = oldSecrets
 		keychainHold = oldHold
 		resetCodexKeychain()
 		forgetClaudeCredential()
