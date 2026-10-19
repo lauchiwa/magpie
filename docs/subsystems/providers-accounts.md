@@ -143,7 +143,13 @@ moving the model preferences and agent lists, never the commit; for
 to the new id. A rename makes both steps, the second even when the first
 failed; `Step` names those that failed (`"sign-in, settings"` for both), and
 `Redo` does those again. A delete forgets the sign-in after its commit, and
-a failure there is a `FollowUpError` with `Step` `StepSignIn`. A
+a failure there is a `FollowUpError` with `Step` `StepSignIn`. The provider
+is gone, so `agent.Reseat` still moves its agents and answers that error
+with the moves. The command line (`removedFollowUp`), the GUI
+(`redoFollowUp`) and the TUI (`reseatCmd`) say the removal stands and redo
+the step once. Failed again, the GUI answers `follow_up`, and the page
+closes the removed provider's editor
+(`TestADeleteItsSignInFollowsUp`, `TestReseatAfterAFollowUp`). A
 `FollowUpError` built without a step to redo answers its own `Err`.
 `agent.RenameChecked` renames through `provider.RenameChecked` and then moves
 the agents on the provider's models, using values worked out before the

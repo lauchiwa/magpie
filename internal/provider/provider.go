@@ -1145,7 +1145,7 @@ func Delete(id string, opts ...WriteOption) error {
 	}
 	// its StepFun sign-in goes with it, not to a provider added later
 	// under the same id; the delete is done either way (fork)
-	return FollowUp(StepSignIn, forgetStepFun(id), func() error { return forgetStepFun(id) })
+	return FollowUp(StepSignIn, signInForgotten(id), func() error { return signInForgotten(id) })
 }
 
 // keyOptional is true for local servers, which usually have no key.

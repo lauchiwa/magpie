@@ -516,7 +516,8 @@ func providerCmd(args []string) error {
 			return err
 		}
 		moved, err := agent.Reseat(func() error { return deleteFound(*p) })
-		if err != nil {
+		if err = removedFollowUp(p.Name, err); err != nil {
+			printMoved(moved)
 			return err
 		}
 		fmt.Println(green.Render("✓"), "removed", p.Name)

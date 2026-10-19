@@ -44,8 +44,15 @@ type FollowUpError struct {
 const StepSettings = "settings"
 
 // StepSignIn is the provider's own sign-in kept by its id (StepFun's),
-// moved after the provider was renamed.
+// moved after the provider was renamed, forgotten after it was removed.
 const StepSignIn = "sign-in"
+
+// signInMoved and signInForgotten are that step for a rename and a delete;
+// vars so a test can make them fail.
+var (
+	signInMoved     = renameStepFun
+	signInForgotten = forgetStepFun
+)
 
 func (e *FollowUpError) Error() string {
 	if e.Committed {

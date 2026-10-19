@@ -1799,7 +1799,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			}
 		case "delete":
 			var err error
-			if moved, err = agent.Reseat(func() error { return provider.DeleteChecked(provider.FromToken(in, req.Rev)) }); err != nil {
+			moved, err = agent.Reseat(func() error { return provider.DeleteChecked(provider.FromToken(in, req.Rev)) })
+			if err = redoFollowUp(err); err != nil {
 				fail(rw, err)
 				return
 			}

@@ -7,6 +7,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -245,7 +246,16 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func reseatCmd(change func() error, done string) tea.Cmd {
 	return func() tea.Msg {
 		moved, err := agent.Reseat(change)
-		if err != nil {
+		// fork: made, with a step after it failed (a removed provider's
+		// StepFun sign-in): that step is done once more, never the change
+		var fu *provider.FollowUpError
+		if errors.As(err, &fu) && fu.Committed {
+			if rerr := fu.Redo(); rerr != nil {
+				done += ", but its " + fu.Step + " step failed again: " + rerr.Error()
+			} else {
+				err = nil
+			}
+		} else if err != nil {
 			return flashMsg{text: err.Error()}
 		}
 		for _, mv := range moved {
@@ -255,7 +265,7 @@ func reseatCmd(change func() error, done string) tea.Cmd {
 			}
 			done += "; moved " + mv.String()
 		}
-		return flashMsg{text: done, ok: true}
+		return flashMsg{text: done, ok: err == nil}
 	}
 }
 

@@ -112,6 +112,21 @@ func renameSaved(snap provider.Provider, to string) (provider.Provider, error) {
 	return q, afterSave(stepRename, err)
 }
 
+// redoFollowUp is err from a change committed with a step after it failed
+// (a removed provider's StepFun sign-in): that step is done once more,
+// never the change; failed again, it is a committed follow-up still. Any
+// other error is as it was.
+func redoFollowUp(err error) error {
+	var fu *provider.FollowUpError
+	if !errors.As(err, &fu) || !fu.Committed {
+		return err
+	}
+	if rerr := fu.Redo(); rerr != nil {
+		return provider.FollowUp(fu.Step, rerr, nil)
+	}
+	return nil
+}
+
 // lifecycleFail adds to a failed request's answer what the page tells
 // apart: "pending" (finished by the next write or start, not to be made
 // again), "stale" (changed since the page read it; read it again) and

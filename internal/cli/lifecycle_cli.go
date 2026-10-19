@@ -105,6 +105,24 @@ func renameSaved(saved provider.Provider, to string) ([]string, error) {
 	return moved, nil
 }
 
+// removedFollowUp is err from deleteFound: a delete committed with the step
+// after it failed (its StepFun sign-in not forgotten) is said, and that
+// step, only that, is done once more. The delete is never made again.
+func removedFollowUp(name string, err error) error {
+	var fu *provider.FollowUpError
+	if err == nil || !errors.As(err, &fu) || !fu.Committed {
+		return err
+	}
+	fmt.Println(amber.Render("!"), name, "is removed, but its", fu.Step, "step failed:", fu.Err, muted.Render("· doing that step again"))
+	if beforeRedo != nil {
+		beforeRedo(fu.Step)
+	}
+	if rerr := fu.Redo(); rerr != nil {
+		return fmt.Errorf("%s is removed, but its %s step failed again: %w; the removal stands, so don't remove it again", name, fu.Step, rerr)
+	}
+	return nil
+}
+
 // lifecycleSaid is err as the command line says it: a write refused because
 // what it was made from changed since this command read it says to run the
 // command again, and one left in the lifecycle journal says not to.

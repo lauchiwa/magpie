@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"regexp"
 	"slices"
 	"strings"
@@ -81,10 +82,15 @@ func picks() []pick {
 // can't be moved is a move with its Error and the others are still moved.
 // An error then would say the change failed when it was made — the panel,
 // told so, kept a removed provider's editor open and listed, and a second
-// Remove said there was no such provider.
+// Remove said there was no such provider. A change committed with a step
+// after it failed (a *provider.FollowUpError, a removed provider's StepFun
+// sign-in not forgotten) is made, so its agents are moved and that error
+// comes back with the moves (fork).
 func Reseat(change func() error) ([]Move, error) {
 	before := picks()
-	if err := change(); err != nil {
+	err := change()
+	var fu *provider.FollowUpError
+	if err != nil && !(errors.As(err, &fu) && fu.Committed) {
 		return nil, err
 	}
 	var moves []Move
@@ -118,7 +124,7 @@ func Reseat(change func() error) ([]Move, error) {
 		moves = append(moves, m)
 	}
 	slices.Reverse(moves)
-	return moves, nil
+	return moves, err
 }
 
 // served: magpie takes requests for the catalog model.

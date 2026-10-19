@@ -99,7 +99,7 @@ func Rename(from, to string, opts ...WriteOption) error {
 		return err
 	}
 	// so is its StepFun sign-in, kept by provider id
-	moveSignIn := func() error { return renameStepFun(from, to) }
+	moveSignIn := func() error { return signInMoved(from, to) }
 	moveSettings := func() error {
 		s := settings.Load()
 		changed := renameModelPrefs(&s, from, to)
