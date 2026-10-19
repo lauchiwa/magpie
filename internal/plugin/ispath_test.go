@@ -2,21 +2,22 @@ package plugin
 
 import "testing"
 
-// A plugin from a folder is told from a package the same on every OS. A
-// Mac's plugins.json, carried to Windows by a sync, names its folder
-// "/Users/…": Windows' filepath.IsAbs says that isn't absolute, but Node
-// and Bun read it as a path there too, so it stays the Mac's own and isn't
-// installed from npm (TestPluginsCarried in internal/provider).
-func TestIsPathOnEveryOS(t *testing.T) {
+// #2229: plugins.json travels between machines in a backup or a sync, so
+// a folder plugin's path written on macOS or Linux is a path on Windows
+// too, and a Windows one is a path off Windows, or the restoring machine
+// asks bun to install it as an npm package.
+func TestIsPathWhicheverSystemWroteIt(t *testing.T) {
 	for spec, want := range map[string]bool{
-		"/Users/me/my-plugin":                  true,
+		"/Users/me/plugin":                     true,
+		"/home/me/plugin/index.js":             true,
+		`\Users\me\plugin`:                     true,
 		`\\server\share\plugin`:                true,
-		`\plugins\x`:                           true,
 		`C:\plugins\x`:                         true,
-		"C:/plugins/x":                         true,
-		"file:///abs/plugin":                   true,
+		"D:/plugins/x":                         true,
+		"file:///Users/me/plugin":              true,
 		"./my-plugin.js":                       true,
 		"../my-plugin":                         true,
+		"opencode-gemini-auth":                 false,
 		"opencode-gemini-auth@latest":          false,
 		"@magpie-community/opencode-kiro-auth": false,
 		"owner/repo":                           false,

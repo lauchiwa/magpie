@@ -12,7 +12,7 @@ import (
 // Rename gives a provider another id, the one its models are picked by
 // (<id>/<model>). What magpie keeps that names it by id follows: the
 // routing groups it is in and their rules and classifiers, the other
-// providers' fallbacks, and which agents are shown it. The old id stays
+// providers' fallbacks, which agents are shown it, and its StepFun sign-in. The old id stays
 // with it (Was), so an agent still running on a config that names it the
 // old way reaches it, and its usage so far is counted with it; the agents'
 // own files are the agent package's to rewrite (agent.RenameProvider).
@@ -98,7 +98,9 @@ func Rename(from, to string, opts ...WriteOption) error {
 	if err := renameCommit(f, i, from, to, opts); err != nil {
 		return err
 	}
-	moveSettings := func() error { // fork: FollowUpError.Redo runs it alone
+	// so is its StepFun sign-in, kept by provider id
+	moveSignIn := func() error { return renameStepFun(from, to) }
+	moveSettings := func() error {
 		s := settings.Load()
 		changed := renameModelPrefs(&s, from, to)
 		for a, names := range s.Visible {
@@ -113,7 +115,26 @@ func Rename(from, to string, opts ...WriteOption) error {
 		}
 		return nil
 	}
-	return FollowUp(StepSettings, moveSettings(), moveSettings) // fork: the rename is done
+	// fork: the rename is done; a step that fails is done again alone
+	// (FollowUpError.Redo), the other still made
+	var failed []string
+	var errs []error
+	var steps []func() error
+	for _, st := range []struct {
+		name string
+		do   func() error
+	}{{StepSignIn, moveSignIn}, {StepSettings, moveSettings}} {
+		if err := st.do(); err != nil {
+			failed, errs, steps = append(failed, st.name), append(errs, err), append(steps, st.do)
+		}
+	}
+	return FollowUp(strings.Join(failed, ", "), errors.Join(errs...), func() error {
+		var errs []error
+		for _, do := range steps {
+			errs = append(errs, do())
+		}
+		return errors.Join(errs...)
+	})
 }
 
 // renamedRef is a model id ("provider/model", "magpie/provider/model")

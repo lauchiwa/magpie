@@ -83,7 +83,12 @@ func TestAgentGoneInTheRetryPause(t *testing.T) {
 			if up.n.Load() != want {
 				t.Fatalf("upstream asked %d times before the pause, want %d", up.n.Load(), want)
 			}
-			time.Sleep(100 * time.Millisecond)
+			// and its answer has been read: the last try says how long the
+			// pause is (a fixed sleep here cancelled the last try still in
+			// flight on a loaded runner)
+			if !inPause(s, int(want), 10*time.Second) {
+				t.Fatal("the last try never started its pause")
+			}
 			cancel() // the agent's window is closed
 			<-ended
 			// the route ends at once, not when the pause would have
@@ -119,4 +124,22 @@ func TestAgentGoneInTheRetryPause(t *testing.T) {
 			}
 		})
 	}
+}
+
+// inPause tells whether the last route's tries number n and the last of
+// them waits to be asked again, polled for up to within.
+func inPause(s *Server, n int, within time.Duration) bool {
+	for deadline := time.Now().Add(within); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		s.trace.mu.Lock()
+		ok := false
+		if k := len(s.trace.routes); k > 0 {
+			tries := s.trace.routes[k-1].Tries
+			ok = len(tries) == n && tries[n-1].Again > 0
+		}
+		s.trace.mu.Unlock()
+		if ok {
+			return true
+		}
+	}
+	return false
 }

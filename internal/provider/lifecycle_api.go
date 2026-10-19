@@ -43,6 +43,10 @@ type FollowUpError struct {
 // renamed after the provider was.
 const StepSettings = "settings"
 
+// StepSignIn is the provider's own sign-in kept by its id (StepFun's),
+// moved after the provider was renamed.
+const StepSignIn = "sign-in"
+
 func (e *FollowUpError) Error() string {
 	if e.Committed {
 		return fmt.Sprintf("the change was saved, but its %s step failed (%v); do that step again, not the change", e.Step, e.Err)

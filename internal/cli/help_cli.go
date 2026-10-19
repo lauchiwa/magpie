@@ -49,6 +49,12 @@ func helpFor(args []string) string {
 		return pluginUsage
 	case "quota", "quotas":
 		return quotaUsage
+	case "statusline":
+		return statuslineUsage
+	case "heap":
+		return heapUsage
+	case "cpu":
+		return cpuUsage
 	case "sessions":
 		return sessionsUsage
 	case "search":

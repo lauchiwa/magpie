@@ -111,11 +111,13 @@ func LoginPath() []string {
 // netproxy.
 var ProxyVars = []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"}
 
-// shellVars are the variables shellProbe asks for, in its order.
-var shellVars = slices.Concat(agentenv.Vars, ProxyVars)
+// shellVars are the variables shellProbe asks for, in its order. Claude
+// Code's provider switches (agentenv.ClaudeProviders) are only read, as the
+// proxy variables are.
+var shellVars = slices.Concat(agentenv.Vars, ProxyVars, agentenv.ClaudeProviders)
 
 // LoginEnv is the value a terminal opened now has for k, one of
-// agentenv.Vars or ProxyVars: the login shell's, asked as LoginPath asks
+// agentenv.Vars, ProxyVars or agentenv.ClaudeProviders: the login shell's, asked as LoginPath asks
 // and with it; "" when the shell has none for it or doesn't say.
 func LoginEnv(k string) string {
 	LoginPath()
@@ -389,30 +391,33 @@ const shellMark = "__magpie_path__"
 // no variable can hold) parts the values: PATH first, then each of
 // shellVars in order.
 //
-// A POSIX shell (zsh, bash) expands "$PATH" itself, and so does fish:
-// PATH, as each variable whose name ends in PATH, is a path variable there,
-// joined with ':' in double quotes, not with the spaces another list gets. nushell
-// doesn't: a double-quoted string is literal there, so it printed "$PATH",
-// "$CLAUDE_CONFIG_DIR", ... and magpie set each variable to its own name
-// (#738: then Claude sign-in failed with "mkdir $CLAUDE_CONFIG_DIR:
-// read-only file system", and the account lapsed minutes later, Claude
-// Code's sign-in looked for under that folder). nushell has no POSIX
-// quoting to ask with, and its PATH is a list, so it is asked to run
-// /bin/sh with the same printf: nushell hands it the environment as a
-// child sees it, PATH joined back into one string, and sh expands the
-// references. The outer command is in nushell's single quotes, where a
-// backslash is a backslash, and the printf format in sh's double quotes,
-// where \0 reaches printf as it is.
+// Every shell is asked to run /bin/sh with the printf, and sh expands the
+// references, so a value is what the shell exports: what an agent started
+// from it gets. A shell's own expansion saw unexported variables too: fish's
+// universal http_proxy, set with `set -U` and never exported, reached no
+// program, yet magpie took it for Codex's proxy and showed the "proxied"
+// drift (#2627); an unexported zsh or bash variable is the same.
+//
+// nushell needs it most: a double-quoted string is literal there, so it
+// printed "$PATH", "$CLAUDE_CONFIG_DIR", ... and magpie set each variable
+// to its own name (#738: then Claude sign-in failed with "mkdir
+// $CLAUDE_CONFIG_DIR: read-only file system"). Its ^ runs /bin/sh as an
+// external command rather than a nushell one. nushell, as fish (PATH is a
+// path variable there), hands a child PATH joined with ':'. The outer
+// command is in single quotes, where a backslash is a backslash in every
+// one of these shells, and the printf format in sh's double quotes, where
+// \0 reaches printf as it is.
 func shellProbe(sh string) string {
 	format, args := shellMark+"%s", ` "$PATH"`
 	for _, v := range shellVars {
 		format += `\0%s`
 		args += ` "$` + v + `"`
 	}
+	cmd := `/bin/sh -c 'printf "` + format + shellMark + `"` + args + `'`
 	if filepath.Base(sh) == "nu" {
-		return `^/bin/sh -c 'printf "` + format + shellMark + `"` + args + `'`
+		return "^" + cmd
 	}
-	return "printf '" + format + shellMark + "'" + args
+	return cmd
 }
 
 // parseShellEnv reads shellEnv's answer out of what the shell printed. The

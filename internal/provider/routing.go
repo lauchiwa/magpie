@@ -9,6 +9,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -28,6 +29,15 @@ const (
 	// weight (KeyAccount.Weight, #841), smoothly: 3 and 1 go a, a, b, a…
 	Weighted = "weight"
 )
+
+// pluginRouting is a routing a plugin serves: "<plugin>/<name>".
+var pluginRouting = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// PluginRouting says whether routing is one a plugin serves,
+// "<plugin>/<name>" (a JS gateway plugin's strategies). providers.json
+// keeps one as saved, served now or not: one no plugin serves is tried in
+// its listed order.
+func PluginRouting(routing string) bool { return pluginRouting.MatchString(routing) }
 
 // SetRouting changes how a provider's requests spread over its keys or
 // accounts.
@@ -124,13 +134,11 @@ var usedCache struct {
 	m       map[string]map[string]Allowance // agent → user → allowance
 	at      map[string]time.Time
 	loading map[string]chan struct{} // closed when the fetch in flight is done
-	// renewed: when an account's windows were last started again (a
-	// Codex reset spent), by agent/user, as a count of renewals: a
-	// reading begun before says nothing of them. A count, not the clock:
-	// Windows' clock gives two moments a millisecond apart the same time,
-	// and a reading out over the reset was then taken as after it.
-	renewed  map[string]uint64
-	renewals uint64
+	// renewed: the generation when an account's windows were started
+	// again. Read/reset order cannot use the clock: two events can have
+	// the same timestamp, even with its monotonic part.
+	renewed    map[string]uint64
+	generation uint64
 	// seen: each account's windows as last read, and when, by
 	// agent/user, kept through a reading that failed, for the next to be
 	// told renewed by (renewedFrom)
@@ -479,7 +487,7 @@ func Allowances(agent string) map[string]Allowance {
 	if done == nil && time.Since(c.at[agent]) > time.Minute {
 		done = make(chan struct{})
 		c.loading[agent] = done
-		began := c.renewals // a renewal after this, the reading may not count
+		began := c.generation
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -639,8 +647,8 @@ func forgetAllowance(agent, user string) {
 	if c.renewed == nil {
 		c.renewed = map[string]uint64{}
 	}
-	c.renewals++
-	c.renewed[agent+"/"+strings.ToLower(user)] = c.renewals
+	c.generation++
+	c.renewed[agent+"/"+strings.ToLower(user)] = c.generation
 	delete(c.seen, agent+"/"+strings.ToLower(user)) // told already, by renewedNow
 	if c.at != nil {
 		c.at[agent] = time.Time{}
@@ -672,19 +680,6 @@ func StaleAllowance(agent, user string) {
 	delete(loginUsageCache.m, key)
 	delete(loginUsageCache.pending, key) // nor a reading asked for before
 	loginUsageCache.Unlock()
-	// the built-in keeps Grok's usage by home; a Grok moved to its plugin
-	// keeps it as "plugin:grok"'s, the line above
-	if agent == "grok" {
-		gs := grokLogins()
-		grokHomeUsage.Lock()
-		for _, g := range gs {
-			if strings.EqualFold(g.User, user) {
-				delete(grokHomeUsage.m, g.Home)
-				delete(grokHomeUsage.pending, g.Home)
-			}
-		}
-		grokHomeUsage.Unlock()
-	}
 	usedCache.Lock()
 	if usedCache.at != nil {
 		usedCache.at[agent] = time.Time{}

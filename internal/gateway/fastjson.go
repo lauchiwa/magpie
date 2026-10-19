@@ -6,9 +6,11 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"hash/maphash"
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -562,9 +564,61 @@ func hex4(s []byte) rune {
 // jsonMaxDepth is encoding/json's maxNestingDepth.
 const jsonMaxDepth = 10000
 
+// validMemoMin is the size from which jsonValid remembers what it found
+// valid. A request body is decoded a dozen times or more on its way
+// (modelOf, parse, the prompt, the conversation, the effort, the images…),
+// and each decodeJSON checked all of it again: ~2.5ms a time at 2 MB, a
+// fifth of the CPU of serving it.
+const validMemoMin = 32 << 10
+
+// validMemo is the last bodies found valid, by length and a hash under a
+// seed of this process's own.
+var validMemo struct {
+	sync.Mutex
+	sums [8]validSum
+	next int
+}
+
+type validSum struct {
+	n   int
+	sum uint64
+}
+
+var validSeed = maphash.MakeSeed()
+
+// validScanned, when set (tests), is told of each body of validMemoMin or
+// more that jsonValid checks byte by byte.
+var validScanned atomic.Pointer[func(data []byte)]
+
 // jsonValid is json.Valid, without stepping through each byte by a call:
 // the grammar, and the depth past which encoding/json gives up, are its.
+// A long body found valid is remembered, and not checked again.
 func jsonValid(data []byte) bool {
+	if len(data) < validMemoMin {
+		return jsonCheck(data)
+	}
+	s := validSum{len(data), maphash.Bytes(validSeed, data)}
+	validMemo.Lock()
+	known := slices.Contains(validMemo.sums[:], s)
+	validMemo.Unlock()
+	if known {
+		return true
+	}
+	if f := validScanned.Load(); f != nil {
+		(*f)(data)
+	}
+	if !jsonCheck(data) {
+		return false
+	}
+	validMemo.Lock()
+	validMemo.sums[validMemo.next] = s
+	validMemo.next = (validMemo.next + 1) % len(validMemo.sums)
+	validMemo.Unlock()
+	return true
+}
+
+// jsonCheck is jsonValid's check itself.
+func jsonCheck(data []byte) bool {
 	i := skipJSONSpace(data, 0)
 	i, ok := validJSONValue(data, i, 0)
 	return ok && skipJSONSpace(data, i) == len(data)

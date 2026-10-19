@@ -130,7 +130,7 @@ dd .m { display: inline-block; font-size: 12.5px; border: 1px solid var(--line);
   document.title = "Add " + label + " to magpie";
 
   const hosts = [];
-  for (const k of ["chat", "responses", "anthropic"]) {
+  for (const k of ["chat", "responses", "anthropic", "gemini"]) {
     try { const h = new URL(q.get(k)).host; if (h && !hosts.includes(h)) hosts.push(h); } catch {}
   }
   const row = (k, v) => { const d = document.createElement("div"); d.append(text("dt", k)); const dd = document.createElement("dd"); typeof v === "string" ? (dd.textContent = v) : dd.append(...v); d.append(dd); $("facts").append(d); };

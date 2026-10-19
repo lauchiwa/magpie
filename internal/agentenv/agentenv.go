@@ -46,6 +46,8 @@ var Vars = []string{
 	"PRIME_AGENT_CODING_AGENT_DIR",
 	// StepCode: config root resolution and folder overrides
 	"STEP_CODING_AGENT_DIR", "STEPCODE_CONFIG_DIR",
+	// MothX's config folder ($MOTHX_DIR/settings.json)
+	"MOTHX_DIR",
 	// omp
 	"OMP_PROFILE",
 	// Qoder's two builds, the global site's and China's
@@ -75,6 +77,9 @@ var Vars = []string{
 	"REASONIX_HOME",
 	// Reasonix's state folder, where it reads REASONIX.md
 	"REASONIX_STATE_HOME",
+	// the skills CLI's lock ($XDG_STATE_HOME/skills/.skill-lock.json), which
+	// the Library groups skills by; the desktop app has it from the login shell
+	"XDG_STATE_HOME",
 	// PI-Desktop's data folder, where Sessions reads its chat titles
 	"PI_DESKTOP_DATA_DIR",
 	// Mister Morph's config file
@@ -114,4 +119,16 @@ var NotPaths = map[string]bool{
 	"PI_CONFIG_DIR": true, "OPENCODE_DB": true,
 	"STEPCODE_CONFIG_DIR": true,
 	"MAGPIE_ZED_BIN":      true, "MAGPIE_ZED_PROCESS_NAMES": true,
+}
+
+// ClaudeProviders are Claude Code's switches that send its requests to a
+// cloud's endpoint (Amazon Bedrock, Vertex AI, …) in place of
+// ANTHROPIC_BASE_URL, so a Claude Code wired to magpie with one on never
+// reaches it (jw1dev on X). The login shell is asked for them
+// (proc.LoginEnv), for magpie to say when a terminal's Claude Code has one
+// on, but they are never set in magpie's own environment, and a test's
+// sandbox clears them. They are Claude Code 2.1.300's (Ie() in its bundle).
+var ClaudeProviders = []string{
+	"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+	"CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "CLAUDE_CODE_USE_MANTLE",
 }

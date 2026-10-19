@@ -171,18 +171,20 @@ func gatewayDays(ss []GatewaySession) []GatewayDayUsage {
 }
 
 func buildGatewaySessions(snapshot *logSnapshot, since time.Time, nativeKeys map[string]bool) ([]GatewaySession, []GatewayDayUsage) {
-	priceOf := pricer()
+	priceOf := Pricer()
 	type key struct{ agent, id string }
 	groups := map[key]*GatewaySession{}
 	models := map[key]map[string]*GatewayModel{}
 	type dayKey struct{ date, agent, model string }
 	daily := map[dayKey]*GatewayDayUsage{}
 	perSession := map[key]map[dayKey]*GatewayDayUsage{}
+	keep := keptStrings{}
 	snapshot.visit(since, func(r Record) {
 		if r.IsRejected() || r.IsReported() || r.Session == "" {
 			return
 		}
-		a := ReportedAs(r.Agent)
+		a := keep.of(ReportedAs(r.Agent))
+		r.Session, r.Model = keep.of(r.Session), keep.of(r.Model)
 		k := key{a, r.Session}
 		if nativeKeys != nil && nativeKeys[a+"|"+r.Session] {
 			return

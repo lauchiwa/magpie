@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yetone/magpie/internal/agentenv"
 	"github.com/yetone/magpie/internal/testenv"
 	"golang.org/x/sys/unix"
 )
@@ -134,6 +135,86 @@ func TestLoginEnvProxyVarsNotSet(t *testing.T) {
 	}
 }
 
+// ReneXiong (#2627): a variable the shell has but doesn't export reaches
+// no program started from it, so it is not the agent's. The reporter's
+// were fish universals from an old Clash setup; here a profile sets the
+// same values without export, beside an exported NO_PROXY.
+func TestLoginEnvUnexportedNotCounted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sh := filepath.Join(home, "sh")
+	testenv.Program(t, sh, "#!/bin/sh\n"+
+		"http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 all_proxy=socks5://127.0.0.1:7890\n"+
+		"CLAUDE_CONFIG_DIR=/not/exported\n"+
+		"export NO_PROXY=127.0.0.1\neval \"$2\"\n")
+	t.Setenv("SHELL", sh)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("PATH", "/usr/bin:/bin")
+	for _, v := range append([]string{"CLAUDE_CONFIG_DIR"}, ProxyVars...) {
+		t.Setenv(v, "")
+		os.Unsetenv(v)
+	}
+	old := shellDirs
+	shellDirs = func() []string { return nil }
+	t.Cleanup(func() { shellDirs = old })
+
+	p, vars := shellEnv()
+	if p == "" {
+		t.Fatal("no PATH from the shell")
+	}
+	for _, v := range []string{"http_proxy", "https_proxy", "all_proxy", "CLAUDE_CONFIG_DIR"} {
+		if got := vars[v]; got != "" {
+			t.Errorf("%s = %q, but the shell never exports it", v, got)
+		}
+	}
+	if got := vars["NO_PROXY"]; got != "127.0.0.1" {
+		t.Errorf("NO_PROXY = %q, want the exported one", got)
+	}
+}
+
+// jw1dev on X: CLAUDE_CODE_USE_BEDROCK=1 sends Claude Code to Bedrock past
+// magpie. One in the profile is read (LoginEnv), for magpie to say so, but
+// never set in magpie's own environment, where every agent magpie starts
+// would take it.
+func TestLoginEnvClaudeProvidersNotSet(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sh := filepath.Join(home, "sh")
+	testenv.Program(t, sh, "#!/bin/sh\nexport CLAUDE_CODE_USE_BEDROCK=1 CLAUDE_CODE_USE_MANTLE=true\neval \"$2\"\n")
+	t.Setenv("SHELL", sh)
+	t.Setenv("PATH", "/usr/bin:/bin")
+	for _, v := range agentenv.ClaudeProviders {
+		t.Setenv(v, "")
+		os.Unsetenv(v)
+	}
+	exec.Command(sh, "-c", ":").Run()
+	login.Lock()
+	dirs, vars, at := login.dirs, login.vars, login.at
+	login.dirs, login.vars, login.at = nil, nil, time.Time{}
+	login.Unlock()
+	t.Cleanup(func() {
+		login.Lock()
+		login.dirs, login.vars, login.at = dirs, vars, at
+		login.Unlock()
+	})
+
+	UserPath()
+	for _, v := range agentenv.ClaudeProviders {
+		if _, set := os.LookupEnv(v); set {
+			t.Fatalf("%s set in magpie's own environment", v)
+		}
+	}
+	if got := LoginEnv("CLAUDE_CODE_USE_BEDROCK"); got != "1" {
+		t.Fatalf("CLAUDE_CODE_USE_BEDROCK = %q, want the profile's", got)
+	}
+	if got := LoginEnv("CLAUDE_CODE_USE_MANTLE"); got != "true" {
+		t.Fatalf("CLAUDE_CODE_USE_MANTLE = %q, want the profile's", got)
+	}
+	if got := LoginEnv("CLAUDE_CODE_USE_VERTEX"); got != "" {
+		t.Fatalf("CLAUDE_CODE_USE_VERTEX = %q, want none", got)
+	}
+}
+
 // A login shell that doesn't expand "$CLAUDE_CONFIG_DIR" prints the
 // reference itself. That is no folder: the variable counts as unset,
 // rather than magpie setting CLAUDE_CONFIG_DIR to "$CLAUDE_CONFIG_DIR" and
@@ -227,8 +308,8 @@ func TestAskShellOwnSession(t *testing.T) {
 // config.fish that echoes a line, puts /Users/john/.fishbin first on PATH
 // and sets CODEX_HOME: PATH joined with ':' (a path variable), then each of
 // agentenv.Vars. The captured tail after CODEX_HOME was all empty values;
-// it is padded to shellVars' count (agentenv.Vars, then ProxyVars) as it is
-// now.
+// it is padded to shellVars' count (agentenv.Vars, ProxyVars, then
+// agentenv.ClaudeProviders) as it is now.
 func fishProbeOutput() string {
 	s := "hello from config.fish\n" + shellMark +
 		"/Users/john/.fishbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin" +
@@ -334,6 +415,13 @@ func TestShellEnvRealFish(t *testing.T) {
 	os.MkdirAll(filepath.Join(home, ".config", "fish"), 0o755)
 	os.WriteFile(filepath.Join(home, ".config", "fish", "config.fish"),
 		[]byte("echo hi from fish\nfish_add_path -g '"+bin+"'\nset -gx CODEX_HOME "+home+"/codex\n"), 0o644)
+	// the reporter's universal variables (#2627), never exported: no
+	// program fish starts has them
+	os.WriteFile(filepath.Join(home, ".config", "fish", "fish_variables"),
+		[]byte("# This file contains fish universal variable definitions.\n# VERSION: 3.0\n"+
+			"SETUVAR all_proxy:socks5\\x3a//127\\x2e0\\x2e0\\x2e1\\x3a7890\n"+
+			"SETUVAR http_proxy:http\\x3a//127\\x2e0\\x2e0\\x2e1\\x3a7890\n"+
+			"SETUVAR https_proxy:http\\x3a//127\\x2e0\\x2e0\\x2e1\\x3a7890\n"), 0o644)
 	login := filepath.Join(home, "zsh")
 	testenv.Program(t, login, "#!/bin/sh\neval \"$2\"\n")
 	t.Setenv("SHELL", login)
@@ -350,6 +438,11 @@ func TestShellEnvRealFish(t *testing.T) {
 	}
 	if got := vars["CLAUDE_CONFIG_DIR"]; got != "" {
 		t.Fatalf("CLAUDE_CONFIG_DIR = %q, want none", got)
+	}
+	for _, v := range []string{"http_proxy", "https_proxy", "all_proxy"} {
+		if got := vars[v]; got != "" {
+			t.Errorf("%s = %q, from a universal fish never exports", v, got)
+		}
 	}
 	if !slices.Contains(ShellPath(fish), bin) {
 		t.Fatalf("ShellPath(fish) lacks %q", bin)

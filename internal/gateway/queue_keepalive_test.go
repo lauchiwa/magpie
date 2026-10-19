@@ -24,13 +24,13 @@ type streamVendor struct {
 	mu    sync.Mutex
 	seen  int
 	at    []time.Time // when each request arrived
-	order []int64     // each request's arrival, in order (writeOrder)
+	nth   []int64     // each request's place in order (step)
 	fail  int
 	block chan struct{} // the first request waits on it, if set
 	later time.Duration // the requests after the first wait this, quiet
 	// when it began to answer each request, after block and later
-	answered   []time.Time
-	answeredAt []int64 // the same, in order (writeOrder)
+	answered    []time.Time
+	answeredNth []int64 // and its place in order (step)
 }
 
 // arrived is when the vendor's n-th request (from 0) arrived.
@@ -43,13 +43,18 @@ func (v *streamVendor) arrived(n int) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// arrivedAt is where the vendor's n-th request (from 0) arrived among the
-// gateway's writes (writeOrder).
-func (v *streamVendor) arrivedAt(n int) (int64, bool) {
+// step orders the gateway's writes to its agents and its vendor's
+// arrivals: a clock can't, since Windows' advances in ticks of ~0.5ms
+// and a keepalive heard, the slot freed and the vendor asked fit in one
+// (#2249).
+var step atomic.Int64
+
+// arrivedNth is the place in order (step) of the vendor's n-th request.
+func (v *streamVendor) arrivedNth(n int) (int64, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if n < len(v.order) {
-		return v.order[n], true
+	if n < len(v.nth) {
+		return v.nth[n], true
 	}
 	return 0, false
 }
@@ -59,7 +64,7 @@ func (v *streamVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	v.mu.Lock()
 	v.seen++
 	v.at = append(v.at, time.Now())
-	v.order = append(v.order, writeOrder.Add(1))
+	v.nth = append(v.nth, step.Add(1))
 	n := v.seen
 	failing := n > 1 && v.fail > 0
 	if failing {
@@ -82,7 +87,7 @@ func (v *streamVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	v.mu.Lock()
 	v.answered = append(v.answered, time.Now())
-	v.answeredAt = append(v.answeredAt, writeOrder.Add(1))
+	v.answeredNth = append(v.answeredNth, step.Add(1))
 	v.mu.Unlock()
 	if failing {
 		w.Header().Set("Content-Type", "application/json")
@@ -131,12 +136,15 @@ func queueGateway(t *testing.T, v *streamVendor, set func(*provider.Provider)) s
 	return gw.URL
 }
 
-// writeOrder numbers the gateway's writes to its agents and the vendor's
-// requests and answers as each happens, so the tests ask which came first
-// by number, not by time: on Windows two of them can read the same clock
-// tick, and a write just before the vendor was asked then read as none
-// before it.
-var writeOrder atomic.Int64
+// wrote is when the gateway first wrote to each agent's connection, by
+// the agent's address: the time the gateway sent it, which a client's own
+// read can't tell under load, its goroutine waiting to run.
+var wrote sync.Map // string -> *firstWrite
+
+// firstWrite is when, and in what place in order (step), the gateway
+// first wrote to a connection. The place is taken before the write, so
+// nothing the agent does on hearing it can come before it.
+type firstWrite struct{ at, nth atomic.Int64 }
 
 type wroteListener struct{ net.Listener }
 
@@ -145,46 +153,30 @@ func (l wroteListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return c, err
 	}
-	all := new(writeLog)
+	at, all := new(firstWrite), new(writeLog)
+	wrote.Store(c.RemoteAddr().String(), at)
 	writes.Store(c.RemoteAddr().String(), all)
-	return wroteConn{c, all}, nil
+	return wroteConn{c, at, all}, nil
 }
 
-// writes is every write of the gateway to each agent's connection, by the
-// agent's address: when the gateway sent it, which a client's own read
-// can't tell under load, its goroutine waiting to run.
+// writes is every time the gateway wrote to each agent's connection, by
+// the agent's address.
 var writes sync.Map // string -> *writeLog
 
 type writeLog struct {
-	mu    sync.Mutex
-	at    []time.Time
-	order []int64 // writeOrder's, for each
+	mu  sync.Mutex
+	at  []time.Time
+	nth []int64 // each write's place in order (step), taken before it
 }
 
-// wrote is a write of the gateway's: when, and where among writeOrder's.
-type wrote struct {
-	at    time.Time
-	order int64
-}
-
-// first is the gateway's first write, if any.
-func (l *writeLog) first() wrote {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if len(l.at) == 0 {
-		return wrote{}
-	}
-	return wrote{l.at[0], l.order[0]}
-}
-
-// within says how many writes came after from and before to, in
-// writeOrder's numbers (0 from: since the start).
+// within says how many writes were after the place from and before to,
+// in order (step), not by a clock.
 func (l *writeLog) within(from, to int64) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	n := 0
-	for _, o := range l.order {
-		if o > from && o < to {
+	for _, i := range l.nth {
+		if i > from && i < to {
 			n++
 		}
 	}
@@ -193,15 +185,21 @@ func (l *writeLog) within(from, to int64) int {
 
 type wroteConn struct {
 	net.Conn
+	at  *firstWrite
 	all *writeLog
 }
 
 func (c wroteConn) Write(b []byte) (int, error) {
+	nth := step.Add(1)
 	n, err := c.Conn.Write(b)
 	if n > 0 {
+		now := time.Now()
+		if c.at.nth.CompareAndSwap(0, nth) {
+			c.at.at.Store(now.UnixNano())
+		}
 		c.all.mu.Lock()
-		c.all.at = append(c.all.at, time.Now())
-		c.all.order = append(c.all.order, writeOrder.Add(1))
+		c.all.at = append(c.all.at, now)
+		c.all.nth = append(c.all.nth, nth)
 		c.all.mu.Unlock()
 	}
 	return n, err
@@ -221,9 +219,9 @@ var queueAsks = []struct{ name, path, body string }{
 const queueMinute = 3 * time.Second
 
 // askHeard sends body to path as an agent would and returns the status, the
-// stream read, the gateway's first write to the agent (writes), and the
+// stream read, when the gateway first wrote to the agent (wrote), and the
 // read's error. heard, if set, is called once the agent has a first byte.
-func askHeard(gw, path, body string, heard func()) (int, string, wrote, error) {
+func askHeard(gw, path, body string, heard func()) (int, string, heardAt, error) {
 	req, _ := http.NewRequest("POST", gw+path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	var from string
@@ -237,16 +235,32 @@ func askHeard(gw, path, body string, heard func()) (int, string, wrote, error) {
 	}))
 	res, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
-		return 0, "", wrote{}, err
+		return 0, "", heardAt{}, err
 	}
 	defer res.Body.Close()
 	var b strings.Builder
 	_, err = io.Copy(&b, bufio.NewReader(res.Body))
-	var first wrote
-	if l, ok := writes.Load(from); ok {
-		first = l.(*writeLog).first()
+	var first heardAt
+	if at, ok := wrote.Load(from); ok {
+		if n := at.(*firstWrite).nth.Load(); n != 0 {
+			first = heardAt{time.Unix(0, at.(*firstWrite).at.Load()), n}
+		}
 	}
 	return res.StatusCode, b.String(), first, err
+}
+
+// heardAt is when the gateway first wrote to an agent, and its place in
+// order (step); nth is 0 when it never wrote.
+type heardAt struct {
+	at  time.Time
+	nth int64
+}
+
+// before says the gateway wrote to the agent before the vendor's n-th
+// request arrived, in order, not by a clock.
+func (h heardAt) before(v *streamVendor, n int) bool {
+	asked, ok := v.arrivedNth(n)
+	return ok && h.nth != 0 && h.nth < asked
 }
 
 // waitSeen waits until v has had n requests.
@@ -285,9 +299,8 @@ func TestQueuedStreamKeptAliveForTheMinute(t *testing.T) {
 				t.Fatalf("queued = %d %v %q, want 200, keepalives, then the reply", code, err, body)
 			}
 			first, _ := v.arrived(0)
-			asked, ok := v.arrived(1)
-			askedAt, _ := v.arrivedAt(1)
-			if !ok || heard.order == 0 || heard.order > askedAt {
+			asked, _ := v.arrived(1)
+			if !heard.before(v, 1) {
 				t.Fatalf("the gateway first wrote to the agent at %s, the vendor was asked at %s: nothing reached it while it waited", heard.at.Format("15:04:05.000"), asked.Format("15:04:05.000"))
 			}
 			// it waited for the minute: the vendor sees the first late
@@ -349,12 +362,12 @@ func TestQueuedStreamKeptAliveOnceSentToItsVendor(t *testing.T) {
 			log := l.(*writeLog)
 			v.mu.Lock()
 			asked, answered := v.at[1], v.answered[1]
-			askedAt, answeredAt := v.order[1], v.answeredAt[1]
+			askedNth, answeredNth := v.nth[1], v.answeredNth[1]
 			v.mu.Unlock()
-			if log.within(0, askedAt) == 0 {
+			if log.within(0, askedNth) == 0 {
 				t.Fatalf("the agent wasn't kept alive before the vendor was asked")
 			}
-			if n := log.within(askedAt, answeredAt); n == 0 {
+			if n := log.within(askedNth, answeredNth); n == 0 {
 				t.Fatalf("the gateway wrote nothing to the kept-alive agent in the %s between the vendor being asked and its answer, want a keepalive every %s", answered.Sub(asked).Round(time.Millisecond), keepaliveEvery)
 			}
 		})
@@ -416,8 +429,7 @@ func TestQueuedStreamKeptAliveForASlot(t *testing.T) {
 	if err != nil || code != 200 || !strings.Contains(body, ": keepalive") || !strings.Contains(body, "queued ok") {
 		t.Fatalf("queued for a slot = %d %v %q, want 200, keepalives, then the reply", code, err, body)
 	}
-	asked, ok := v.arrived(1)
-	if askedAt, _ := v.arrivedAt(1); !ok || heard.order == 0 || heard.order > askedAt {
+	if asked, _ := v.arrived(1); !heard.before(v, 1) {
 		t.Fatalf("the gateway first wrote to the agent at %s, the vendor was asked at %s: nothing reached it while it waited", heard.at.Format("15:04:05.000"), asked.Format("15:04:05.000"))
 	}
 	if err := <-first; err != nil {
