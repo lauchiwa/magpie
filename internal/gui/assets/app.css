@@ -530,6 +530,11 @@ body.mac :is(.view, .modal .dialog, .modal .editor.framed > .ebody)::-webkit-scr
    and scrolled sideways; the bar's room is always kept, out of the right
    padding, so the fields end where they did */
 body.mac .modal .editor.framed > .ebody { overflow-y: scroll; padding-right: 10px; }
+/* elsewhere the 10px bar took its room only once the body ran long (the add
+   form's model list fetched), so a hint wrapped one more line and Fetch
+   models moved down under the click; its room is kept there too
+   (WebKit lays out scrollbar-gutter: stable as auto) */
+body:not(.mac) .modal .editor.framed > .ebody { overflow-y: scroll; }
 /* Usage and Routing keep their bar's room too, whether the page runs past
    the window or not. Their square-celled grids (the year heatmap, Sessions'
    calendar, the context waffle) grow taller as they grow wider, so near the
