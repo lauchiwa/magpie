@@ -61,7 +61,11 @@ keys and accounts per request is in [Gateway routing and fallback](gateway-routi
 [`lifecycle_commit.go`](../../internal/provider/lifecycle_commit.go). Under the
 cross-process lifecycle lock it recovers an unfinished journal, rereads the
 provider file and refuses a change built on an out-of-date read with
-`*ConflictError` (`errors.Is(err, ErrStale)`). There is no automatic retry,
+`*ConflictError` (`errors.Is(err, ErrStale)`). A write waits at most 10s for
+the lock (`lockWait` in
+[`lifecycle/lock.go`](../../internal/lifecycle/lock.go)), then fails
+`providers not changed: …` with `lifecycle.ErrBusy` and writes nothing;
+start-up waits 3s and stays legacy instead. There is no automatic retry,
 except in `Restore` (a backup, put back over a fresh read) and a sync, which
 each read and merge again once
 ([`lifecycle_sync.go`](../../internal/provider/lifecycle_sync.go)). A write can

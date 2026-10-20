@@ -26,7 +26,7 @@ clone a working tree or synchronize arbitrary files.
   the remote bundle, first keeping the local setup for Undo.
 - [`backup.go`](../../internal/gui/backup.go), the Settings form in
   [`app.js`](../../internal/gui/assets/app.js) and
-  [`webdav_cli.go`](../../webdav_cli.go) reach the same sync operations.
+  [`webdav_cli.go`](../../internal/cli/webdav_cli.go) reach the same sync operations.
 
 ## What stays on each computer
 
@@ -83,10 +83,15 @@ nothing is written. `syncNow` then runs the sync once more, as it does for
 in, so the only earlier writes are missing icons filled in and the copies kept
 in the sync folder before a merge that takes one side. The second run decides
 by the usual rules: providers changed on both sides keep the newer, with the
-other kept in the sync folder, and on a first sync the server's come in. A
-second refusal is the sync's error, and the next round tries again. A Restore or Undo from the
-server that is refused this way returns the error (`bringing in the providers:
-…; nothing was changed — read it again and retry`). An opened bundle carries
+other kept in the sync folder, and on a first sync the server's come in. So
+the check keeps a sync from undoing a write it never saw; it does not make a
+change made here win. A rename made here that the server's newer providers,
+or a first sync, replace is gone from `providers.json`, and this computer's
+setup is kept as `<time>-this-computer.magpie-backup` in the sync folder. A
+second refusal is the sync's error, and the next round tries again. A
+Restore or Undo from the server that is refused this way returns the error
+(`bringing in the providers: …; nothing was changed — read it again and
+retry`). An opened bundle carries
 no base, so its Mirror is checked only against its own read, as before.
 
 `backup.Restore` ("make it the backup") merges into a fresh read of

@@ -127,9 +127,10 @@ and reconcile in
   `run` in `internal/cli/main.go` calls it once, through `readyAtStart`
   ([`lifecycle_cli.go`](../../internal/cli/lifecycle_cli.go)): after
   `settings.Migrate`, before the providers are held. Every entry point (GUI,
-  tray, gateway, TUI, subcommands) goes through `run`. `--help`,
-  `healthcheck`, the Agents page's dry run and accounts discovery return before
-  the call. `magpie identity reconcile` skips it, so its preview writes
+  tray, gateway, TUI, subcommands) goes through `run`, so each start waits at
+  most `readyLockWait` (3s) for a lock another magpie holds, then runs legacy
+  for that run. `--help`, `healthcheck`, `heap`, `cpu`, the Agents page's dry
+  run and accounts discovery return before the call. `magpie identity reconcile` skips it, so its preview writes
   nothing. A test binary skips it too (`MAGPIE_TEST_SANDBOX` is set, as it is in
   the dry run's child), so a test's home stays legacy unless the test calls
   `ReadyLifecycle` itself. An error is printed as `magpie: lifecycle: …` on
@@ -192,8 +193,11 @@ and reconcile in
   write, so an id here that the server or backup also has keeps its instance
   and binding. An id renamed elsewhere comes back as a delete plus an add: the
   binding stays behind and goes with the deleted id, and the deleted instance
-  is retired. See [Sync and backup](sync-backup.md) for how a sync refuses to
-  undo a change made here while it ran.
+  is retired. A local change does not win by being local: on a first sync,
+  or when the server's providers are the newer, the server's come in over a
+  rename made here, and this computer's setup is kept in the sync folder as
+  `<time>-this-computer.magpie-backup`. See [Sync and backup](sync-backup.md)
+  for how a sync refuses to undo a change made here while it ran.
 - **Not covered.**
   - A Provider literal under valid metadata signs by its id and skips the
     unreconciled check. No API hands one out for a stored provider; code that
@@ -213,6 +217,11 @@ and reconcile in
   - Recovery from an identity store `.bak` can still restore the latest unbind
     or delete (recovery A). The instance mapping adds no other way back:
     `TestRecoveryAAddsNoOtherWayBack`.
+  - The GUI's unbind with no `rev` (an older page) goes by id through
+    `identity.Unbind` (`unbindAsRead` in
+    [`gui/identity.go`](../../internal/gui/identity.go)). It leaves an
+    undecided mark on that id in place, where the CLI's `UnbindOrphan` clears
+    it; `magpie identity reconcile` settles it.
 
 ## The page
 
