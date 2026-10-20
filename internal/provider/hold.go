@@ -75,6 +75,9 @@ var environSeed = maphash.MakeSeed()
 func environSum() uint64 {
 	var h maphash.Hash
 	h.SetSeed(environSeed)
+	if environBlockSum(&h) {
+		return h.Sum64()
+	}
 	for _, kv := range os.Environ() {
 		h.WriteString(kv)
 		h.WriteByte(0)
