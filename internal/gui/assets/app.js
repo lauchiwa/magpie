@@ -22962,10 +22962,12 @@ function setGatewayMode(on) {
   navSubs();
 }
 // navHides leaves out the tabs of the pages gateway mode or a built-in
-// plugin switched off leaves out
+// plugin switched off leaves out; a tab back takes room the header was fitted
+// without (fitTop watches the header's size, not the tabs')
 function navHides() {
   if (mode !== "window") return;
   for (const b of $("#nav").querySelectorAll("button[data-view]")) b.hidden = (gatewayMode && GATEWAY_HIDES.includes(b.dataset.view)) || featureHides(b);
+  fitTop();
 }
 // applyFeatures takes the built-in plugins' state from a read of the
 // settings, or a switch on Plugins › Built-in:
