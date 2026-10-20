@@ -4608,7 +4608,7 @@ function openPicker(agent, field, anchor, ev, only) {
   }
   const q = $("#q");
   q.value = "";
-  q.placeholder = modelPicker && extra(field) ? t("{field} — filter, or type any model id…", { field: t(field.label) }) : modelPicker ? t("Filter, or type any model id…") : t("Filter {field}…", { field: t(field.label) });
+  q.placeholder = field.placeholder || (modelPicker && extra(field) ? t("{field} — filter, or type any model id…", { field: t(field.label) }) : modelPicker ? t("Filter, or type any model id…") : t("Filter {field}…", { field: t(field.label) }));
   filter();
   // On touch screens leave the keyboard closed until the filter is tapped,
   // so opening a model list leaves room to browse its choices.
@@ -4845,6 +4845,14 @@ function filter(keep) {
   const typed = $("#q").value.trim();
   if (typed && pick.free && ["model", "small", "large", "executor", "planner", ...ROLE_MODELS].includes(pick.field.label) && !pick.items.some((o) => o.value === typed)) {
     pick.items.push({ value: typed, note: t("use as typed"), custom: true });
+  }
+  // a picker that takes a name it doesn't list (a rule's agents: one known
+  // only by its User-Agent) offers what is typed as the field reads it, or
+  // the option that name already is
+  const own = typed && pick.field.typed?.(typed);
+  if (own) {
+    const listed = pick.options.find((o) => o.value === own.value);
+    if (!pick.items.includes(listed)) pick.items.push(listed || { ...own, custom: true });
   }
   pick.items = foldSame(pick.items);
   // a model the filter finds among those kept for routing groups, which
@@ -11827,11 +11835,12 @@ const ROUTINGS = [
   ["usage", "Least used first", "Each request goes to the one used least: a subscription by the share of its allowance used, a key by the tokens it served in the last hours."],
   ["pace", "Weekly pace", "Each request goes to the subscription with the most of its week left per hour until it renews — the one with the most to lose at its reset — so less of each week is lost at its reset; one at 90% or more waits until the others can't answer. A key goes by the tokens it served in the last hours."],
   ["weight", "By weight", "Requests spread over the keys by the weight set beside each: a key weighing 3 takes three requests for every one a key weighing 1 takes, evenly over a few requests. One that fails is passed over while it rests, and the others share its requests; a conversation stays with its key as Stays says."],
+  ["free", "Free first", "Requests go to what costs nothing first: the models their vendor serves at no cost to this subscription's allowance or credits, in their listed order, and only when those can't answer to one that spends them. Nothing that cost nothing is left unused."],
 ];
 // the routings besides Smart are the built-in plugin rotation's
 // (plugins/rotation): off, their options leave the page, as anything marked
 // data-feature does, and Smart is left — one in use keeps it on
-const ROTATION = new Set(["order", "rotate", "usage", "pace", "weight"]);
+const ROTATION = new Set(["order", "rotate", "usage", "pace", "weight", "free"]);
 // jsRoutings: the routings JS gateway plugins serve now ("<plugin>/<name>",
 // settings' jsRoutings, plugins/middleware's), and saved, a routing none
 // serves now, shown as it is: its pool is tried in its listed order
@@ -18276,7 +18285,10 @@ function computerOpts(cs) {
     ...(others.length > 1 ? [{ v: "others", name: t("Other computers"), note: "" }] : []),
     ...others.map((c) => ({ v: c.id, name: c.name || c.id, note: "" }))];
 }
-const ledNum = (n) => (n || 0).toLocaleString(intlLang());
+// one formatter a language: toLocaleString makes one a call (~1 s of 40)
+let ledFmt, ledFmtLang;
+const ledNum = (n) => { const l = intlLang(); return typeof (n ||= 0) != "number" ? n.toLocaleString(l)
+  : (l == ledFmtLang ? ledFmt : (ledFmtLang = l, ledFmt = new Intl.NumberFormat(l))).format(n); };
 // what x's credited requests cost in their plan's credits, as the replies
 // said (WorkBuddy's usage.credit, #2512): nothing when none said
 function ledCredits(x) {
@@ -19079,6 +19091,32 @@ function renderBarIcon() {
       .catch((e) => { status(t(e.message), "err"); renderBarIcon(); })));
 }
 
+// renderLoginAllow: Open at login switched off in System Settings, its
+// launch agent still there (#2120, Anoninz). On stays picked, as the record
+// is, and writing it again doesn't undo the user's switch, so the row says
+// it won't open and opens Login Items, where it is allowed again. Coming
+// back to the window reads the settings again (load), so the line goes once
+// it is allowed there.
+const loginItemsURL = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension";
+function renderLoginAllow(s) {
+  const who = $("#loginRow .who");
+  let sub = who.querySelector(".login-allow");
+  if (!s.loginAllow) { sub?.remove(); return; }
+  if (!sub) {
+    sub = document.createElement("div");
+    sub.className = "sub wraps login-allow";
+    who.append(sub);
+  }
+  // the row is hidden on a page served to another computer (web), which
+  // has no System Settings to open
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "login-allow-open";
+  open.textContent = t("Open Login Items");
+  open.onclick = () => api("open", { url: loginItemsURL }).catch((e) => status(t(e.message), "err"));
+  sub.replaceChildren(t("Switched off in System Settings’ Login Items, so magpie won’t open at login"), " ", open);
+}
+
 async function loadSettings() {
   const since = prefsWrites;
   if (!web && fontList === null && !fontListError) loadFonts();
@@ -19490,6 +19528,7 @@ function renderSettings() {
   // the system's record, set on its own, not with the other choices
   $("#loginSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], s.login ? "on" : "off", (v) =>
     writingPrefs(api("settings/login", { on: v === "on" })).then((ns) => { prefs = ns; renderSettings(); }).catch((e) => { status(t(e.message), "err"); renderSettings(); })));
+  renderLoginAllow(s);
   // Codex's and Claude Code's warm-ups and WorkBuddy's check-in, one tab
   // each over one card, the rows' names not saying the service again.
   // A ChatGPT account's next window started as soon as the last resets
@@ -21769,6 +21808,8 @@ function renderRedact(s, keep) {
     r.append(who, val);
     box.append(r);
   }
+  // the local model finds more of what the switches above mask
+  if (s.redact || s.redactPersonal) privacyModelRow(box);
   // Routing's and Usage's Hide accounts, here too, where privacy is looked for
   if (window.hideAccounts) row(t("Hide accounts"), t("Email addresses and account names on Usage and Routing are blurred, for a screenshot to share"),
     onOff(window.hideAccounts.on(), (on) => { window.hideAccounts.set(on); renderSettings(); }));
@@ -21789,6 +21830,61 @@ function renderRedact(s, keep) {
   // rides on that event: nothing goes without it
   if (!s.noStats) row(t("Share the agents, providers and models I use"), t("Sent with that event, by magpie's own ids, with how many of each, and how often each partner was shown, opened and added; a provider you added yourself is only “custom”. No names, addresses, accounts, keys or usage"),
     onOff(!s.noUsageStats, (on) => savePrefs({ ...keep, noUsageStats: !on })));
+}
+
+// privacyModelRow: the local masking model (internal/pii), downloaded when
+// it is turned on and then asked beside the rules. Its state is its own
+// (privacy-model): read when the row is drawn, and each second while it
+// downloads or starts.
+let pmState = null, pmTimer = 0;
+function privacyModelRow(box) {
+  const r = el("div", "row pref");
+  r.id = "privacyModelRow";
+  box.append(r);
+  let tries = 0;
+  const draw = (m) => {
+    if (!r.isConnected) return;
+    const who = el("div", "who"), val = el("div", "val");
+    who.append(el("div", "name", t("Find with a local model")), el("div", "sub", pmSub(m)));
+    if (m?.supported || m?.installed) {
+      if (m.downloading) {
+        const c = el("button", "text", t("Cancel"));
+        c.onclick = () => act("cancel");
+        val.append(c);
+      } else if (m.installed && !m.on) {
+        const x = el("button", "text", t("Delete model"));
+        x.onclick = async () => {
+          if (await confirmAction(t("Delete the model?"), t("Turning it on again downloads {size} again.", { size: fmtBytes(m.size) }), t("Delete"))) act("remove");
+        };
+        val.append(x);
+      }
+      val.append(segs([["off", t("Off")], ["on", t("On")]], m.on || m.downloading ? "on" : "off", (v) => act(v)));
+    }
+    r.replaceChildren(who, val);
+    clearTimeout(pmTimer);
+    // a download's progress, and where pf-serve runs once it has started
+    const starting = m?.on && m.installed && !m.running && !m.failed && tries++ < 30;
+    if (m?.downloading || starting) pmTimer = setTimeout(load, 1000);
+  };
+  const load = () => api("privacy-model").then((m) => { pmState = m; draw(m); }).catch(() => {});
+  const act = (doing) => { tries = 0; api("privacy-model", { do: doing }).then((m) => { pmState = m; draw(m); }).catch((e) => { status(t(e.message), "err"); load(); }); };
+  draw(pmState);
+  load();
+}
+function pmSub(m) {
+  const about = t("Names, addresses and passwords no rule can find, found by a model that runs on this computer");
+  if (!m) return about;
+  if (!m.supported && !m.installed) return t("Not available on this system yet");
+  if (m.downloading) return t("Downloading the model: {done} of {total}", { done: fmtBytes(m.done), total: fmtBytes(m.total) });
+  if (m.error) return t("The download stopped: {error}", { error: m.error });
+  if (m.on && m.failed) return t("The model didn't answer, so requests are held back: {error}", { error: m.failed });
+  if (m.on && m.running) {
+    if (m.gpu) return t("On, on the GPU ({device})", { device: m.device });
+    return m.gpuError ? t("On, on the CPU: the GPU failed ({error})", { error: m.gpuError }) : t("On, on the CPU");
+  }
+  if (m.on) return t("On: the model starts with the next request");
+  if (m.installed) return t("Off. The model is downloaded ({size})", { size: fmtBytes(m.size) });
+  return t("Names, addresses and passwords no rule can find, found by a model that runs on this computer. Turning it on downloads {size} once", { size: fmtBytes(m.size) });
 }
 
 function renderOTel(s, keep) {
