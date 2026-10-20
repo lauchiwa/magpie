@@ -113,6 +113,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => page.errors.push(e.message));
       await page.route("**/*", f.route);
       await page.goto("http://magpie.test/?view=settings&tab=models");
+      // Settings is drawn again as each read comes in, the row with it, which
+      // a screenshot taken on the first draw lost ("not attached")
+      await page.waitForLoadState("networkidle");
       await row(page).waitFor();
       return { page, posts: f.posts };
     };
