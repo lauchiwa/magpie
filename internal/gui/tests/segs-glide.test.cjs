@@ -51,7 +51,11 @@ function serve(lang, st, ctl) {
 const THUMBS = `[...document.querySelectorAll("#setPage-general .segs")].filter((s) => s.offsetParent).map((s) => {
   const th = s.querySelector(":scope > .thumb"), on = s.querySelector(":scope > .on"), b = s.getBoundingClientRect();
   const r = th?.getBoundingClientRect(), o = on?.getBoundingClientRect();
-  return { id: s.parentElement.id || s.dataset.kind, x: r ? r.left - b.left : -1, w: r ? r.width : -1, ox: o ? o.left - b.left : -1, ow: o ? o.width : -1 };
+  // known by its place, as the app knows it (segsPlace): two Off/Ons whose
+  // row wraps them (Full context, Codex async) were both "off|on", and each
+  // was compared with the other
+  const home = s.parentElement.closest("[id]"), same = home ? [...home.querySelectorAll(".segs")].filter((x) => x.dataset.kind === s.dataset.kind) : [s];
+  return { id: s.parentElement.id || s.dataset.kind + "@" + home?.id + ":" + same.indexOf(s), x: r ? r.left - b.left : -1, w: r ? r.width : -1, ox: o ? o.left - b.left : -1, ow: o ? o.width : -1 };
 })`;
 
 // records every thumb on General at each frame, and between them
