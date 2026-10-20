@@ -14615,10 +14615,12 @@ function protoPicker(p, value, onChange) {
 // redrawn under a still pointer (a search narrowing it) gets a mouseenter
 // too, which took the focus out of the search mid-word (#2439); one where
 // the last mousemove was is a redraw's (mouseenter comes before its move).
+// The window's own coordinates: WebKit on Windows gives every mouse event
+// screenX/screenY 0,0, which made each enter look like a redraw's.
 let pointerAt = "";
-addEventListener("mousemove", (e) => { pointerAt = e.screenX + "," + e.screenY; }, true);
+addEventListener("mousemove", (e) => { pointerAt = e.clientX + "," + e.clientY; }, true);
 function hoverFocus(b) {
-  b.onmouseenter = (e) => { if (e.screenX + "," + e.screenY !== pointerAt) b.focus({ preventScroll: true }); };
+  b.onmouseenter = (e) => { if (e.clientX + "," + e.clientY !== pointerAt) b.focus({ preventScroll: true }); };
 }
 let protoMenu = null;
 function closeProtoMenu() {
