@@ -128,6 +128,7 @@ async function api(path, body, heads, signal) {
   }
   if (!res.ok) {
     const err = new Error(data?.error || `${res.status} ${res.statusText}`);
+    lifecycleError(err, data); // fork: stale, pending, follow_up (lifecycle.js)
     if (data?.code === "runtime_unavailable") {
       err.code = data.code;
       if (data.offline === "stage" || data.offline === "disconnect") err.offline = data.offline;
@@ -5818,7 +5819,7 @@ function identityProfileCard(profile, state) {
     for (const p of boundProviders) {
       const unbind = el("button", "text", t("Unbind {provider}", { provider: p.name }));
       unbind.type = "button";
-      unbind.onclick = () => identityAction("unbind", { provider: p.id });
+      unbind.onclick = () => identityAction("unbind", { provider: p.id, rev: p.rev });
       bound.append(unbind);
     }
     card.append(bound);
@@ -5836,7 +5837,7 @@ function identityProfileCard(profile, state) {
     const bind = el("button", "text primary", t("Bind profile"));
     bind.type = "button";
     bind.disabled = !id;
-    bind.onclick = () => identityAction("bind", { provider: id, profile: profile.id });
+    bind.onclick = () => identityAction("bind", { provider: id, profile: profile.id, rev: free.find((p) => p.id === id)?.rev });
     bindRow.append(picker, bind);
     card.append(bindRow);
   }
@@ -5880,6 +5881,7 @@ async function identityAction(action, body) {
     renderProviders();
     status(t(({ arm: "Capture armed on the gateway", disarm: "Capture stopped", confirm: "Identity profile confirmed", bind: "Identity profile bound", unbind: "Identity profile unbound", remove: "Identity profile removed" })[action] || "Identity profiles updated"), "ok");
   } catch (e) {
+    if (e.code === "stale") loadProviders().catch(() => {}); // fork: the bindings as they are now
     status(e.message, "err");
   }
 }
@@ -6192,13 +6194,14 @@ function providerSwitch(p) {
 async function switchProvider(p, on, s) {
   s?.classList.toggle("on", on);
   try {
-    providers = await api("provider/" + (on ? "on" : "off"), { id: p.id });
+    providers = await api("provider/" + (on ? "on" : "off"), { id: p.id, rev: p.rev });
     renderProviders();
     state = await api("state");
     renderAgents();
     saidMoved(t(on ? "{name} is on" : "{name} is off: agents no longer get its models", { name: p.name }));
   } catch (e) {
     s?.classList.toggle("on", !on);
+    if (e.code === "stale") loadProviders().catch(() => {}); // fork: the switch as it is now
     status(e.message, "err");
   }
 }
@@ -8958,7 +8961,7 @@ function baseAPIOf(p) {
 
 // draftOf is a saved provider as its editor's form holds it.
 function draftOf(p) {
-  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, searches: !!p.searches, unredacted: !!p.unredacted, insecureTLS: !!p.insecureTLS, nativeCompaction: !!p.nativeCompaction, passUserAgent: !!p.passUserAgent, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p) };
+  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, searches: !!p.searches, unredacted: !!p.unredacted, insecureTLS: !!p.insecureTLS, nativeCompaction: !!p.nativeCompaction, passUserAgent: !!p.passUserAgent, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rev: p.rev };
 }
 
 // duplicateProvider opens the Add form on a copy of p (#268): its URLs,
@@ -8969,7 +8972,7 @@ function duplicateProvider(p) {
   const name = t("{name} copy", { name: p.name });
   editing = p.preset && providers.presets.some((x) => x.id === p.preset) ? { preset: p.preset } : { custom: true };
   const d = draftOf(p);
-  draft = { ...d, id: slug(name), name, chosen: [], extra: d.chosen, copyOf: p.id };
+  draft = { ...d, id: slug(name), name, chosen: [], extra: d.chosen, copyOf: p.id, rev: undefined }; // a copy is new: no rev
   if (p.zhipuTeam) draft.zhipuTeam = { org: p.zhipuTeam.org || "", project: p.zhipuTeam.project || "" };
   if (p.vertex) draft.vertex = { project: p.vertex.project || "", location: p.vertex.location || "", credentials: p.vertex.credentials || "", impersonate: p.vertex.impersonate || "" };
   renderProviders();
@@ -9009,7 +9012,7 @@ function identityField(p) {
     unbind.type = "button";
     // the binding is its own store: unbinding leaves the open draft alone,
     // and a refused one changes nothing but the status line
-    unbind.onclick = () => identityAction("unbind", { provider: p.id });
+    unbind.onclick = () => identityAction("unbind", { provider: p.id, rev: mine.rev });
     box.append(unbind);
   } else {
     box.append(el("div", "identity-field-none", t("No identity profile: requests go out as magpie.")));
@@ -9329,7 +9332,7 @@ function drawEditor(p, presetID) {
     // removing only hides it from magpie; the agent stays signed in
     const del = el("button", "text danger", t("Remove"));
     del.title = t("{agent} stays signed in; magpie just stops offering it", { agent: a.agentName });
-    del.onclick = () => providerAction("delete", { id: p.id }, t("{name} removed", { name: p.name }));
+    del.onclick = () => providerAction("delete", { id: p.id, rev: p.rev }, t("{name} removed", { name: p.name }));
     bar.append(del, el("span", "grow"));
     const cancel = el("button", "text", t("Cancel"));
     cancel.onclick = cancelEdit;
@@ -9356,7 +9359,7 @@ function drawEditor(p, presetID) {
       const priceRate = priceRateOfDraft();
       if (priceRate === undefined) return priceRateError(ed);
       if (priceTypedError(ed)) return;
-      const body = { id: p.id, models: chosenIds(), noModels: noneChosen(), unlisted: draft.unlisted, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, proxy, accountProxies: own.map, maxConcurrency, ...queue, priceRate, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
+      const body = { id: p.id, rev: draft.rev, models: chosenIds(), noModels: noneChosen(), unlisted: draft.unlisted, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, proxy, accountProxies: own.map, maxConcurrency, ...queue, priceRate, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
       saving(saveBtn, t("Saving…"));
       savePluginOptions(subOf(a.agent)).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
     bar.append(cancel, saveBtn);
@@ -9921,7 +9924,7 @@ function drawEditor(p, presetID) {
   const bar = el("div", "bar");
   if (p) {
     const del = el("button", "text danger", t("Remove"));
-    del.onclick = () => providerAction("delete", { id: p.id }, t("{name} removed", { name: p.name }));
+    del.onclick = () => providerAction("delete", { id: p.id, rev: p.rev }, t("{name} removed", { name: p.name }));
     bar.append(del);
   }
   if (p && pr) {
@@ -9943,7 +9946,7 @@ function drawEditor(p, presetID) {
   const saveBtn = el("button", "text primary", t(isNew ? "Add" : "Save"));
   const save = () => {
     // new: an Add never replaces a provider that has the id already
-    const body = { id: p ? slug(draft.id) || p.id : draft.id, from: p?.id, name: draft.name, preset: draft.preset, key: draft.key || "", chat: draft.chat, responses: draft.responses, anthropic: draft.anthropic, gemini: (draft.gemini || "").trim(), catalog: draft.catalog, models: p ? chosenIds() : draft.extra, headers: headersOf(draft.headers), new: isNew };
+    const body = { id: p ? slug(draft.id) || p.id : draft.id, from: p?.id, rev: draft.rev, name: draft.name, preset: draft.preset, key: draft.key || "", chat: draft.chat, responses: draft.responses, anthropic: draft.anthropic, gemini: (draft.gemini || "").trim(), catalog: draft.catalog, models: p ? chosenIds() : draft.extra, headers: headersOf(draft.headers), new: isNew };
     if (isNew && draft.copyOf) body.copyOf = draft.copyOf;
     const xb = extraBodyOf(draft.extraBody);
     if (xb.error) { shown(ed.querySelector(".extra-body textarea"))?.focus({ preventScroll: true }); return editorError(t("Extra body: {why}", { why: xb.error }), "warn"); }
@@ -15003,6 +15006,19 @@ async function providerAction(action, body, okMsg, base = "provider/") {
     saidMoved(okMsg);
     return true;
   } catch (e) {
+    // fork: saved but for a step, or finished by the journal: the editor
+    // closes as on a save, and says the rest; a second Save would redo it
+    if (e.committed || e.code === "pending") {
+      dropSigningIn(editing);
+      editing = draft = importing = null; adding = false;
+      try { providers = await api("providers"); state = await api("state"); } catch { /* said below */ }
+      renderProviders(); renderAgents();
+      status(e.message, "warn", 12000);
+      return true;
+    }
+    // fork: changed elsewhere since it was read: the draft stays as typed,
+    // nothing is sent again, and the list is read again for the next open
+    if (e.code === "stale") api("providers").then((next) => { providers = next; }, () => {});
     // a Remove may have gone through before what failed: the list as it is
     // now, and the editor of a provider gone closes, rather than stay open
     // on it for a second Remove to say there is no such provider

@@ -352,6 +352,10 @@ func TestFailSaysLifecycleCodes(t *testing.T) {
 		if w.Code != 400 || out["code"] != c.code || out["step"] != c.step || out["committed"] != c.com || out["error"] != c.err.Error() {
 			t.Errorf("%s: %d %v", name, w.Code, out)
 		}
+		// the step's own cause, for the page to say beside its own words
+		if want := map[string]string{"follow-up": "disk full"}[name]; out["reason"] != want {
+			t.Errorf("%s: reason %q, want %q", name, out["reason"], want)
+		}
 	}
 }
 

@@ -215,7 +215,13 @@ The GUI carries the marker through the page
 - If a delete and a re-create land between two steps, the steps after that
   point are refused, and the new provider gets none of them. Steps already
   made stay. The model list fetched after a new key is the saved
-  provider's; one made under its id since isn't asked for its list there.
+  provider's (`savedFind`); one made under its id since isn't asked for its
+  list there (`TestASaveFetchesOnlyTheProviderSaved`).
+- The draft keeps the `rev` it was opened with, and the list's refresh
+  doesn't move it on. So any write to that row while the editor is open (a
+  learner, an id-keyed setter, another window) makes its Save `stale`: the
+  page says so and keeps the draft, and the provider opened again carries
+  the new `rev`.
 - A rename's settings and agents step that fails is done again once, as on
   the CLI.
 - `fail()` adds a `code` that the page can tell apart, still as a 400:
@@ -226,8 +232,20 @@ The GUI carries the marker through the page
     here.
   - `follow_up`: saved, but a step after it failed.
   A step that fails after the save also gives `step` and `committed: "1"`,
-  even when its code is `stale` or `pending`. Nothing is retried, and the
-  page keeps its draft.
+  even when its code is `stale` or `pending`; a `follow_up` gives the step's
+  own error as `reason`.
+- The page ([`lifecycle.js`](../../internal/gui/assets/lifecycle.js), called
+  from `api()`) says each code in the reader's language and retries nothing:
+  - `stale`, nothing written: the editor keeps the draft as typed and reads
+    the list again for its next open. A switch goes back, and the identity
+    panel is drawn again from the bindings as they are now.
+  - `pending`, or `committed`: the editor closes as on a save, since a second
+    Save would make the change again. The warning names the step. A step a
+    second Save makes again (`rename`, `keys`, `model-prefs`, `outputs`,
+    `compacts`) says to open the provider and save that part again. The
+    others (`settings`, `agents`, `sign-in`, already done again once) say
+    not to make the change again.
+  - A Duplicate is a new provider, so its Add sends no `rev`.
 
 Some writes still go by id, in the CLI, the TUI and the GUI alike: the
 account, queue, RPM, quota-rest, model-name and price setters, a

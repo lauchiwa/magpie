@@ -1,7 +1,7 @@
 // The window's words in each language, as the page has them: i18n.js's,
 // and each plugin's (assets/plugins/<id>/i18n.js, added by the kernel's
-// magpie.strings). files says which file said which; a key two files say
-// is in twice.
+// magpie.strings), and the fork's lifecycle.js. files says which file
+// said which; a key two files say is in twice.
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -13,8 +13,10 @@ function strings() {
   const files = [{ file: "i18n.js", src, dict: structuredClone(I18N) }];
   const twice = [];
   const dir = path.join(assets, "plugins");
-  for (const id of fs.readdirSync(dir).sort()) {
-    const file = path.join(dir, id, "i18n.js");
+  // fork: lifecycle.js says its words through magpie.strings too
+  const own = ["lifecycle.js", ...fs.readdirSync(dir).sort().map((id) => path.join("plugins", id, "i18n.js"))];
+  for (const name of own) {
+    const file = path.join(assets, name);
     if (!fs.existsSync(file)) continue;
     const src = fs.readFileSync(file, "utf8");
     let dict;

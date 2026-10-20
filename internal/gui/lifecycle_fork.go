@@ -130,7 +130,9 @@ func redoFollowUp(err error) error {
 // lifecycleFail adds to a failed request's answer what the page tells
 // apart: "pending" (finished by the next write or start, not to be made
 // again), "stale" (changed since the page read it; read it again) and
-// "follow_up" (saved, but a step after it failed), with that step.
+// "follow_up" (saved, but a step after it failed), with that step and,
+// as "reason", the step's own error: the page says the rest in the
+// reader's language, and only the cause as the step gave it.
 func lifecycleFail(out map[string]string, err error) {
 	var fu *provider.FollowUpError
 	if errors.As(err, &fu) && fu.Committed {
@@ -143,5 +145,8 @@ func lifecycleFail(out map[string]string, err error) {
 		out["code"] = "stale"
 	case fu != nil:
 		out["code"] = "follow_up"
+		if fu.Err != nil {
+			out["reason"] = fu.Err.Error()
+		}
 	}
 }
