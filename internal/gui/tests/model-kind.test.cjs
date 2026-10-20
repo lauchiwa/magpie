@@ -80,7 +80,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         });
         page.setDefaultTimeout(5000);
         const errors = [];
-        page.on("pageerror", (e) => errors.push(e.message));
+        // the second goto cancels the reads still on their way, and WebKit
+        // reports each one as a page error, "… due to access control checks"
+        // (#1350, #1307): not this test's
+        page.on("pageerror", (e) => {
+          if (engine === "webkit" && /due to access control checks\.?$/.test(e.message)) return;
+          errors.push(e.message);
+        });
         const posts = [];
         await page.route("**/*", serve(lang, posts));
         await page.goto("http://magpie.test/?view=providers");

@@ -218,7 +218,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       page.setDefaultTimeout(5000);
       const errors = [];
-      page.on("pageerror", (e) => errors.push(e.message));
+      // each reload cancels the reads still on their way, and WebKit reports
+      // each one as a page error, "Fetch API cannot load … due to access
+      // control checks" (#1350, #1307): not this test's
+      page.on("pageerror", (e) => {
+        if (engine === "webkit" && /due to access control checks\.?$/.test(e.message)) return;
+        errors.push(e.message);
+      });
 
       // no gateway: capture is refused up front, and said so
       let current = identityState({ gateway: false, profiles: [confirmed] });

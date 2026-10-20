@@ -46,7 +46,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       t.after(() => browser.close());
       page.setDefaultTimeout(5000);
       const errors = [], posts = [];
-      page.on("pageerror", (e) => errors.push(e.message));
+      // each goto cancels the reads still on their way, and WebKit reports
+      // each one as a page error, "… due to access control checks" (#1350,
+      // #1307): not this test's
+      page.on("pageerror", (e) => {
+        if (engine === "webkit" && /due to access control checks\.?$/.test(e.message)) return;
+        errors.push(e.message);
+      });
       await page.route("**/*", serve(lang, posts));
       const zh = lang === "zh";
       const L = { add: zh ? "添加" : "Add", save: zh ? "保存" : "Save" };

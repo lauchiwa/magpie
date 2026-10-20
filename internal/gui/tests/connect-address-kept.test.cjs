@@ -19,7 +19,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const page = await (await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: "reduce" })).newPage();
         page.setDefaultTimeout(6000);
         const errors = [];
-        page.on("pageerror", (e) => errors.push(e.message));
+        // each goto and reload cancels the reads still on their way (on
+        // Windows the title bar's colour among them), and WebKit reports each
+        // one as a page error, "… due to access control checks": not this test's
+        page.on("pageerror", (e) => {
+          if (engine === "webkit" && /due to access control checks\.?$/.test(e.message)) return;
+          errors.push(e.message);
+        });
         const lanURLs = ["http://192.168.1.10:3999", "http://10.0.0.10:3999"];
         await page.route("**/*", fixture(lang, "light", [], { lan: true, lanURLs }));
         const pick = async (button, text) => {
