@@ -67,10 +67,16 @@ function fixture() {
 const rows = page => page.locator(".accts [data-account-id]");
 const ids = page => rows(page).evaluateAll(rs => rs.map(r => r.dataset.accountId));
 const settled = page => page.waitForFunction(() => !accountArranging && !accountSaving);
-async function open(page, id) {
-  await page.goto(`http://magpie.test/?view=providers&edit=${id}`);
+// an account editor draws itself again when its accounts' usage comes back
+// (loginUsageOf), which takes the rows a drag holds out of the page: it is
+// waited for before anything is done there
+async function ready(page, id, load) {
+  const usage = id === "antigravity" && page.waitForResponse((r) => new URL(r.url()).pathname === "/api/login/usage");
+  await load();
   await rows(page).first().waitFor();
+  if (usage) { await usage; await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); }
 }
+const open = (page, id) => ready(page, id, () => page.goto(`http://magpie.test/?view=providers&edit=${id}`));
 async function point(row) {
   await row.scrollIntoViewIfNeeded();
   return row.evaluate(r => {
@@ -123,7 +129,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(await ids(page), [before[1], before[0], ...before.slice(2)]);
         assert.equal(f.posted.filter(p => p.action === "/api/provider/arrange").length, count + 1);
         await checkFirst(page, f, id);
-        await page.reload(); await rows(page).first().waitFor();
+        await ready(page, id, () => page.reload());
         await checkFirst(page, f, id);
         const wanted = (await ids(page))[1];
         await rows(page).nth(1).getByRole("button", { name: "Make first", exact: true }).click();
