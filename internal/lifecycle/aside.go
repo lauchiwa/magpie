@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yetone/magpie/internal/steady"
@@ -34,6 +35,21 @@ func KeepAside(name, why string) (string, error) {
 	}
 	if err != nil {
 		return "", fmt.Errorf("%s can't be kept aside: %w", path, err)
+	}
+	// the same bytes kept for the same reason before are kept already, in
+	// whichever second that was: a reconcile run again a second later made
+	// a second copy of the same file
+	prefix := filepath.Base(path) + "." + why + "-"
+	if es, err := os.ReadDir(filepath.Dir(path)); err == nil {
+		for _, e := range es {
+			if !e.Type().IsRegular() || !strings.HasPrefix(e.Name(), prefix) {
+				continue
+			}
+			old := filepath.Join(filepath.Dir(path), e.Name())
+			if ob, rerr := os.ReadFile(old); rerr == nil && bytes.Equal(ob, b) {
+				return old, nil
+			}
+		}
 	}
 	stamp := path + "." + why + "-" + time.Now().Format("20060102-150405")
 	for i := 1; i < 1000; i++ {

@@ -107,6 +107,14 @@ func TestKeepAsideAndDiscardJournal(t *testing.T) {
 	if again, err := KeepAside(MetaFile, "reconciled"); err != nil || again != aside {
 		t.Fatalf("the same bytes kept twice: %q %q %v", aside, again, err)
 	}
+	// kept in an earlier second: still the same copy, not a second one
+	earlier := filepath.Join(filepath.Dir(aside), "lifecycle.json.reconciled-20000101-000000")
+	if err := os.Rename(aside, earlier); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := KeepAside(MetaFile, "reconciled"); err != nil || again != earlier {
+		t.Fatalf("the same bytes kept again a second later: %q %q %v", earlier, again, err)
+	}
 	if err := os.WriteFile(JournalPath(), []byte("not a journal"), 0o600); err != nil {
 		t.Fatal(err)
 	}
