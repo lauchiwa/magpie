@@ -52,7 +52,9 @@ function fixture(lang) {
       providers.providers = order.map((id) => providers.providers.find((p) => p.id === id));
       return json(providers);
     }
-    if (request.method() !== "GET") posted.push(url.pathname);
+    // on Windows the page also reports its colour for the title bar
+    // (tintTitleBar), which changes no config
+    if (request.method() !== "GET" && url.pathname !== "/api/window/titlebar") posted.push(url.pathname);
     if (url.pathname === "/api/providers") return json(providers);
     if (url.pathname === "/api/groups") return json({ groups: [] });
     if (url.pathname === "/api/plugins") return json({ plugins: [] });
