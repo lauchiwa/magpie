@@ -150,13 +150,24 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.locator(".row.provider", { hasText: p.name }).first().click();
           await page.locator(".editor .accts").first().waitFor();
           const field = page.locator(".editor label", { hasText: new RegExp(`^${L.routing}$`) }).locator("xpath=following-sibling::div[1]");
-          const shown = await field.locator(".segs").first().evaluate((box) => [...box.querySelectorAll(".opt")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent));
+          // the editor is drawn again when the accounts' allowance comes in
+          // (loginUsageOf): a box read as it is replaced has no styles, so
+          // every option in it would read as shown. Only a box still in the
+          // page is read
+          const shownOf = async () => {
+            for (let i = 0; i < 20; i++) {
+              const r = await field.locator(".segs").first().evaluate((box) => box.isConnected ? [...box.querySelectorAll(".opt")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : null);
+              if (r) return r;
+            }
+            throw new Error(`${where}: the Routing field kept being drawn again`);
+          };
+          const shown = await shownOf();
           assert.deepEqual(shown, [zh ? "智能" : "Smart"], `${where}: Smart alone`);
           assert.match(await field.locator(".segs .opt").first().getAttribute("class"), /\bon\b/, `${where}: Smart picked`);
           assert.ok(await page.evaluate(() => document.scrollingElement.scrollWidth <= innerWidth + 1), `${where}: fits`);
           // on again, every routing is back
           await page.evaluate(() => applyFeatures([{ id: "rotation", on: true }]));
-          const back = await field.locator(".segs").first().evaluate((box) => [...box.querySelectorAll(".opt")].filter((b) => getComputedStyle(b).display !== "none").length);
+          const back = (await shownOf()).length;
           assert.equal(back, p.account ? 5 : 6, `${where}: every routing back`);
           assert.deepEqual(errors, [], where);
           await page.context().close();

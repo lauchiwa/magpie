@@ -69,7 +69,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         ].filter((k) => ["zh", "zh-TW", "ja", "de"].some((l) => !I18N[l][k])));
         assert.deepEqual(missing, [], "every string has its translations");
         const field = () => page.locator(".editor label", { hasText: new RegExp(`^${L.routing}$`) }).locator("xpath=following-sibling::div[1]");
-        const shown = () => field().locator(".segs").first().evaluate((box) => [...box.querySelectorAll(".opt")].filter((b) => getComputedStyle(b).display !== "none").map((b) => [b.textContent, b.classList.contains("on")]));
+        // the editor is drawn again when the accounts' allowance comes in
+        // (loginUsageOf): a box read as it is replaced has no styles, so
+        // every option in it would read as shown. Only a box still in the
+        // page is read
+        const shown = async () => {
+          for (let i = 0; i < 20; i++) {
+            const r = await field().locator(".segs").first().evaluate((box) => box.isConnected ? [...box.querySelectorAll(".opt")].filter((b) => getComputedStyle(b).display !== "none").map((b) => [b.textContent, b.classList.contains("on")]) : null);
+            if (r) return r;
+          }
+          throw new Error("the Routing field kept being drawn again");
+        };
         const hint = () => field().locator(":scope > .hint").first().textContent();
         for (const p of [sub, relay]) {
           const where = `${width}px ${p.name}`;
@@ -103,7 +113,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".row.provider", { hasText: sub.name }).first().click();
       await page.locator(".editor .accts").first().waitFor();
       const field = page.locator(".editor label", { hasText: new RegExp(`^${L.routing}$`) }).locator("xpath=following-sibling::div[1]");
-      const names = await field.locator(".segs").first().evaluate((box) => [...box.querySelectorAll(".opt")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent));
+      // only a box still in the page: see shown above
+      let names = null;
+      for (let i = 0; i < 20 && !names; i++) names = await field.locator(".segs").first().evaluate((box) => box.isConnected ? [...box.querySelectorAll(".opt")].filter((b) => getComputedStyle(b).display !== "none").map((b) => b.textContent) : null);
       assert.ok(!names.includes("spread/fewest-tokens"), JSON.stringify(names));
       assert.ok(names.length >= 5, JSON.stringify(names));
     });
