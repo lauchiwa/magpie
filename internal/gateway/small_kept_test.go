@@ -63,14 +63,22 @@ func TestAutoVisionDoesNotBuildListsAgain(t *testing.T) {
 	if many > few+50 {
 		t.Fatalf("AutoVision made %.0f allocations with 400 models, %.0f with 4: the lists are built again", many, few)
 	}
-	// and the searcher's pick, built the same way
-	p, err := provider.Find("eyes")
-	if err != nil {
-		t.Fatal(err)
+	// and the searcher's pick, built the same way. Each call still stamps
+	// the files (an os.Stat is ~9 allocations on Windows) and asks each
+	// model's allowance, so it too is held to its own with 4 models
+	searcher := func(n int) float64 {
+		manyEyes(t, n, false)
+		p, err := provider.Find("eyes")
+		if err != nil {
+			t.Fatal(err)
+		}
+		searcherModel(*p)
+		return testing.AllocsPerRun(20, func() { searcherModel(*p) })
 	}
-	searcherModel(*p)
-	if a := testing.AllocsPerRun(20, func() { searcherModel(*p) }); a > 50 {
-		t.Fatalf("searcherModel made %.0f allocations with 400 models", a)
+	few, many = searcher(4), searcher(400)
+	t.Logf("allocations a searcherModel: %.0f with 4 models, %.0f with 400", few, many)
+	if many > few+50 {
+		t.Fatalf("searcherModel made %.0f allocations with 400 models, %.0f with 4: the lists are built again", many, few)
 	}
 }
 
