@@ -118,8 +118,11 @@ function broken(sel) {
 const pages = [
   { view: "providers", rows: ".row.provider", wait: "#view-providers .row.provider" },
   { view: "gateway", rows: ".row.gw, #gwModels .row.model, #activity .call, #gatewayKeys .acc[data-key]", wait: "#gatewayKeys .acc[data-key]" },
-  // the requests are today's in the history: open the day
-  { view: "routing", rows: ".rt-req", wait: ".rt-day >> nth=1", open: (page) => page.locator(".rt-day").nth(1).click(), then: ".rt-req .upstream" },
+  // the requests are today's in the history: open the day. A day is a pill
+  // in the day bar: By request and By session are .rt-day too, in sight
+  // before the first draw hides them (Live has no requests), and in WebKit
+  // the second .rt-day waited for was By session, then never in sight
+  { view: "routing", rows: ".rt-req", wait: ".rt-days .rt-day >> nth=1", open: (page) => page.locator(".rt-days .rt-day").nth(1).click(), then: ".rt-req .upstream" },
 ];
 const engines = process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"];
 const langs = process.env.LANGS ? process.env.LANGS.split(",") : ["en", "zh", "zh-TW", "ja", "de"];
@@ -135,7 +138,10 @@ for (const engine of engines) {
         const page = await context.newPage();
         page.setDefaultTimeout(6000);
         await page.route("**/*", serve(lang));
-        await page.goto("http://magpie.test/?view=" + p.view);
+        // the load has room of its own, not the 6s each step has: alone a
+        // page loads in ~1.5s in WebKit, with four WebKits at once in up to
+        // ~15s (app.js alone 3-5s)
+        await page.goto("http://magpie.test/?view=" + p.view, { timeout: 30000 });
         await page.waitForSelector(p.wait, { timeout: 15000 });
         if (p.open) { await p.open(page); await page.waitForSelector(p.then); }
         if (p.view === "gateway") await page.waitForSelector("#gwModels .row.model");
