@@ -163,7 +163,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // the end of Usage: what it declared it reads
         await page.evaluate(() => show("usage"));
         const spend = await frameReady(page, SPEND);
-        await spend.waitForFunction(() => document.querySelectorAll("#top li").length === 2);
+        // polled by the clock, not by frames: WebKit draws no frames in a
+        // frame out of sight, and a wait polled by them never looks again
+        const inFrame = { polling: 100 };
+        await spend.waitForFunction(() => document.querySelectorAll("#top li").length === 2, null, inFrame);
         assert.equal(await spend.locator("#top li").first().textContent(), "gpt-5: 9 calls", where);
         assert.ok(seen.reads.some((r) => r.spec === "/x/magpie-provider-notes" && r.read === "usage:summary"), where);
         assert.equal(await spend.evaluate(() => document.documentElement.lang), lang, `${where}: the window's language`);
@@ -179,8 +182,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.evaluate(() => openModal(renderEditor(providers.providers[0])));
         const notes = await frameReady(page, NOTES);
         assert.equal(await page.locator('#modal .plugin-slot[data-slot="provider"] iframe').getAttribute("sandbox"), "allow-scripts", where);
-        await notes.waitForFunction(() => window.magpie.context?.provider?.id === "openai");
+        await notes.waitForFunction(() => window.magpie.context?.provider?.id === "openai", null, inFrame);
         assert.equal(await notes.evaluate(() => magpie.context.provider.name), "OpenAI", where);
+        // the note listens only once its options are read, after the hello
+        // that tells it its provider: typed before, nothing was saved (WebKit
+        // on a busy machine). The editor's panel is below the window here
+        await notes.waitForFunction(() => typeof document.getElementById("note").oninput === "function", null, inFrame);
         await notes.locator("#note").fill("work account");
         await notes.locator("#saved").filter({ hasText: "Saved" }).waitFor();
         assert.deepEqual(seen.options.at(-1), { spec: "/x/magpie-provider-notes", options: { notes: { openai: "work account" } } }, `${where}: its own options`);
@@ -202,7 +209,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // drawn when the window opened, before the note was written
         await sets.locator("#count").filter({ hasText: /^\d+ notes?$/ }).waitFor();
         await page.waitForTimeout(1100); // options are set once a second at most
+        // the count may say 0 notes from before the note was written, so the
+        // clear is known done by its own answer, not by the count
+        const clearing = page.waitForResponse((r) => r.url().endsWith("/api/plugin-pages/options") && JSON.stringify(r.request().postDataJSON()?.options?.notes) === "{}");
         await sets.locator("#clear").click();
+        await clearing;
         await sets.locator("#count").filter({ hasText: "0 notes" }).waitFor();
         assert.deepEqual(seen.options.at(-1).options.notes, {}, `${where}: cleared`);
         assert.ok(await page.locator("#setPage-plugins").isVisible(), where);
