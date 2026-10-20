@@ -77,12 +77,18 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const side = await page.evaluate(() => document.body.classList.contains("side-nav"));
         const up = page.locator(".nav-s em.up");
         assert.equal(side, width >= 1024, "a sidebar at " + width);
+        // The page draws Plugins and the sidebar again as each of its reads
+        // comes back, four times after the click (within ~0.5s in Chromium,
+        // over up to 3s in WebKit). A locator finds its element, then reads
+        // it in a second step, and in between it can be the one just taken
+        // out: its colour read '' and its closest() null. So each check finds
+        // what is in the page now and reads it in one go.
         if (side) {
           await up.waitFor();
           assert.equal(await up.textContent(), w.one);
-          assert.match(await up.evaluate((e) => e.parentElement.textContent), new RegExp("^" + w.installed));
-          assert.equal(await up.evaluate((e) => getComputedStyle(e).color), await page.evaluate(() => { const p = document.createElement("i"); p.style.color = "var(--accent)"; document.body.append(p); const c = getComputedStyle(p).color; p.remove(); return c; }), "in the dot's colour");
-          const box = await up.evaluate((e) => { const r = e.getBoundingClientRect(), b = e.parentElement.getBoundingClientRect(); return r.right <= b.right + 0.5 && r.left >= b.left; });
+          assert.match(await page.evaluate(() => document.querySelector(".nav-s em.up").parentElement.textContent), new RegExp("^" + w.installed));
+          assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector(".nav-s em.up")).color), await page.evaluate(() => { const p = document.createElement("i"); p.style.color = "var(--accent)"; document.body.append(p); const c = getComputedStyle(p).color; p.remove(); return c; }), "in the dot's colour");
+          const box = await page.evaluate(() => { const e = document.querySelector(".nav-s em.up"), r = e.getBoundingClientRect(), b = e.parentElement.getBoundingClientRect(); return r.right <= b.right + 0.5 && r.left >= b.left; });
           assert.ok(box, "the label fits its row");
         }
         // the dot, followed, lands on Installed (the page was last on
@@ -92,8 +98,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await bar.waitFor();
         assert.equal(await bar.locator(".grow").textContent(), w.bar);
         assert.equal(await view.locator(".lib-tabs .opt.on").getAttribute("data-sub"), "installed");
-        assert.ok(await bar.evaluate((b) => b.getBoundingClientRect().right <= b.closest("#view-plugins").getBoundingClientRect().right + 0.5), "the bar fits");
-        assert.ok(await bar.evaluate((b) => b.compareDocumentPosition(b.parentElement.querySelector(".pm-list")) & Node.DOCUMENT_POSITION_FOLLOWING), "above the list");
+        assert.ok(await page.evaluate(() => { const v = document.querySelector("#view-plugins"); return v.querySelector(".pm-updates").getBoundingClientRect().right <= v.getBoundingClientRect().right + 0.5; }), "the bar fits");
+        assert.ok(await page.evaluate(() => { const b = document.querySelector("#view-plugins .pm-updates"); return b.compareDocumentPosition(b.parentElement.querySelector(".pm-list")) & Node.DOCUMENT_POSITION_FOLLOWING; }), "above the list");
         if (!w.update) { assert.deepEqual(errors, []); return; }
         const chip = view.locator(".pm-chip.soft", { hasText: w.auto });
         await chip.waitFor();
