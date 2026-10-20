@@ -90,22 +90,16 @@ func TestCodexListTagKeptWhileNothingChanged(t *testing.T) {
 	if CodexListTag() != want || CodexOwnListTag() != wantOwn {
 		t.Fatal("the tag isn't the one built afresh")
 	}
-	// a kept tag still stamps what it is built from, each call: on Windows
-	// os.Environ makes every string again (163 allocations here, against
-	// one copy on Linux), so the bound is the two stamps' own and a little,
-	// far under a catalog built again (thousands)
-	stamp, _ := measure(func() { codexListStampNow() })
-	most := 2*stamp + 50
 	n, by := measure(func() { CodexListTag(); CodexOwnListTag() })
-	t.Logf("CodexListTag and CodexOwnListTag: %.0f allocs, %.0f bytes a call (a stamp %.0f)", n, by, stamp)
-	if n > most {
+	t.Logf("CodexListTag and CodexOwnListTag: %.0f allocs, %.0f bytes a call", n, by)
+	if n > 200 {
 		t.Errorf("with nothing changed, the tags took %.0f allocations (%.0f bytes) a call: the catalog built again", n, by)
 	}
 	release := Hold()
 	n, by = measure(func() { CodexListTag(); CodexOwnListTag() })
 	release()
 	t.Logf("held: %.0f allocs, %.0f bytes a call", n, by)
-	if n > most {
+	if n > 200 {
 		t.Errorf("held, the tags took %.0f allocations (%.0f bytes) a call", n, by)
 	}
 	if CodexListTag() != want || CodexOwnListTag() != wantOwn {
