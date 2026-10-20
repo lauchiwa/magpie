@@ -207,7 +207,7 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 			vias := usage.Vias(since.Add(-time.Minute))
 			for _, s := range list {
 				s.Path = tilde(s.Path)
-				out.Sessions = append(out.Sessions, managedJSON{Managed: s, Via: vias[s.Agent+"|"+s.ID]})
+				out.Sessions = append(out.Sessions, managedJSON{Managed: s, Via: vias.Of(s.Agent + "|" + s.ID)})
 			}
 			sizes := sessions.GatewaySizes()
 			for _, g := range gateway {
@@ -218,7 +218,7 @@ func sessionManageRoutes(mux *http.ServeMux, w Windows) {
 				addCodexModelEffort(&s, modelEffort)
 				// its size is the conversation text magpie recorded of it
 				m := sessions.Managed{Session: s, Deletable: true, Size: sizes(s.Agent, s.ID)}
-				out.Sessions = append(out.Sessions, managedJSON{Managed: m, Via: vias[s.Agent+"|"+s.ID]})
+				out.Sessions = append(out.Sessions, managedJSON{Managed: m, Via: vias.Of(s.Agent + "|" + s.ID)})
 			}
 			sort.SliceStable(out.Sessions, func(i, j int) bool {
 				return out.Sessions[i].Last.After(out.Sessions[j].Last)

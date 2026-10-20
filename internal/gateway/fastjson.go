@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding"
 	"encoding/binary"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
+	"unsafe"
 )
 
 // decodeJSON is json.Unmarshal(data, dst), made for a request body: one
@@ -38,7 +40,16 @@ import (
 // of its own (a slice's old elements are decoded over, not replaced).
 func decodeJSON(data []byte, dst any) error {
 	v := reflect.ValueOf(dst)
-	if v.Kind() != reflect.Pointer || v.IsNil() || !v.Elem().IsZero() || !jsonValid(data) {
+	if v.Kind() != reflect.Pointer || v.IsNil() || !v.Elem().IsZero() {
+		return json.Unmarshal(data, dst)
+	}
+	var members []memberSpan
+	if len(data) >= validMemoMin {
+		var valid bool
+		if valid, members = longBody(data); !valid {
+			return json.Unmarshal(data, dst)
+		}
+	} else if !jsonCheck(data) {
 		return json.Unmarshal(data, dst)
 	}
 	start := skipJSONSpace(data, 0)
@@ -49,11 +60,91 @@ func decodeJSON(data []byte, dst any) error {
 		// of the value's opening and its close.
 		return json.Unmarshal(append(data[:start+1:start+1], close), dst)
 	}
-	if err := fillJSON(trimJSON(data), v.Elem()); err != nil {
+	if err := fillJSONIn(trimJSON(data), v.Elem(), members); err != nil {
 		v.Elem().SetZero()
 		return json.Unmarshal(data, dst)
 	}
 	return nil
+}
+
+// heldBodies are the request bodies being served (holdBody). A raw value
+// decodeJSON finds inside one of them is that body's own bytes, not a
+// copy. Each reader of a request decodes its messages into raw values —
+// the images, the conversation's id, the prompt, the edits, the chat
+// parse — and each copied every message: a 1.5 MB body allocated ~60 MB
+// on its way through a group, and three agents sending such bodies at once
+// held the heap at ~310 MB (yg6888 on X: ~1 GB). A copy is still made of
+// anything else decoded — a buffer a stream fills again, a scanner's line,
+// a body built and changed in place — since a raw value of it could be
+// written over under its holder.
+var heldBodies struct {
+	sync.Mutex
+	list atomic.Pointer[[][]byte]
+}
+
+// heldBodiesMost bounds heldBodies: a body past it is decoded with copies, as
+// before, rather than the list growing with requests whose context never
+// ends (a test's, a caller's own).
+const heldBodiesMost = 64
+
+// heldShareMost bounds how much bigger than a shared value the body it
+// keeps alive may be (inHeldBody).
+const heldShareMost = 16
+
+// holdBody shares body's bytes with what decodeJSON reads from it until
+// ctx is done. body must be the request's as read, which nothing writes
+// to: a request body is read whole once (readRequestBody) and only read
+// after. The list keeps body itself, not its address, so its memory can't
+// be handed to another allocation while it is listed.
+func holdBody(ctx context.Context, body []byte) {
+	if len(body) < validMemoMin || ctx.Done() == nil {
+		return // a short body's copies cost little; one never released would stay listed
+	}
+	heldBodies.Lock()
+	old := heldBodies.list.Load()
+	var cur [][]byte
+	if old != nil {
+		cur = *old
+	}
+	if len(cur) >= heldBodiesMost {
+		heldBodies.Unlock()
+		return
+	}
+	next := append(slices.Clip(cur), body)
+	heldBodies.list.Store(&next)
+	heldBodies.Unlock()
+	context.AfterFunc(ctx, func() {
+		heldBodies.Lock()
+		defer heldBodies.Unlock()
+		cur := *heldBodies.list.Load()
+		i := slices.IndexFunc(cur, func(b []byte) bool { return unsafe.SliceData(b) == unsafe.SliceData(body) })
+		if i < 0 {
+			return
+		}
+		next := slices.Delete(slices.Clone(cur), i, i+1)
+		heldBodies.list.Store(&next)
+	})
+}
+
+// inHeldBody says whether raw lies within a body holdBody holds and is
+// at least 1/heldShareMost of it. A value kept past its request — a
+// cache's entry, a remembered signature — keeps the whole body it shares
+// alive, so a small one is still copied: a kept value holds at most
+// heldShareMost times its own size. The values worth sharing are the big
+// ones, the messages and the long turns, which each reader copied whole.
+func inHeldBody(raw []byte) bool {
+	l := heldBodies.list.Load()
+	if l == nil || len(raw) == 0 {
+		return false
+	}
+	p := uintptr(unsafe.Pointer(unsafe.SliceData(raw)))
+	for _, b := range *l {
+		s := uintptr(unsafe.Pointer(unsafe.SliceData(b)))
+		if p >= s && p+uintptr(len(raw)) <= s+uintptr(len(b)) {
+			return len(raw)*heldShareMost >= len(b)
+		}
+	}
+	return false
 }
 
 // misfit is the closing bracket of the array or object that open starts
@@ -170,10 +261,20 @@ func (f *fastFields) field(key []byte) int {
 
 // fillJSON decodes raw, a whole valid JSON value, into v; errSlowJSON or
 // another error leaves it to encoding/json.
-func fillJSON(raw []byte, v reflect.Value) error {
+func fillJSON(raw []byte, v reflect.Value) error { return fillJSONIn(raw, v, nil) }
+
+// fillJSONIn is fillJSON with where raw's members are, when known
+// (longBody): a struct or map at raw's top is filled from them.
+func fillJSONIn(raw []byte, v reflect.Value, members []memberSpan) error {
 	t := v.Type()
 	if t == rawMessageType {
-		v.SetBytes(bytes.Clone(raw)) // a copy, as encoding/json makes
+		if inHeldBody(raw) {
+			// the request's own body, which nothing writes to: shared,
+			// and capped so an append to it can't write over the body
+			v.SetBytes(raw[:len(raw):len(raw)])
+		} else {
+			v.SetBytes(bytes.Clone(raw)) // a copy, as encoding/json makes
+		}
 		return nil
 	}
 	if t.Kind() != reflect.Pointer && (t.Implements(jsonUnmarshalerType) || t.Implements(textUnmarshalerType) ||
@@ -193,7 +294,7 @@ func fillJSON(raw []byte, v reflect.Value) error {
 		if v.IsNil() {
 			v.Set(reflect.New(t.Elem()))
 		}
-		return fillJSON(raw, v.Elem())
+		return fillJSONIn(raw, v.Elem(), members)
 	case reflect.String:
 		if null {
 			return nil
@@ -231,7 +332,7 @@ func fillJSON(raw []byte, v reflect.Value) error {
 		}
 		var seen []bool
 		var err error
-		eachMember(raw, func(key, val []byte) bool {
+		eachMemberIn(raw, members, func(key, val []byte) bool {
 			name, ok := unquoteJSON(key)
 			if !ok {
 				err = errSlowJSON
@@ -292,7 +393,7 @@ func fillJSON(raw []byte, v reflect.Value) error {
 			v.Set(reflect.MakeMap(t))
 		}
 		var err error
-		eachMember(raw, func(key, val []byte) bool {
+		eachMemberIn(raw, members, func(key, val []byte) bool {
 			name, ok := unquoteJSON(key)
 			if !ok {
 				err = errSlowJSON
@@ -353,6 +454,29 @@ func trimJSON(data []byte) []byte {
 // eachMember calls f with each member of obj, a valid JSON object, its key
 // still quoted, until f returns false.
 func eachMember(obj []byte, f func(key, val []byte) bool) {
+	eachMemberAt(obj, func(k0, k1, v0, v1 int) bool { return f(obj[k0:k1], obj[v0:v1:v1]) })
+}
+
+// eachMemberIn is eachMember, from where its members are when known
+// (longBody), else by splitting obj.
+func eachMemberIn(obj []byte, members []memberSpan, f func(key, val []byte) bool) {
+	if members == nil {
+		if h := topSplit.Load(); h != nil && len(obj) >= validMemoMin {
+			(*h)(obj)
+		}
+		eachMember(obj, f)
+		return
+	}
+	for _, m := range members {
+		if !f(obj[m.k0:m.k1], obj[m.v0:m.v1:m.v1]) {
+			return
+		}
+	}
+}
+
+// eachMemberAt is eachMember by offsets: the key at [k0, k1), the value
+// at [v0, v1).
+func eachMemberAt(obj []byte, f func(k0, k1, v0, v1 int) bool) {
 	i := skipJSONSpace(obj, 1)
 	if obj[i] == '}' {
 		return
@@ -360,12 +484,12 @@ func eachMember(obj []byte, f func(key, val []byte) bool) {
 	for {
 		k := i
 		i = skipJSONString(obj, i)
-		key := obj[k:i]
+		k1 := i
 		i = skipJSONSpace(obj, i)
 		i = skipJSONSpace(obj, i+1) // ':'
 		s := i
 		i = skipJSONValue(obj, i)
-		if !f(key, obj[s:i:i]) {
+		if !f(k, k1, s, i) {
 			return
 		}
 		i = skipJSONSpace(obj, i)
@@ -395,6 +519,23 @@ func eachElement(arr []byte, f func(el []byte) bool) {
 		}
 		i = skipJSONSpace(arr, i+1)
 	}
+}
+
+// elementsOf is the elements of raw, a valid JSON value, when it is an array
+// (nil otherwise), each a capped slice of raw so an append never writes
+// into it. A reader that only looks at a list's items takes them this way
+// rather than decoding a []json.RawMessage, which copies each one that
+// doesn't share a held body.
+func elementsOf(raw []byte) []json.RawMessage {
+	if len(raw) == 0 || raw[0] != '[' {
+		return nil
+	}
+	var out []json.RawMessage
+	eachElement(raw, func(el []byte) bool {
+		out = append(out, el)
+		return true
+	})
+	return out
 }
 
 // skipJSONString is the end of the valid JSON string at i.
@@ -575,13 +716,74 @@ const validMemoMin = 32 << 10
 // seed of this process's own.
 var validMemo struct {
 	sync.Mutex
-	sums [8]validSum
+	sums [8]validEntry
 	next int
 }
 
 type validSum struct {
 	n   int
 	sum uint64
+}
+
+// validEntry is a body remembered valid, and where its top level's
+// members are, once a decode has split it (nil before, and for a body not
+// an object).
+type validEntry struct {
+	validSum
+	members []memberSpan
+}
+
+// memberSpan is a member of a body's top-level object: its key, quoted,
+// at [k0, k1) and its value at [v0, v1), of the body trimmed (trimJSON).
+type memberSpan struct{ k0, k1, v0, v1 int }
+
+// topSplit, when set (tests), is told of each object of validMemoMin or
+// more that decodeJSON splits at its members.
+var topSplit atomic.Pointer[func(data []byte)]
+
+// longBody is what decodeJSON knows of a body of validMemoMin or more:
+// valid or not, and where its top level's members are. The members are
+// remembered with the body, as its validity is: a request's body was split
+// at its top level again by each of the dozen decodes it went through,
+// each a walk over every byte of the conversation.
+func longBody(data []byte) (valid bool, members []memberSpan) {
+	s := validSum{len(data), maphash.Bytes(validSeed, data)}
+	validMemo.Lock()
+	i := slices.IndexFunc(validMemo.sums[:], func(e validEntry) bool { return e.validSum == s })
+	if i >= 0 && validMemo.sums[i].members != nil {
+		members = validMemo.sums[i].members
+		validMemo.Unlock()
+		return true, members
+	}
+	validMemo.Unlock()
+	if i < 0 {
+		if f := validScanned.Load(); f != nil {
+			(*f)(data)
+		}
+		if !jsonCheck(data) {
+			return false, nil
+		}
+	}
+	raw := trimJSON(data)
+	if raw[0] == '{' {
+		if f := topSplit.Load(); f != nil {
+			(*f)(data)
+		}
+		members = []memberSpan{}
+		eachMemberAt(raw, func(k0, k1, v0, v1 int) bool {
+			members = append(members, memberSpan{k0, k1, v0, v1})
+			return true
+		})
+	}
+	validMemo.Lock()
+	if i = slices.IndexFunc(validMemo.sums[:], func(e validEntry) bool { return e.validSum == s }); i >= 0 {
+		validMemo.sums[i].members = members
+	} else {
+		validMemo.sums[validMemo.next] = validEntry{s, members}
+		validMemo.next = (validMemo.next + 1) % len(validMemo.sums)
+	}
+	validMemo.Unlock()
+	return true, members
 }
 
 var validSeed = maphash.MakeSeed()
@@ -599,7 +801,7 @@ func jsonValid(data []byte) bool {
 	}
 	s := validSum{len(data), maphash.Bytes(validSeed, data)}
 	validMemo.Lock()
-	known := slices.Contains(validMemo.sums[:], s)
+	known := slices.ContainsFunc(validMemo.sums[:], func(e validEntry) bool { return e.validSum == s })
 	validMemo.Unlock()
 	if known {
 		return true
@@ -611,7 +813,7 @@ func jsonValid(data []byte) bool {
 		return false
 	}
 	validMemo.Lock()
-	validMemo.sums[validMemo.next] = s
+	validMemo.sums[validMemo.next] = validEntry{validSum: s}
 	validMemo.next = (validMemo.next + 1) % len(validMemo.sums)
 	validMemo.Unlock()
 	return true

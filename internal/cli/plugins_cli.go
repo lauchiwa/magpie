@@ -480,7 +480,9 @@ func pluginLogin(ctx context.Context, name, method string) error {
 		if a.URL != "" {
 			fmt.Println("Sign in in your browser. If it didn't open, go to:")
 			fmt.Println(faint.Render(a.URL))
-			openInBrowser(a.URL)
+			if !a.Opened {
+				openInBrowser(a.URL)
+			}
 		}
 		if a.Instructions != "" {
 			fmt.Println(a.Instructions)

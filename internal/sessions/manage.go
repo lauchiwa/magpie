@@ -73,11 +73,11 @@ var ErrActive = errors.New("the session was written to in the last minute; it ma
 
 // Agents are the agents with sessions on this computer, by how many.
 func Agents() []AgentCount {
-	dbReadMu.Lock()
-	defer dbReadMu.Unlock()
+	storeMu.RLock()
+	defer storeMu.RUnlock()
 	mu.Lock()
 	defer mu.Unlock()
-	defer closeDBs()
+	defer useDBs()()
 	return agentCounts(allFiles())
 }
 
@@ -105,12 +105,12 @@ func agentCounts(all []file) []AgentCount {
 // ListAgent is every session of one agent, the most recently active first,
 // with no limit; one nothing was said in is listed too, to be cleared away.
 func ListAgent(agent string) []Managed {
-	dbReadMu.Lock()
-	defer dbReadMu.Unlock()
+	storeMu.RLock()
+	defer storeMu.RUnlock()
 	mu.Lock()
 	defer mu.Unlock()
 	loadCache()
-	defer closeDBs()
+	defer useDBs()()
 	return listAgent(agent, allFiles())
 }
 
@@ -120,12 +120,12 @@ func ListAgent(agent string) []Managed {
 // agents' files are looked at, and of those only the ones whose session id
 // is inside the file are read when they changed.
 func NativeIDs(agents map[string]bool) map[string]map[string]bool {
-	dbReadMu.Lock()
-	defer dbReadMu.Unlock()
+	storeMu.RLock()
+	defer storeMu.RUnlock()
 	mu.Lock()
 	defer mu.Unlock()
 	loadCache()
-	defer closeDBs()
+	defer useDBs()()
 	return nativeIDs(agents, allFiles())
 }
 
@@ -146,12 +146,12 @@ type ManageView struct {
 // Only native's agents and the one picked are read: a change to another
 // agent's sessions waits for a page that shows it (#2776).
 func Manage(native map[string]bool, pick func([]AgentCount, map[string]map[string]bool) string) ManageView {
-	dbReadMu.Lock()
-	defer dbReadMu.Unlock()
+	storeMu.RLock()
+	defer storeMu.RUnlock()
 	mu.Lock()
 	defer mu.Unlock()
 	loadCache()
-	defer closeDBs()
+	defer useDBs()()
 	all := allFiles()
 	v := ManageView{Agents: agentCounts(all), Native: nativeIDs(native, all)}
 	v.Agent = pick(v.Agents, v.Native)
@@ -298,12 +298,12 @@ func Delete(agent, id string) (Trashed, error) {
 	if !safeID.MatchString(id) {
 		return Trashed{}, errors.New("no such session")
 	}
-	dbReadMu.Lock()
-	defer dbReadMu.Unlock()
+	storeMu.Lock()
+	defer storeMu.Unlock()
 	mu.Lock()
 	defer mu.Unlock()
 	loadCache()
-	defer closeDBs()
+	defer useDBs()()
 	all := allFiles()
 	groups := map[string][]file{}
 	var mine []file

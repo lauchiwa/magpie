@@ -87,8 +87,12 @@ type Settings struct {
 	// RedactKinds turns the other kinds of personal data on or off one by
 	// one, by redact.Categories' ids (ssn, ip, home…), under
 	// RedactPersonal: only the user's choices, a kind not in it is as its
-	// category's On says.
+	// category's On says. RedactModel has a local model (internal/pii) find
+	// what the rules can't as well, a name or an address in free text,
+	// under Redact and RedactPersonal; it is this computer's own, as the
+	// model is downloaded on it.
 	Redact         bool            `json:"redact,omitempty"`
+	RedactModel    bool            `json:"redactModel,omitempty"`
 	RedactPersonal bool            `json:"redactPersonal,omitempty"`
 	RedactKinds    map[string]bool `json:"redactKinds,omitempty"`
 	RedactWords    []string        `json:"redactWords,omitempty"`
@@ -303,6 +307,11 @@ type Settings struct {
 	// "off" turns the video a request that names no model gets off too
 	// (gateway.videomaker).
 	ImageGen string `json:"imageGen,omitempty"`
+	// ImageTimeout is how long, in minutes, a vendor is given to draw an
+	// image and send it (neighbads on X: a slow image endpoint needs more
+	// than 5): from 1 to ImageTimeoutMost, 0 for ImageTimeoutDefault.
+	// ImageWait reads it.
+	ImageTimeout int `json:"imageTimeout,omitempty"`
 	// Searcher is the provider that searches the web for a model that
 	// can't: "<provider>" with the small model magpie picks of it,
 	// "<provider>/<model>", or empty for the one magpie picks
@@ -818,6 +827,25 @@ func Arrange[T any](s Settings, items []T, id func(T) string) (shown, hidden []T
 	return shown, hidden
 }
 
+// ImageTimeoutDefault is the minutes an image is given to be drawn when
+// ImageTimeout is 0, and ImageTimeoutMost the most it can be set to.
+const (
+	ImageTimeoutDefault = 5
+	ImageTimeoutMost    = 60
+)
+
+// ImageWait is how long a vendor is given to draw an image and send it:
+// ImageTimeout's minutes, ImageTimeoutDefault's when it is 0 (or below),
+// and no more than ImageTimeoutMost's when settings.json was written by
+// hand past it.
+func (s Settings) ImageWait() time.Duration {
+	m := s.ImageTimeout
+	if m < 1 {
+		m = ImageTimeoutDefault
+	}
+	return time.Duration(min(m, ImageTimeoutMost)) * time.Minute
+}
+
 // Themes and Langs are the accepted values, in the order the UI offers them.
 var (
 	Themes     = []string{"system", "light", "dark"}
@@ -955,7 +983,8 @@ func (s Settings) Compact() int {
 // is shared on the local network and the addresses let in to it, the
 // Dock, gateway mode, whether WSL is looked in, whether agents' sign-ins
 // are read, when allowances are read, the terminal app a session resumes
-// in, and what the menu bar or tray shows beside magpie's icon (yoooo on
+// in, whether the local masking model is on (it is downloaded on this
+// computer alone), and what the menu bar or tray shows beside magpie's icon (yoooo on
 // Discord: usage turned off on a Mac came back from a Windows box that
 // shows it; Lullaby: sharing turned on at home came on at work).
 func (s *Settings) KeepOwn(cur Settings) {
@@ -971,6 +1000,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.LAN, s.AllowIPs = cur.LAN, cur.AllowIPs
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
+	s.RedactModel = cur.RedactModel
 }
 
 // RenamePerModel moves what the user said of a provider's models to the id
@@ -1174,6 +1204,16 @@ func SetGatewayConversations(on bool) error {
 	return save(s, true)
 }
 
+// SetRedactModel turns the local masking model on or off, on its own, as
+// Settings → Privacy does once the model is downloaded.
+func SetRedactModel(on bool) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	s := load()
+	s.RedactModel = on
+	return save(s, false)
+}
+
 // save is called under fileMu. Only the consent setter may replace recording.
 func save(s Settings, recording bool) error {
 	defer filememo.Forget() // read again, where a request holds it
@@ -1224,6 +1264,9 @@ func save(s Settings, recording bool) error {
 		if u, err := url.Parse(m); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			return fmt.Errorf("an update mirror is an http(s) address put before the github.com URL, like https://mirror.example/, not %q", m)
 		}
+	}
+	if s.ImageTimeout < 0 || s.ImageTimeout > ImageTimeoutMost {
+		return fmt.Errorf("image generation is given from 1 to %d minutes, or 0 for %d, not %d", ImageTimeoutMost, ImageTimeoutDefault, s.ImageTimeout)
 	}
 	if s.UsageAlert < 0 || s.UsageAlert > 100 {
 		return fmt.Errorf("a usage alert is at a percentage from 1 to 100, or 0 for off, not %d", s.UsageAlert)

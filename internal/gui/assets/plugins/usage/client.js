@@ -137,5 +137,8 @@ magpie.plugin("usage", (ctx) => {
     reload() { return refreshUsage(true); },
     costs() { renderCosts(); },
     tab() { return usageTab; },
+    // the reader goes to another page: the Requests give back what a
+    // click lent them (ledLeave)
+    leave() { if (usageTab === "requests") ledLeave(); },
   });
 });
