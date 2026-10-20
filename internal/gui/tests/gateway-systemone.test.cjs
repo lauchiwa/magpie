@@ -60,6 +60,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const w = words[lang];
         const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
         const context = await browser.newContext({ viewport: { width: 900, height: 1000 }, reducedMotion: "reduce", colorScheme: theme });
+        // the snippets follow the machine's shell (PowerShell on Windows);
+        // these are curl's, so the page is on macOS · Linux wherever it runs
+        await context.addInitScript(() => Object.defineProperty(Navigator.prototype, "platform", { get: () => "Linux x86_64" }));
         const page = await context.newPage();
         page.setDefaultTimeout(5000);
         const errors = [];
