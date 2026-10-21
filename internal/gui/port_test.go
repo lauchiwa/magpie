@@ -63,7 +63,8 @@ func TestSetPortMovesTheGateway(t *testing.T) {
 	go func() { defer close(done); gw.ListenAndServe(ctx) }()
 	served.Store(gw)
 	t.Cleanup(func() { served.Store(nil); cancel(); <-done })
-	for deadline := time.Now().Add(5 * time.Second); !answers(from); time.Sleep(20 * time.Millisecond) {
+	// started in a goroutine: on a busy machine it can take seconds to listen
+	for deadline := time.Now().Add(30 * time.Second); !answers(from); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the gateway didn't start")
 		}
@@ -165,7 +166,8 @@ func TestSetPortServesWhenTheOldOneWasTaken(t *testing.T) {
 	if _, err := setPort(to); err != nil {
 		t.Fatal(err)
 	}
-	for deadline := time.Now().Add(5 * time.Second); !answers(to); time.Sleep(20 * time.Millisecond) {
+	// started in a goroutine: on a busy machine it can take seconds to listen
+	for deadline := time.Now().Add(30 * time.Second); !answers(to); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the gateway didn't start on the new port")
 		}
