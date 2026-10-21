@@ -7,6 +7,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 import { nextTag, parseBase, parseForkTag, rcNumbersFor } from "./release-version.mjs";
 
 test("the first release of an upstream version is rc.0", () => {
@@ -75,3 +78,20 @@ test("check accepts a tag this fork made and reads its parts", () => {
 // The order these tags must sort in is checked against the updater's own
 // comparison in internal/update (TestForkReleaseTagsIncrease), which is the
 // code that actually picks a version.
+
+test("run as a script it prints the tag, whatever form its path takes", () => {
+  // On Windows an absolute path is "D:\…", which an entry check built on
+  // new URL(argv[1], "file:") reads as a URL and skips main, printing nothing.
+  const script = fileURLToPath(new URL("./release-version.mjs", import.meta.url));
+  const root = dirname(dirname(script));
+  const env = { ...process.env };
+  delete env.GITHUB_OUTPUT;
+  for (const path of [script, "scripts/release-version.mjs", "./scripts/release-version.mjs"]) {
+    const out = execFileSync(process.execPath, [path, "check", "v0.1.1182-rc.3"], {
+      cwd: root,
+      env,
+      encoding: "utf8",
+    });
+    assert.equal(out, "v0.1.1182-rc.3\n", path);
+  }
+});
