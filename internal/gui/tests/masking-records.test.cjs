@@ -118,6 +118,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const card = page.locator("#maskObs");
         await card.locator(".mo-num").waitFor();
         assert.equal(await card.locator(".mo-num").textContent(), "42");
+        // the line is drawn at the card's width, by its ResizeObserver: after
+        // the number, a frame later on a busy machine
+        await card.locator(".mo-svg path.mo-line").first().waitFor({ state: "attached" });
         assert.equal(await card.locator(".mo-svg path.mo-line").count(), 1, "the days' line");
         assert.equal(await card.locator(".mo-bar .mo-seg").count(), 3);
         assert.equal(await card.locator(".mo-legend .mo-chip:enabled").count(), 3);
