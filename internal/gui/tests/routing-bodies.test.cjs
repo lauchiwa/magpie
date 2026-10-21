@@ -120,8 +120,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       };
       const pick = (i) => tap(page.locator(".rt-req").nth(i));
       await page.goto("http://magpie.test/?view=routing");
-      await page.locator(".rt-day").nth(1).waitFor({ state: "visible", timeout: 15000 });
-      await page.locator(".rt-day").nth(1).click();
+      // a day in the day bar: By request and By session are .rt-day too,
+      // in sight until the first draw hides them, and the second .rt-day
+      // was By session in WebKit, then never in sight
+      await page.locator(".rt-days .rt-day").nth(1).waitFor({ state: "visible", timeout: 15000 });
+      await page.locator(".rt-days .rt-day").nth(1).click();
       await page.locator(".rt-req").nth(routes.length - 1).waitFor();
 
       // in the recent calls: both bodies, read only when asked
