@@ -162,6 +162,13 @@ func (s *Server) codexBackend(w http.ResponseWriter, r *http.Request) {
 		// the ChatGPT backend checks every item id as OpenAI does
 		body = plainItemIDs(boundCallIDs(callItemIDs(body)))
 		if rest == "/responses/compact" {
+			// Codex compacts a thread before its first turn back on one of
+			// its own models; the thread's reasoning from another vendor
+			// goes, as it does from a turn: with its text in it, the
+			// backend refuses the whole compaction over "input[n].content:
+			// array too long", and Codex shows it as the turn's error
+			// (jue on Discord). A summary magpie made goes as its text.
+			body, _ = codexInput(body, false)
 			// a key held to some accounts (#905) may not spend the sign-in
 			// compaction still relays on: refused as its turns are (#967),
 			// with nothing asked of OpenAI — and refused when the sign-in
@@ -840,10 +847,11 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	start := time.Now()
 	usage.Saw(agentOf(r))
 	w0, body0 := w, body // as they came, for the fallbacks (codexFallBack)
+	var maskedHits maskHits
 	if r.Method == http.MethodPost {
 		var unmask func()
 		var err error
-		w, body, unmask, err = redacted(w, body)
+		w, body, unmask, maskedHits, err = redactedHits(w, body)
 		defer unmask()
 		if err != nil {
 			writeError(w, provider.Responses, http.StatusServiceUnavailable, err.Error())
@@ -888,6 +896,10 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	effort := "" // the reasoning Codex asked for, which goes on as it is
 	end := func(status int, msg string, tokens, out int) {}
 	var tools *toolScan // whether the reply calls a tool, for a turn's end
+	if rest != "/responses" {
+		// no route of its own (a compaction, a memory): recorded alone
+		noteMasked(r, "chat", maskedHits, string(body), 0, "openai", modelOf(body))
+	}
 	if rest == "/responses" {
 		imageProvider := ""
 		if !apiKey(r.Header) {
@@ -906,6 +918,9 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 		tools = scan
 		tr = s.trace.beginFor(r, Route{turn: turn, dirOf: dirOf(provider.Responses, body), tools: tools, imageTurn: drawingTurnID(metadata.Turn), imageCaller: codexTurnKey(r, callerOf(r).agent), imageProvider: imageProvider, TitleLink: link, Time: start, Agent: agentOf(r), Session: sessionOf(r.Header), Conv: convOf(r.Header, body), ParentSession: titleParentSession(r.Header, metadata, kind), Kind: kind, Model: model, Effort: effort, Tier: bodyTier(provider.Responses, body), Provider: "openai", Subagent: subagentPickOf(r),
 			Order: []Weighed{seat}, Tries: []Try{{ID: seat.ID, Model: model, Effort: effort, Start: start}}})
+		if m := noteMasked(r, "chat", maskedHits, string(body), tr.ID, "openai", model); m != nil {
+			s.trace.update(tr, func(t *Route) { t.Masked = m })
+		}
 		promptRead := s.inspectPrompt(tr, provider.Responses, body, body)
 		end = func(status int, msg string, tokens, out int) {
 			ms := time.Since(start).Milliseconds()
@@ -1287,6 +1302,7 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	}
 	end(call.Status, call.Error, uu.Input+uu.Output+uu.CacheRead+uu.CacheWrite, uu.Output)
 	call.Route = tr.ID
+	call.Masked = s.trace.maskedOf(tr)
 	s.record(call)
 	servedProvider, servedAccount := codexServed(base, r.Header, on)
 	rec := usage.Record{RouteID: tr.ID, Time: start, Agent: call.Agent,
