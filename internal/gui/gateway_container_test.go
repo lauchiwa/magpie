@@ -113,7 +113,9 @@ func TestGatewayHeldByAContainer(t *testing.T) {
 	if err != nil || res.Port != to {
 		t.Fatalf("the port couldn't be moved past the container: %+v %v", res, err)
 	}
-	for deadline := time.Now().Add(5 * time.Second); !answers(to); time.Sleep(20 * time.Millisecond) {
+	// the gateway is started in a goroutine (serveGatewayLocked), so on a
+	// busy machine it can take seconds to listen: wait well past that
+	for deadline := time.Now().Add(30 * time.Second); !answers(to); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the gateway didn't start on the new port")
 		}
