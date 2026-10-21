@@ -72,6 +72,36 @@ only, and `release-version.mjs check` refuses anything that is not
 `workflow_dispatch` builds an existing tag again, with a *Publish* switch for
 a dry run that builds without releasing.
 
+### The notes
+
+`scripts/release-notes.mjs render <tag> <owner/name>` writes the notes. They
+list this fork's own commits since the previous release, and link upstream's
+compare page for the upstream part instead of listing it. A commit is the
+fork's when upstream's `vX.Y.Z` (the tag's base) can't reach it. That is
+decided by ancestry only, never by author or message, so a fork PR's merge
+and a sync's merge are listed with the commits they brought. For
+`v0.1.1305-rc.0` that is 76 commits; `git log PREV..TAG --no-merges`, which
+the workflow used before, listed 862.
+
+The previous release is the highest `vX.Y.Z-rc.N` below the tag, compared as
+numbers, among the tags the tag's commit contains. A tag on a branch that was
+never merged is not a candidate. The upstream span the notes name is the
+previous tag's base as labelled, so a mis-tagged release (below) is named by
+its label and not checked.
+
+The publish job fetches upstream's base tag read-only, without this
+repository's token, into `refs/magpie-notes/upstream/vX.Y.Z`. This
+repository's tags and checkout are left as they are. Without that ref, or
+when the tag doesn't contain it, the script fails and nothing is published.
+`v0.1.1185-rc.0` is such a tag: it was published before this script, and its
+notes are not written again.
+
+To preview the notes locally, pass a ref that holds upstream's tag:
+
+```sh
+node scripts/release-notes.mjs render v0.1.1307-rc.0 lauchiwa/magpie v0.1.1307
+```
+
 ## A mis-tagged release
 
 A tag with the wrong base does not need deleting. A correctly based tag
@@ -163,6 +193,9 @@ Windows wouldn't start, `magpie update` from a build from source or from an
 app it can't replace) names this fork's Releases page (`update.Downloads`),
 not `usemagpie.ai`: a build from there is upstream's, which replaces this
 fork's and then updates from upstream.
+
+A release's notes link upstream's release and compare pages for the upstream
+version it was synced from: that part of the build is upstream's.
 
 The container hint still names `ghcr.io/yetone/magpie:latest`, upstream's
 image. This fork's Docker workflow publishes `ghcr.io/lauchiwa/magpie`, but
