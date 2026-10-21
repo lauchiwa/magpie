@@ -285,37 +285,28 @@ jobs:
           sha256sum * > SHA256SUMS
           ls -la
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       # The notes are this fork's own commits since its previous release,
       # which says what this build changed rather than repeating upstream's
-      # whole history.
+      # whole history. A commit is the fork's when upstream's tag for this
+      # base can't reach it, so that tag is fetched first: read-only, from the
+      # public upstream repository with no token, into a ref of its own, so
+      # this repository's tags and checkout stay as they are. Without it, or
+      # when the tag doesn't contain it, release-notes.mjs fails and nothing
+      # is published.
+      - name: Fetch upstream's base
+        run: |
+          BASE="${VERSION%%-*}"
+          git -c http.https://github.com/.extraheader= fetch --no-tags \
+            https://github.com/yetone/magpie.git \
+            "+refs/tags/v$BASE:refs/magpie-notes/upstream/v$BASE"
+
       - name: Write the notes
         run: |
-          PREV=$(git tag --list 'v*-rc.*' --sort=-v:refname | grep -A1 -x -F "$TAG" | tail -1)
-          BASE="${VERSION%%-*}"
-          {
-            printf '### Changes\n\n'
-            if [ -n "$PREV" ] && [ "$PREV" != "$TAG" ]; then
-              printf 'Since %s:\n\n' "$PREV"
-              git log "$PREV..$TAG" --pretty=format:'- %s' --no-merges
-              printf '\n'
-            else
-              printf -- '- The first release of this fork on upstream %s.\n' "$BASE"
-            fi
-            printf '\n### This build\n\n'
-            printf -- '- A build of this fork, synced from upstream magpie **%s**.\n' "$BASE"
-            printf -- '- Marked as a pre-release: every version this fork publishes carries `-rc.N`.\n'
-            printf -- '- Built from `%s` at `%s`.\n' "$GITHUB_REPOSITORY" "$TAG"
-            printf '\n### Install\n\n'
-            printf -- '- **macOS (Apple Silicon):** `magpie-darwin-arm64.dmg`\n'
-            printf -- '- **macOS (Intel):** `magpie-darwin-amd64.dmg`\n'
-            printf -- '- **Windows:** `magpie-windows-amd64.exe` (ARM: `magpie-windows-arm64.exe`)\n'
-            printf -- '- **Linux:** `magpie-linux-amd64` / `magpie-linux-arm64` (needs GTK 3 and WebKitGTK 4.1)\n'
-            printf -- '- **Terminal only:** `magpie-cli-<os>-<arch>`\n'
-            printf '\n### Unsigned builds\n\n'
-            printf 'These builds are not signed with a paid Apple or Windows certificate, so each system asks before running one the first time.\n\n'
-            printf -- '- **macOS:** the app is ad-hoc signed and not notarised. Open it once with right-click (or Control-click) → **Open**, or run `xattr -dr com.apple.quarantine /Applications/magpie.app`. Later updates install without asking again.\n'
-            printf -- '- **Windows:** SmartScreen shows "unrecognised app": **More info** → **Run anyway**.\n'
-          } > $RUNNER_TEMP/notes.md
+          node scripts/release-notes.mjs render "$TAG" "$GITHUB_REPOSITORY" > $RUNNER_TEMP/notes.md
           cat $RUNNER_TEMP/notes.md
 
       # Uploaded to this repository, never to the upstream one, and always as
