@@ -2,9 +2,41 @@ package testenv
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+// A stand-in is the program a lookup finds, before an installed one of the
+// same name further down PATH, on Windows too, where a file with no
+// extension isn't a program: the gateway's tests make theirs with
+// StandIns, and read the user's own Codex's version through it (#1827).
+func TestStandInsComeBeforeTheInstalled(t *testing.T) {
+	stand, installed := t.TempDir(), t.TempDir()
+	if err := StandIns(stand, []string{"codex"}); err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(installed, "codex")
+	body := "#!/bin/sh\necho codex-cli 0.162.0\n"
+	if runtime.GOOS == "windows" {
+		real, body = real+".cmd", "@echo codex-cli 0.162.0\r\n"
+	}
+	if err := os.WriteFile(real, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stand+string(os.PathListSeparator)+installed)
+	got, err := exec.LookPath("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(got) != stand {
+		t.Fatalf("codex is %s, not the stand-in in %s", got, stand)
+	}
+	if out, err := exec.Command(got).Output(); err == nil || len(out) > 0 {
+		t.Fatalf("the stand-in ran: %q, %v", out, err)
+	}
+}
 
 func TestIsolate(t *testing.T) {
 	for _, k := range append(folderVars, "CODEX_HOME", "PATH", Marker) {
@@ -56,6 +88,47 @@ func TestCheckChild(t *testing.T) {
 	t.Setenv("CODEX_HOME", "")
 	if err := checkChild(outside); err == nil {
 		t.Error("a sandbox outside the temporary folder passed")
+	}
+}
+
+// With GOTMPDIR set, a test's own folders (t.TempDir) are made there, not
+// in the system's temporary folder, and a binary the test starts again
+// with one as its home still runs; a relative GOTMPDIR, which t.TempDir
+// doesn't use either, and a folder outside both are still refused.
+func TestCheckChildTakesGOTMPDIR(t *testing.T) {
+	base := t.TempDir()
+	tmp, gotmp := filepath.Join(base, "tmp"), filepath.Join(base, "gotmp")
+	for _, k := range append(folderVars, "CODEX_HOME", "TMP", "TEMP", "TMPDIR", "GOTMPDIR") {
+		t.Setenv(k, "")
+	}
+	for _, k := range []string{"TMP", "TEMP", "TMPDIR"} {
+		t.Setenv(k, tmp)
+	}
+	if filepath.Clean(os.TempDir()) != tmp {
+		t.Fatalf("os.TempDir() is %q, want %q", os.TempDir(), tmp)
+	}
+	sandbox, fixture := filepath.Join(tmp, prefix+"x"), filepath.Join(gotmp, "TestX", "001")
+	SetHome(t, fixture)
+
+	if err := checkChild(sandbox); err == nil {
+		t.Error("without GOTMPDIR, a home in another folder passed")
+	}
+	t.Setenv("GOTMPDIR", gotmp)
+	if err := checkChild(sandbox); err != nil {
+		t.Errorf("a fixture home in GOTMPDIR: %v", err)
+	}
+	if err := checkChild(filepath.Join(gotmp, prefix+"y")); err != nil {
+		t.Errorf("a sandbox in GOTMPDIR: %v", err)
+	}
+	outside := filepath.Join(base, "elsewhere", "home")
+	t.Setenv("CODEX_HOME", outside)
+	if err := checkChild(sandbox); err == nil {
+		t.Error("CODEX_HOME outside both temporary folders passed")
+	}
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("GOTMPDIR", "gotmp")
+	if err := checkChild(sandbox); err == nil {
+		t.Error("a relative GOTMPDIR was taken as a temporary folder")
 	}
 }
 

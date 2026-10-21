@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
@@ -161,7 +162,8 @@ func ocRoots(out []file, parent map[string]string) []file {
 			root = parent[root]
 		}
 		out[i].key = out[i].agent + ":" + root
-		out[i].main = parent[out[i].sid] == ""
+		out[i].parent = parent[out[i].sid]
+		out[i].main = out[i].parent == ""
 	}
 	return out
 }
@@ -169,8 +171,24 @@ func ocRoots(out []file, parent map[string]string) []file {
 // ---- the database -------------------------------------------------------------
 
 // dbs are the databases open while List or Stats reads them, closed when
-// they are done (closeDBs).
+// the last of the reads using them is done (useDBs).
 var dbs = map[string]*sql.DB{}
+
+// dbUsers is how many reads use dbs now. A read lets mu go while it parses
+// with them, and another read may then start and end: it must not close
+// what the first is still reading (#2776).
+var dbUsers int
+
+// useDBs counts a read, with mu held, as a user of dbs until the release it
+// returns is called, with mu held again; the last to go closes them.
+func useDBs() (release func()) {
+	dbUsers++
+	return sync.OnceFunc(func() {
+		if dbUsers--; dbUsers == 0 {
+			closeDBs()
+		}
+	})
+}
 
 // Snapshot readers also remove their temporary database when a scan ends.
 var dbCleanup = map[string]func(){}

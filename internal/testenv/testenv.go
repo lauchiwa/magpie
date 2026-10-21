@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -124,7 +125,7 @@ func Isolate() (string, error) {
 			return "", err
 		}
 	}
-	for _, k := range agentenv.Vars {
+	for _, k := range append(slices.Clone(agentenv.Vars), agentenv.ClaudeProviders...) {
 		if err := os.Unsetenv(k); err != nil {
 			return "", err
 		}
@@ -153,13 +154,26 @@ func Isolate() (string, error) {
 // again: the sandbox, and every folder variable and agent folder set, lie
 // in the temporary folder. On Windows that folder must come from TMP or
 // TEMP, since without them Go would take it from USERPROFILE, the very
-// thing to check.
+// thing to check. A test's own folders (t.TempDir) are made in GOTMPDIR
+// when it names one, so that counts as the temporary folder too.
 func checkChild(home string) error {
 	if runtime.GOOS == "windows" && os.Getenv("TMP") == "" && os.Getenv("TEMP") == "" {
 		return errors.New("a test started this binary again without TMP or TEMP: pass them along")
 	}
-	tmp := os.TempDir()
-	if !within(home, tmp) {
+	tmps := []string{os.TempDir()}
+	if g := os.Getenv("GOTMPDIR"); g != "" && filepath.IsAbs(g) {
+		tmps = append(tmps, g)
+	}
+	inTemp := func(p string) bool {
+		for _, d := range tmps {
+			if within(p, d) {
+				return true
+			}
+		}
+		return false
+	}
+	tmp := strings.Join(tmps, " or ")
+	if !inTemp(home) {
 		return fmt.Errorf("%s is %q, outside the temporary folder %s", Marker, home, tmp)
 	}
 	vars := append([]string{}, folderVars...)
@@ -169,7 +183,7 @@ func checkChild(home string) error {
 		}
 	}
 	for _, k := range vars {
-		if v := os.Getenv(k); v != "" && !within(v, tmp) {
+		if v := os.Getenv(k); v != "" && !inTemp(v) {
 			return fmt.Errorf("%s is %q, outside the temporary folder %s", k, v, tmp)
 		}
 	}
@@ -199,15 +213,6 @@ func inertTools(home string) error {
 	if err := StandIns(bin, tools); err != nil {
 		return err
 	}
-	for _, name := range tools {
-		// Windows finds a program by PATHEXT; a .bat comes before the
-		// user's claude.cmd further down PATH
-		if runtime.GOOS == "windows" {
-			if err := os.WriteFile(filepath.Join(bin, name+".bat"), []byte("@exit /b 1\r\n"), 0o755); err != nil {
-				return err
-			}
-		}
-	}
 	return os.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -215,11 +220,21 @@ func inertTools(home string) error {
 // is run once now, in the background, so that the check macOS makes of a
 // new program's first run (Program) is made while the tests start rather
 // than in the first test to reach it, and without holding them up.
+// Windows finds a program by PATHEXT and passes over a file with no
+// extension, so there each also gets a .bat, which comes before the user's
+// own codex.cmd further down PATH: without it the gateway's tests, which
+// make their stand-ins here, read the installed Codex's version (#1827,
+// EdwinDigital: TestCodexPoolSaysTheClientsVersion saw 0.162.0).
 func StandIns(bin string, names []string) error {
 	for _, name := range names {
 		p := filepath.Join(bin, name)
 		if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 			return err
+		}
+		if runtime.GOOS == "windows" {
+			if err := os.WriteFile(p+".bat", []byte("@exit /b 1\r\n"), 0o755); err != nil {
+				return err
+			}
 		}
 		if runtime.GOOS == "darwin" {
 			warming.Add(1)

@@ -40,6 +40,9 @@ function serve(lang, login, usage, posts) {
     if (url.pathname === "/api/providers") return json(providers());
     if (url.pathname === "/api/groups") return json({ groups: [], pools: [] });
     if (url.pathname === "/api/login/usage") return json(usage);
+    // on Windows the page also reports its colour for the title bar
+    // (tintTitleBar), which changes no config
+    if (url.pathname === "/api/window/titlebar") return json({});
     if (route.request().method() === "POST") {
       const body = route.request().postDataJSON();
       posts.push({ path: url.pathname, body });

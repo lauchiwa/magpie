@@ -87,6 +87,15 @@ export const FakePlugin = async ({ client }) => ({
     if (process.env.FAKE_GROK) cfg.provider[ID].models["grok-4.7"] = { name: "Grok 4.7", provider: { npm: "@ai-sdk/openai" }, limit: { context: 4000, output: 400 } }
     // $FAKE_DEEPSEEK: a DeepSeek model, as Cline's cline-pass/deepseek-v4-pro
     if (process.env.FAKE_DEEPSEEK) cfg.provider[ID].models["deepseek-v4-pro"] = { name: "DeepSeek V4 Pro", limit: { context: 1000, output: 100 } }
+    // $FAKE_GLM: a GLM model, as Cline's cline-pass/glm-5.3
+    if (process.env.FAKE_GLM) {
+      cfg.provider[ID].models["glm-5.3"] = { name: "GLM 5.3", limit: { context: 1000, output: 100 } }
+      // Cline sends glm-5.3-flash through OpenRouter, not Vercel's gateway
+      cfg.provider[ID].models["glm-5.3-flash"] = { name: "GLM 5.3 Flash", limit: { context: 1000, output: 100 } }
+    }
+    // $FAKE_SEARCHES: the provider's upstream searches by itself (#2027),
+    // as a plugin in front of Claude's API says
+    if (process.env.FAKE_SEARCHES) cfg.provider[ID].searches = true
     // $FAKE_DECIDE: the provider serves a decision API too (#1514), asked
     // at its base /systemone through the loader's fetch: fake-clef is a
     // decision model it marks, jev-9 one magpie knows by its name.
@@ -129,6 +138,9 @@ export const FakePlugin = async ({ client }) => ({
           url: "https://fake.invalid/auth?where=" + inputs.where,
           instructions: "Paste the code",
           method: "code",
+          // team "cli-opened": the page is open already, as Grok Build's
+          // `grok login` opens its own on macOS and Windows
+          opened: inputs.team === "cli-opened",
           callback: async (code) =>
             (process.env.FAKE_SIGNIN && (await fetch(process.env.FAKE_SIGNIN + "/token").catch(() => {})), code === "good")
               ? { type: "success", refresh: "r-" + (inputs.team ?? "none"), access: "stale", expires: 0, ...fakeWho(inputs.team) }
@@ -193,11 +205,14 @@ export const FakePlugin = async ({ client }) => ({
         user: full ? "Full@Fake.example" : undefined,
         until: "2030-01-02T03:04:05Z",
         renew: "auto",
-        resets: full ? { count: 3, byWindow: true, fiveHour: 2, weekly: 1 } : undefined,
+        resets: full ? { count: 3, byWindow: true, fiveHour: 2, weekly: 1, team: true, each: [{ window: "weekly" }, { until: "2031-01-02T00:00:00Z", window: "fiveHour" }, { until: 1924992000, window: "fiveHour" }] } : undefined,
         windows: [
           { name: "5 hours", used: full ? 100 : 25, resetsAt: born + 3600e3, span: 5 * 3600, models: ["fake-claude"] },
-          { name: "Week", used: 10, resetsAt: Math.floor(born / 1000) + 86400, span: 7 * 86400, amount: 120, limit: 1200, unit: "credits" },
-          { name: "Extra", used: 250, display: "$2.50", aside: true },
+          // 80 of its credits are lost in two days, after it resets (#2265)
+          { name: "Week", used: 10, resetsAt: Math.floor(born / 1000) + 86400, span: 7 * 86400, amount: 120, limit: 1200, unit: "credits",
+            runsOutAt: Math.floor(born / 1000) + 2 * 86400, runsOut: 80 },
+          // a run-out the host can't read is not told
+          { name: "Extra", used: 250, display: "$2.50", aside: true, runsOutAt: "not a date", runsOut: "12" },
         ],
       }
     },
@@ -234,6 +249,8 @@ export const FakePlugin = async ({ client }) => ({
   provider: {
     id: ID,
     models: async (p, { auth }) => {
+      // $FAKE_MODELS_LOG: each time the hook is asked is a line there
+      if (process.env.FAKE_MODELS_LOG) (await import("node:fs")).appendFileSync(process.env.FAKE_MODELS_LOG, "asked\n")
       if (auth?.refresh === "r-dead" || auth?.key === "dead") throw new Error("the vendor refused the sign-in")
       if (auth?.refresh === "r-models-gone") throw Object.assign(new Error("the vendor refused the sign-in"), { signIn: "expired" })
       // a sign-in past its time, said in words only, as Grok's plugin says it
@@ -267,6 +284,12 @@ export const FakePlugin = async ({ client }) => ({
         const sized = (id, name) => ({ ...p.models["fake-1"], id, name, api: { ...p.models["fake-1"].api, id } })
         p.models["fake-opus@300k"] = { ...sized("fake-opus@300k", "Fake Opus @ 300k"), fast: true }
         p.models["fake-opus@1m"] = sized("fake-opus@1m", "Fake Opus @ 1m")
+      }
+      // $FAKE_TIERS: fake-1 and fake-resp say the service tiers their vendor
+      // serves them at (#2514), one as an object as Codex's catalog writes it
+      if (process.env.FAKE_TIERS) {
+        p.models["fake-1"] = { ...p.models["fake-1"], serviceTiers: ["priority", { id: "ultrafast" }, "", 7, "priority"] }
+        if (p.models["fake-resp"]) p.models["fake-resp"] = { ...p.models["fake-resp"], serviceTiers: ["ultrafast"] }
       }
       // $FAKE_MODELS: the vendor's list, whose answer names one more model
       if (process.env.FAKE_MODELS && auth) {

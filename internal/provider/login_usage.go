@@ -76,7 +76,8 @@ func LoginUsage(ctx context.Context, agent string) map[string]SubscriptionQuota 
 // one taken from the cache is up to a minute old already, and Allowances
 // counts its own minute from then, not from when it asked (#1295).
 func loginUsageAt(ctx context.Context, agent string) (map[string]SubscriptionQuota, time.Time) {
-	if settings.AccountDiscoveryOff() {
+	// nor of a provider switched off or removed (leftAlone)
+	if settings.AccountDiscoveryOff() || leftAlone(agent) {
 		return nil, time.Time{}
 	}
 	asked := time.Now()
@@ -84,11 +85,6 @@ func loginUsageAt(ctx context.Context, agent string) (map[string]SubscriptionQuo
 		return out, asked
 	}
 	out := map[string]SubscriptionQuota{}
-	if agent == "grok" {
-		if _, ok := pluginOfAgent(agent); !ok {
-			return grokLoginUsage(ctx), asked
-		}
-	}
 	logins, ok := usageLogins(agent)
 	if !ok {
 		return out, asked
@@ -267,32 +263,10 @@ func builtinLogins(agent string) (logins []Login, ok bool) {
 		logins = Logins(agent)
 	case "copilot":
 		logins = copilotLoginList()
-	case "zcode":
-		logins = zcodeLoginList()
-	case "kiro":
-		logins = kiroLoginList()
-	case "workbuddy", WorkBuddyAIID:
-		logins = wbLoginList(wbSiteOf(agent))
-	case CommandCodePlanID:
-		logins = cmdLoginList()
-	case "qoder", QoderCNID:
-		logins = loginsOf(qoderLoginsOf(agent))
-	case "zed":
-		logins = zedLoginList()
-	case "devin":
-		logins = devinLoginList()
-	case "factory":
-		logins = factoryLoginList()
-	case MiMoID:
-		logins = mimoLoginList()
 	case ChatGPTAPIID:
 		logins = siwcLoginList()
 	case "gemini", "antigravity":
 		logins = googleLoginList(agent)
-	case "cursor": // one account, the one cursor-agent is signed in to
-		if user, plan, ok := cursorIdentity(); ok {
-			logins = []Login{{Agent: agent, User: user, Plan: plan, Active: true, On: true}}
-		}
 	default:
 		return nil, false
 	}
@@ -314,38 +288,8 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 	if strings.HasPrefix(l.Agent, "plugin:") {
 		return pluginLoginQuota(ctx, l)
 	}
-	if l.Agent == "qoder" || l.Agent == QoderCNID {
-		return qoderLoginQuota(ctx, l)
-	}
-	if l.Agent == "zed" {
-		return zedLoginQuota(ctx, l)
-	}
-	if l.Agent == "devin" {
-		return devinLoginQuota(ctx, l)
-	}
-	if l.Agent == "factory" {
-		return factoryLoginQuota(ctx, l)
-	}
-	if l.Agent == MiMoID {
-		return mimoLoginQuota(ctx, l)
-	}
-	if l.Agent == "cursor" {
-		return cursorSubscriptionUsage(ctx, l.Plan)
-	}
 	if l.Agent == "gemini" || l.Agent == "antigravity" {
 		return googleLoginQuota(ctx, l)
-	}
-	if l.Agent == "zcode" {
-		return zcodeLoginQuota(ctx, l)
-	}
-	if l.Agent == "kiro" {
-		return kiroLoginQuota(ctx, l)
-	}
-	if w := wbSiteOf(l.Agent); w != nil {
-		return wbLoginQuota(ctx, w, l)
-	}
-	if l.Agent == CommandCodePlanID {
-		return cmdLoginQuota(ctx, l)
 	}
 	if l.Agent == "copilot" {
 		for _, c := range copilotLogins(copilotConfigDir()) {
@@ -396,7 +340,7 @@ func loginQuota(ctx context.Context, l Login) SubscriptionQuota {
 	switch {
 	case l.Agent == "claude": // Claude Code reads its own (claudeWindows)
 	case l.Active:
-		tok, accountID, err = codexToken(ctx, codexAuthPath())
+		tok, accountID, err = codexToken(ctx, codexHome())
 	default:
 		tok, accountID, err = savedLoginToken(ctx, l.Agent, l.User)
 	}
@@ -488,10 +432,10 @@ func loginReadingKnown(l Login) (loginUsageEntry, bool) {
 }
 
 // codexLoginAuth is the auth.json of a ChatGPT account magpie knows: the
-// file Codex is signed in with, or the one kept for it.
+// sign-in Codex goes by (auth.json or its keychain item), or the one kept for it.
 func codexLoginAuth(l Login) []byte {
 	if l.Active {
-		b, _ := readAccountFile(codexAuthPath())
+		b, _, _ := readCodexLogin(codexHome(), false)
 		return b
 	}
 	loginsMu.Lock()

@@ -3,41 +3,144 @@ package gateway
 import (
 	"net/http"
 
+	"github.com/yetone/magpie/internal/gwmw"
+	"github.com/yetone/magpie/internal/masking"
 	"github.com/yetone/magpie/internal/provider"
-	"github.com/yetone/magpie/internal/redact"
 	"github.com/yetone/magpie/internal/settings"
 )
 
 // redacted masks a request's secrets, as the settings say, before it goes
 // to a vendor, and wraps w so what the vendor answers has them back; done
-// writes what the wrapper still holds. Nothing masked, nothing wrapped.
-func redacted(w http.ResponseWriter, body []byte) (http.ResponseWriter, []byte, func()) {
-	o := redactionOptions()
-	if !o.Secrets && !o.Personal && len(o.Words) == 0 {
-		return w, body, func() {}
+// writes what the wrapper still holds. Nothing masked, nothing wrapped. It
+// fails closed: masking wanted with no masker serving, or a masker that
+// fails, is an error, and the request goes nowhere (gwmw.Masking).
+func redacted(w http.ResponseWriter, body []byte) (http.ResponseWriter, []byte, func(), error) {
+	w, body, done, _, err := redactedHits(w, body)
+	return w, body, done, err
+}
+
+// redactedHits is redacted with what it swapped, for the record of it
+// (noteMasked).
+func redactedHits(w http.ResponseWriter, body []byte) (http.ResponseWriter, []byte, func(), maskHits, error) {
+	m, err := gwmw.Masking(redactionWanted())
+	if m == nil {
+		return w, body, func() {}, maskHits{}, err
 	}
-	masked, n := redact.MaskJSON(body, o)
-	if n == 0 {
-		return w, body, func() {}
+	type out struct {
+		b []byte
+		h maskHits
 	}
-	rw := redact.NewWriter(w)
-	return rw, masked, rw.Finish
+	o, err := gwmw.Safely(func() out {
+		if t, ok := m.(gwmw.Teller); ok {
+			b, hits := t.JSONHits(body)
+			return out{b, maskHits{len(hits), hits}}
+		}
+		b, n := m.JSON(body)
+		return out{b, maskHits{n: n}}
+	})
+	if err != nil || o.h.n == 0 {
+		return w, body, func() {}, maskHits{}, err
+	}
+	rw, done := m.Writer(w)
+	return rw, o.b, done, o.h, nil
 }
 
 // redactedPrompt masks a parsed image or video prompt before any vendor
 // body is built, including multipart forms, and restores the reply's text.
-func redactedPrompt(w http.ResponseWriter, prompt string) (http.ResponseWriter, string, func()) {
-	masked, n := redact.Mask(prompt, redactionOptions())
-	if n == 0 {
-		return w, prompt, func() {}
-	}
-	rw := redact.NewWriter(w)
-	return rw, masked, rw.Finish
+// It fails closed as redacted does.
+func redactedPrompt(w http.ResponseWriter, prompt string) (http.ResponseWriter, string, func(), error) {
+	w, masked, done, _, err := redactedPromptHits(w, prompt)
+	return w, masked, done, err
 }
 
-func redactionOptions() redact.Options {
-	st := settings.Load()
-	return redact.Options{Secrets: st.Redact, Personal: st.RedactPersonal, Kinds: st.RedactKinds, Words: st.RedactWords, Rules: st.RedactRules}
+// redactedPromptHits is redactedPrompt with what it swapped.
+func redactedPromptHits(w http.ResponseWriter, prompt string) (http.ResponseWriter, string, func(), maskHits, error) {
+	m, masked, h, err := maskTextHits(prompt)
+	if err != nil || h.n == 0 {
+		return w, prompt, func() {}, maskHits{}, err
+	}
+	rw, done := m.Writer(w)
+	return rw, masked, done, h, nil
+}
+
+// maskedText is s masked as the settings say, and how many values it
+// swapped; an error when it can't be (fail closed).
+func maskedText(s string) (string, int, error) {
+	_, masked, h, err := maskTextHits(s)
+	return masked, h.n, err
+}
+
+// maskTextHits is maskedText with the masker that masked it and what it
+// swapped.
+func maskTextHits(s string) (gwmw.Masker, string, maskHits, error) {
+	m, err := gwmw.Masking(redactionWanted())
+	if m == nil {
+		return nil, s, maskHits{}, err
+	}
+	type out struct {
+		s string
+		h maskHits
+	}
+	o, err := gwmw.Safely(func() out {
+		if t, ok := m.(gwmw.Teller); ok {
+			got, hits := t.TextHits(s)
+			return out{got, maskHits{len(hits), hits}}
+		}
+		got, n := m.Text(s)
+		return out{got, maskHits{n: n}}
+	})
+	if err != nil {
+		return nil, s, maskHits{}, err
+	}
+	return m, o.s, o.h, nil
+}
+
+// restored is s with what a masker masked before put back; s when none
+// serves.
+func restored(s string, escaped bool) string {
+	if m, ok := gwmw.Served(); ok {
+		return m.Restore(s, escaped)
+	}
+	return s
+}
+
+// restoring wraps w so values masked before come back, when a masker
+// serves.
+func restoring(w http.ResponseWriter) (http.ResponseWriter, func()) {
+	if m, ok := gwmw.Served(); ok {
+		return m.Writer(w)
+	}
+	return w, func() {}
+}
+
+// redactionWanted: the settings ask for something to be masked. The
+// masking itself is served by the redact plugin (plugins/redact); this is
+// the core's own reading, so a request isn't sent unmasked when the plugin
+// isn't there to mask it.
+func redactionWanted() bool {
+	return masking.Wanted(settings.Load())
+}
+
+// maskedQuery masks a web search's query, as the settings say, before it
+// goes to a search service that isn't a model's endpoint: a search API, or
+// a Kimi Code plan's or WorkBuddy's search (to p, nil for an API; one the
+// user set to go unmasked keeps it as it is). A model's web_search writes
+// its query from a request already masked, but an agent's call to the
+// search MCP carries it as the agent's model wrote it, values put back
+// (lc on Discord). It fails closed as redacted does.
+func maskedQuery(query string, p *provider.Provider) (string, error) {
+	if p != nil && p.SkipsRedaction() {
+		return query, nil
+	}
+	_, masked, h, err := maskTextHits(query)
+	if err == nil {
+		id := ""
+		if p != nil {
+			id = p.ID
+		}
+		noteMasked(nil, "search", h, masked, 0, id, "")
+	}
+	return masked, err
 }
 
 // unredactedRoute says a request resolved to p, or to the group whose

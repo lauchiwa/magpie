@@ -8,10 +8,20 @@ import (
 // openCodeTranscript reads the conversation in message order from the same
 // store the listing chose, including while a v1 to v2 migration is underway.
 func openCodeTranscript(s Session, add func(bool, Part) bool) error {
-	dbReadMu.Lock()
-	defer dbReadMu.Unlock()
-	defer closeDBs()
-	for _, f := range openCodeFiles() {
+	storeMu.RLock()
+	defer storeMu.RUnlock()
+	// the store handles are shared with the reads that hold mu: they are
+	// opened and given back under it, and read from without it
+	mu.Lock()
+	release := useDBs()
+	files := openCodeFiles()
+	mu.Unlock()
+	defer func() {
+		mu.Lock()
+		release()
+		mu.Unlock()
+	}()
+	for _, f := range files {
 		if f.sid != s.ID {
 			continue
 		}
@@ -30,6 +40,9 @@ func openCodeTranscript(s Session, add func(bool, Part) bool) error {
 				var m struct {
 					Text    string            `json:"text"`
 					Content []json.RawMessage `json:"content"`
+					Model   struct {
+						ID string `json:"id"`
+					} `json:"model"`
 				}
 				if err := json.Unmarshal(raw, &m); err != nil {
 					return err
@@ -41,7 +54,7 @@ func openCodeTranscript(s Session, add func(bool, Part) bool) error {
 					continue
 				}
 				for _, p := range m.Content {
-					if !openCodeTranscriptPart(role, p, add) {
+					if !openCodeTranscriptPart(role, m.Model.ID, p, add) {
 						return nil
 					}
 				}
@@ -63,7 +76,7 @@ func openCodeTranscript(s Session, add func(bool, Part) bool) error {
 		})
 		for _, m := range messages {
 			for _, p := range f.oc.parts(m.ID) {
-				if !openCodeTranscriptPart(m.Role, p, add) {
+				if !openCodeTranscriptPart(m.Role, m.ModelID, p, add) {
 					return nil
 				}
 			}
@@ -73,7 +86,17 @@ func openCodeTranscript(s Session, add func(bool, Part) bool) error {
 	return ErrNoTranscript
 }
 
-func openCodeTranscriptPart(role string, raw []byte, add func(bool, Part) bool) bool {
+// openCodeTranscriptPart tells add one part of a message; model is the
+// message's own (an assistant's modelID, or model.id in OpenCode 2), said
+// with each of its assistant parts (#2253).
+func openCodeTranscriptPart(role, model string, raw []byte, add func(bool, Part) bool) bool {
+	say := add
+	add = func(input bool, q Part) bool {
+		if q.Role == "assistant" {
+			q.Model = model
+		}
+		return say(input, q)
+	}
 	var p struct {
 		Type      string `json:"type"`
 		Text      string `json:"text"`

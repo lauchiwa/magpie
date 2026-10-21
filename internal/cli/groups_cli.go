@@ -104,7 +104,9 @@ const groupUsage = `usage:
            auto    as a turn begins, the group's classifier — Jev, from a TypeSafe provider
                    (magpie provider add typesafe key=…), or any model, as Jev Router on OpenRouter,
                    asked in words — rates how hard it is, and the turn's requests
-                   reason at low, medium, high or xhigh; only those the agent asked to reason
+                   reason at low, medium, high or xhigh in place of the agent's level; only those
+                   the agent asked to reason, never one it turned off (none). A route's effort
+                   is what the agent asked, each try's what its model was sent
 
   e.g. magpie group add "Opus anywhere" models=claude/claude-opus-5-5,copilot/claude-opus-5.5 routing=order
        magpie group set opus-anywhere stays=session models+=openrouter/anthropic/claude-opus-5.5
@@ -130,6 +132,7 @@ var routingNames = []struct {
 	{provider.LeastUsed, "usage", []string{"least-used"}},
 	{provider.Pace, "pace", []string{"weekly-pace"}},
 	{provider.Weighted, "weight", []string{"weighted", "by-weight", "weighted-round-robin", "wrr"}},
+	{provider.FreeFirst, "free", []string{"free-first", "freest", "no-cost"}},
 	{provider.Manual, "manual", []string{"pick", "picked", "pinned"}},
 }
 
@@ -145,7 +148,11 @@ var staysNames = []struct {
 }
 
 func parseRouting(v string) (string, error) {
-	v = strings.ToLower(strings.TrimSpace(v))
+	v = strings.TrimSpace(v)
+	if provider.PluginRouting(v) { // a gateway plugin's
+		return v, nil
+	}
+	v = strings.ToLower(v)
 	var names []string
 	for _, r := range routingNames {
 		if v == r.value || v == r.name || slices.Contains(r.also, v) {
@@ -153,7 +160,7 @@ func parseRouting(v string) (string, error) {
 		}
 		names = append(names, r.name)
 	}
-	return "", fmt.Errorf("routing %q is not one magpie has: %s", v, strings.Join(names, ", "))
+	return "", fmt.Errorf("routing %q is not one magpie has: %s, or <plugin>/<name> for a gateway plugin's", v, strings.Join(names, ", "))
 }
 
 func parseStays(v string) (string, error) {
@@ -168,13 +175,15 @@ func parseStays(v string) (string, error) {
 	return "", fmt.Errorf("stays %q is not one magpie has: %s", v, strings.Join(names, ", "))
 }
 
+// routingName is what the CLI calls routing v: a plugin's, or one it
+// doesn't know, as it is.
 func routingName(v string) string {
 	for _, r := range routingNames {
 		if r.value == v {
 			return r.name
 		}
 	}
-	return "smart"
+	return v
 }
 
 func staysName(v string) string {
@@ -252,7 +261,7 @@ func memberResolver(keep []string) func(string) (string, error) {
 		}
 		if model, effort := provider.MemberEffort(id); effort != "" {
 			// a model at an effort of its own: the model as any other is
-			if strings.HasPrefix(model, provider.GroupPrefix) {
+			if provider.IsGroupRef(model) {
 				return "", fmt.Errorf("%s is a group: its models reason as it says, so it takes no :%s", model, effort)
 			}
 			m, err := resolve(model)
@@ -261,8 +270,8 @@ func memberResolver(keep []string) func(string) (string, error) {
 			}
 			return provider.WithMemberEffort(m, effort), nil
 		}
-		if gid, ok := strings.CutPrefix(id, provider.GroupPrefix); ok {
-			// a group in the group: SaveGroup refuses one it would be in itself through
+		if gid, ok := strings.CutPrefix(provider.CanonicalRef(id), provider.GroupPrefix); ok {
+			// a group in the group: auto/<model> as group/auto-<slug>;: SaveGroup refuses one it would be in itself through
 			for _, g := range provider.Groups() {
 				if strings.EqualFold(g.ID, gid) && !g.Hidden {
 					return provider.GroupPrefix + g.ID, nil
@@ -575,7 +584,7 @@ func pickMember(members []string, v string) (string, error) {
 // findGroup looks a group up by its id, its catalog id or its name.
 func findGroup(ref string) (provider.Group, error) {
 	all := provider.Groups()
-	ref = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(ref), "magpie/"), provider.GroupPrefix)
+	ref = strings.TrimPrefix(provider.CanonicalRef(strings.TrimPrefix(strings.TrimSpace(ref), "magpie/")), provider.GroupPrefix)
 	for _, match := range []func(provider.Group) bool{
 		func(g provider.Group) bool { return g.ID == ref },
 		func(g provider.Group) bool { return strings.EqualFold(g.ID, ref) },
@@ -639,7 +648,7 @@ func groupCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(green.Render("✓"), verb, bold.Render(g.Name), muted.Render("· agents pick it as "+provider.GroupPrefix+g.ID))
+		fmt.Println(green.Render("✓"), verb, bold.Render(g.Name), muted.Render("· agents pick it as "+g.Ref()))
 		return showGroup(g)
 	case "set", "edit":
 		if len(rest) < 2 {
@@ -652,7 +661,7 @@ func groupCmd(args []string) error {
 		fmt.Println(green.Render("✓"), "saved", bold.Render(g.Name))
 		if slices.ContainsFunc(rest[1:], func(kv string) bool { return strings.HasPrefix(strings.ToLower(kv), "name=") }) {
 			// a new name isn't a new id: say what agents still ask for
-			fmt.Println(muted.Render("  its id stays " + g.ID + ": agents ask for " + provider.GroupPrefix + g.ID + " (a client given the name may ask by the name too)"))
+			fmt.Println(muted.Render("  its id stays " + g.ID + ": agents ask for " + g.Ref() + " (a client given the name may ask by the name too)"))
 		}
 		return showGroup(g)
 	case "rm", "remove", "delete":
@@ -696,7 +705,7 @@ func groupCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(green.Render("✓"), "copied", bold.Render(src.Name), "to", bold.Render(g.Name), muted.Render("· agents pick it as "+provider.GroupPrefix+g.ID))
+		fmt.Println(green.Render("✓"), "copied", bold.Render(src.Name), "to", bold.Render(g.Name), muted.Render("· agents pick it as "+g.Ref()))
 		return showGroup(g)
 	case "template", "templates", "tpl":
 		return templateCmd(rest)
@@ -806,7 +815,7 @@ func setGroup(ref string, pairs []string) (provider.Group, error) {
 // removedOnly is a removed found group magpie doesn't find now (its model
 // is down to one provider): only its record is left, to keep it removed.
 func removedOnly(ref string) (string, bool) {
-	ref = strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(ref), "magpie/"), provider.GroupPrefix)
+	ref = strings.TrimPrefix(provider.CanonicalRef(strings.TrimPrefix(strings.TrimSpace(ref), "magpie/")), provider.GroupPrefix)
 	for _, id := range provider.RemovedGroups() {
 		if strings.EqualFold(id, ref) {
 			return id, true
@@ -993,7 +1002,7 @@ func groups() error {
 	var rows []row
 	w := [3]int{}
 	for _, g := range shown {
-		r := row{name: bold.Render(g.Name), id: muted.Render(provider.GroupPrefix + g.ID)}
+		r := row{name: bold.Render(g.Name), id: muted.Render(g.Ref())}
 		if g.Auto {
 			r.name += " " + faint.Render("found")
 		}
@@ -1069,7 +1078,7 @@ func groups() error {
 
 func showGroup(g provider.Group) error {
 	kv := func(k, v string) { fmt.Printf("  %s %s\n", muted.Render(pad(k, 9)), v) }
-	head := bold.Render(g.Name) + muted.Render("  "+provider.GroupPrefix+g.ID)
+	head := bold.Render(g.Name) + muted.Render("  "+g.Ref())
 	if g.Auto {
 		head += faint.Render("  found by magpie — changing it makes it yours")
 	}
@@ -1165,7 +1174,7 @@ func showGroup(g provider.Group) error {
 // <id> +<model>` puts right (MOMO on Discord: opencode-go/deepseek-flash).
 func whyNotServed(member string) string {
 	pid, model, ok := strings.Cut(member, "/")
-	if !ok || strings.HasPrefix(member, provider.GroupPrefix) {
+	if !ok || provider.IsGroupRef(member) {
 		return "not served"
 	}
 	p, err := provider.Find(pid)
@@ -1210,6 +1219,6 @@ func templateCmd(rest []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(green.Render("✓"), "added", bold.Render(g.Name), muted.Render("· agents pick it as "+provider.GroupPrefix+g.ID))
+	fmt.Println(green.Render("✓"), "added", bold.Render(g.Name), muted.Render("· agents pick it as "+g.Ref()))
 	return showGroup(g)
 }

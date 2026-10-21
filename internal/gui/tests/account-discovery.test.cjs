@@ -14,6 +14,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { openPart } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -78,7 +79,7 @@ async function open(browser, lang, width, posts, over) {
   await page.route("**/*", server(lang, posts, over));
   await page.goto("http://magpie.test/?view=usage");
   await page.locator("#prefs").click();
-  await page.locator(":is(#setTab-privacy, .nav-s[data-of=setTab-privacy]):visible").click();
+  await openPart(page, "privacy");
   await page.locator("#discoveryList .opt").first().waitFor();
   return { context, page, errors };
 }
@@ -112,7 +113,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(await opts.nth(1).evaluate((b) => b.classList.contains("on")), true, "On by default");
 
           const row = box.locator(".row");
-          await row.scrollIntoViewIfNeeded();
+          // scrolled to with the wheel, as a reader does: Playwright's own
+          // scroll into view is code, which the click guard puts back
+          await page.mouse.move(width / 2, 300);
+          for (let i = 0; i < 20 && await row.evaluate((r) => r.getBoundingClientRect().bottom > (document.querySelector("footer.foot")?.getBoundingClientRect().top ?? innerHeight) - 4); i++) {
+            await page.mouse.wheel(0, 200);
+            await page.waitForTimeout(80);
+          }
           await page.waitForTimeout(300);
           const fit = await row.evaluate((r) => {
             const b = r.getBoundingClientRect(), segs = r.querySelector(".val").getBoundingClientRect();

@@ -5,7 +5,9 @@
 //
 // In order: the proxy set in magpie's settings (or "direct" for none), the
 // usual *_PROXY variables, then the system's proxy (macOS network
-// settings, Windows Internet Options). Loopback is never proxied, nor,
+// settings, Windows Internet Options). A host NO_PROXY keeps off a proxy
+// the variables name goes direct, not through the system's. Loopback is
+// never proxied, nor,
 // unless a provider has a proxy of its own, a host on the user's own
 // network (lan.go).
 package netproxy
@@ -25,12 +27,33 @@ import (
 
 // Install routes http.DefaultTransport (and so http.DefaultClient) through
 // Func, and http.DefaultClient's requests made on a provider's behalf
-// (With) through a transport of that provider's proxy (Dispatch).
+// (With) through a transport of that provider's proxy (Dispatch). Its
+// HTTP/2 connections are checked as the gateway's are (HTTP2Health).
 func Install() {
 	if t, ok := http.DefaultTransport.(*http.Transport); ok {
 		t.Proxy = Func
+		if t.HTTP2 == nil {
+			t.HTTP2 = HTTP2Health()
+		}
 		http.DefaultClient.Transport = Dispatch(t)
 	}
+}
+
+// PingAfter and PingWait: an HTTP/2 connection that has had no frame for
+// PingAfter is pinged, and dropped when no answer comes within PingWait.
+var PingAfter, PingWait = 20 * time.Second, 10 * time.Second
+
+// HTTP2Health is the HTTP/2 setting of a transport to the vendors. Every
+// request to one host shares one HTTP/2 connection, and one gone silent
+// without closing (a proxy's way out died, a NAT forgot the flow) was
+// given every new request, each waiting for its transport's
+// ResponseHeaderTimeout while the kernel took the writes, until a restart
+// (#2843). A ping finds it, and the requests on it fail, so a group moves
+// on and the next request dials anew. A live vendor answers a ping
+// whatever its streams are doing, so a long wait for a first byte is
+// never cut by it.
+func HTTP2Health() *http.HTTP2Config {
+	return &http.HTTP2Config{SendPingTimeout: PingAfter, PingTimeout: PingWait}
 }
 
 // Func is an http.Transport Proxy function: the proxy the request's
@@ -84,12 +107,18 @@ func Held(ctx context.Context) error {
 // "" too: a request magpie makes for one provider while serving another's
 // (a web search asked of Codex in a turn served by a provider set to
 // "direct", #1522) goes through its own provider's proxy, never the one
-// it was made under.
+// it was made under. A provider's leave not to check its certificate
+// (WithUncheckedTLS) goes the same way: it is the outer provider's, and
+// dropped here.
 func With(ctx context.Context, choice string) context.Context {
-	if choice = strings.TrimSpace(choice); choice == "" && choiceOf(ctx) == "" {
+	if choice = strings.TrimSpace(choice); choice == "" && choiceOf(ctx) == "" && uncheckedOf(ctx) == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, choiceKey{}, choice)
+	ctx = context.WithValue(ctx, choiceKey{}, choice)
+	if uncheckedOf(ctx) != nil {
+		ctx = context.WithValue(ctx, uncheckedKey{}, map[string]bool(nil))
+	}
+	return ctx
 }
 
 // Choice is the proxy ctx names (With), "" when it names none — for a CLI
@@ -124,8 +153,10 @@ var HTTP1 func(u *url.URL) bool
 // requests going through one proxy and never carried to another — HTTP/2
 // ones, which a transport shares by host whatever proxy they were dialled
 // through, among them. A request HTTP1 names goes through a clone kept
-// for HTTP/1.1 (http1Only). A host whose IPv6 is taken but goes nowhere is
-// dialed over IPv4 (v4Fallback).
+// for HTTP/1.1 (http1Only), and one to a host whose certificate the
+// provider's user said not to check (WithUncheckedTLS) through a clone
+// kept for that host alone (uncheckTLS). A host whose IPv6 is taken but
+// goes nowhere is dialed over IPv4 (v4Fallback).
 func Dispatch(base *http.Transport) http.RoundTripper {
 	v4Fallback(base)
 	return &dispatch{base: base, own: map[route]*http.Transport{}}
@@ -138,14 +169,16 @@ type dispatch struct {
 }
 
 // route is what a request needs of its transport other than base: a
-// provider's own proxy, HTTP/1.1 only, or both.
+// provider's own proxy, HTTP/1.1 only, the host:port whose certificate is
+// not checked, or any of them together.
 type route struct {
-	choice string
-	h1     bool
+	choice    string
+	h1        bool
+	unchecked string
 }
 
 func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
-	r := route{choice: choiceOf(req.Context()), h1: HTTP1 != nil && HTTP1(req.URL)}
+	r := route{choice: choiceOf(req.Context()), h1: HTTP1 != nil && HTTP1(req.URL), unchecked: uncheckedHost(req)}
 	if r == (route{}) {
 		return v4Retry(d.base, req)
 	}
@@ -178,6 +211,9 @@ func (d *dispatch) transport(r route) *http.Transport {
 	}
 	if r.h1 {
 		http1Only(t)
+	}
+	if r.unchecked != "" {
+		uncheckTLS(t)
 	}
 	d.own[r] = t
 	return t
@@ -215,7 +251,7 @@ func For(u *url.URL) (*url.URL, error) {
 	default:
 		return Parse(s)
 	}
-	if p, err := fromEnv(u); p != nil || err != nil {
+	if p, named, err := fromEnv(u); named || err != nil {
 		return p, err
 	}
 	sys := System()
@@ -325,8 +361,10 @@ func Describe() (proxy, source string) {
 		return s, "settings"
 	}
 	u, _ := url.Parse("https://chatgpt.com")
-	if p, _ := fromEnv(u); p != nil {
+	if p, named, _ := fromEnv(u); p != nil {
 		return p.String(), "environment"
+	} else if named {
+		return "", "none" // NO_PROXY keeps it direct, as For does
 	}
 	if sys := System(); sys.URL != "" {
 		return sys.URL, "system"
@@ -360,16 +398,23 @@ func Redact(raw string) string {
 // HTTP_PROXY as Go reads them, else ALL_PROXY (curl's, which Go doesn't
 // read: a shell with only ALL_PROXY=socks5://… set has curl go through it,
 // and magpie, its updates among its requests, too). NO_PROXY is kept for
-// it as well.
-func fromEnv(u *url.URL) (*url.URL, error) {
+// it as well. named says the environment names a proxy for u's scheme at
+// all: a nil proxy is then direct, NO_PROXY having kept u off it, and not
+// the system's to decide, as curl and Go read it.
+func fromEnv(u *url.URL) (p *url.URL, named bool, err error) {
 	if p, err := http.ProxyFromEnvironment(&http.Request{URL: u}); p != nil || err != nil {
-		return p, err
+		return p, true, err
 	}
 	all := envOf("ALL_PROXY", "all_proxy")
+	// Go reads HTTPS_PROXY for https alone and HTTP_PROXY for http alone
+	named = all != "" ||
+		u.Scheme == "https" && envOf("HTTPS_PROXY", "https_proxy") != "" ||
+		u.Scheme == "http" && envOf("HTTP_PROXY", "http_proxy") != ""
 	if all == "" || noProxy(u.Hostname(), envOf("NO_PROXY", "no_proxy")) {
-		return nil, nil
+		return nil, named, nil
 	}
-	return Parse(all)
+	p, err = Parse(all)
+	return p, true, err
 }
 
 func envOf(keys ...string) string {

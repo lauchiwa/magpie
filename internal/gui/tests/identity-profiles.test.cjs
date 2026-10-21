@@ -218,7 +218,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       page.setDefaultTimeout(5000);
       const errors = [];
-      page.on("pageerror", (e) => errors.push(e.message));
+      // each reload cancels the reads still on their way, and WebKit reports
+      // each one as a page error, "Fetch API cannot load … due to access
+      // control checks" (#1350, #1307): not this test's
+      page.on("pageerror", (e) => {
+        if (engine === "webkit" && /due to access control checks\.?$/.test(e.message)) return;
+        errors.push(e.message);
+      });
 
       // no gateway: capture is refused up front, and said so
       let current = identityState({ gateway: false, profiles: [confirmed] });
@@ -272,9 +278,17 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator("#identityHead").waitFor();
       await panel.locator(".identity-card").waitFor();
       // the app puts back a scroll no reader asked for, so the button is
-      // brought into sight with a wheel, as the other page tests do
+      // brought into sight with a wheel, as the other page tests do. In
+      // sight is above the sticky Add provider bar, which covers the view's
+      // foot: inside the window alone left it under the bar in WebKit zh.
+      // A late read redraws the panel, and the button measured can be the
+      // one just taken out, whose box is all 0 and so "in sight"
       const bind = panel.getByRole("button", { name: w.bind });
-      for (let i = 0; i < 12 && !(await bind.evaluate((b) => { const r = b.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })); i++) {
+      const clear = () => bind.evaluate((b) => {
+        const r = b.getBoundingClientRect(), foot = document.querySelector("#view-providers .after-list").getBoundingClientRect();
+        return b.isConnected && r.height > 0 && r.top >= 0 && r.bottom <= Math.min(innerHeight, foot.top);
+      });
+      for (let i = 0; i < 12 && !(await clear()); i++) {
         await page.mouse.move(210, 400);
         await page.mouse.wheel(0, 200);
         await page.waitForTimeout(40);

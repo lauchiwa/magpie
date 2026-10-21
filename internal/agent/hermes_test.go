@@ -4,11 +4,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
 	"gopkg.in/yaml.v3"
 )
@@ -270,5 +273,288 @@ func TestHermesFolder(t *testing.T) {
 	wsl := place{home: home, spell: func(s string) string { return s }}
 	if a := hermesIn(wsl); a.Dir != filepath.Join(home, ".hermes") {
 		t.Fatalf("Hermes in WSL at %s, want ~/.hermes", a.Dir)
+	}
+}
+
+// What the user, or Hermes itself, set on magpie's provider stays through
+// every sync and pick, in the connected config and in each profile's
+// (#2030's siblings): the default_model `hermes model` writes there, a name,
+// a timeout, a key command, a header beside magpie's. The address, key, API
+// mode and model list stay magpie's.
+func TestHermesKeepsTheUsersSettings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro"}}); err != nil {
+		t.Fatal(err)
+	}
+	root := appdir.HermesHomeIn(home)
+	path := filepath.Join(root, "config.yaml")
+	bot := filepath.Join(root, "profiles", "coder", "config.yaml")
+	os.MkdirAll(filepath.Dir(bot), 0o755)
+	os.WriteFile(path, []byte("model:\n  default: anthropic/claude-opus-5\n  provider: openrouter\n"), 0o644)
+	os.WriteFile(bot, []byte("model:\n  default: kimi-k3\n  provider: moonshot\n"), 0o644)
+	a := hermes(home)
+	f := a.Field("model")
+	if err := f.Set("magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{path, bot} {
+		if err := edit.SetYAML(p,
+			edit.KV{Path: "providers.magpie.name", Value: "My GW"},
+			edit.KV{Path: "providers.magpie.default_model", Value: "deepseek/pro"},
+			edit.KV{Path: "providers.magpie.request_timeout_seconds", Value: 900},
+			edit.KV{Path: "providers.magpie.key_cmd", Value: "cat ~/.gw-key"},
+			edit.KV{Path: "providers.magpie.extra_headers.X-Mine", Value: "1"},
+			edit.KV{Path: "providers.magpie.base_url", Value: "http://127.0.0.1:1/v1"},
+			edit.KV{Path: "providers.magpie.models", Value: []string{"gone/old"}},
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := provider.Save(provider.Provider{ID: "kimi", Name: "Kimi", Chat: "https://api.moonshot.ai/v1", Key: "k", Models: []string{"k3"}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := a.Sync(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(when string) {
+		t.Helper()
+		for _, p := range []string{path, bot} {
+			var c struct {
+				Providers map[string]struct {
+					Name    string            `yaml:"name"`
+					Default string            `yaml:"default_model"`
+					Timeout int               `yaml:"request_timeout_seconds"`
+					KeyCmd  string            `yaml:"key_cmd"`
+					Headers map[string]string `yaml:"extra_headers"`
+					BaseURL string            `yaml:"base_url"`
+					APIKey  string            `yaml:"api_key"`
+					APIMode string            `yaml:"api_mode"`
+					Models  []string          `yaml:"models"`
+				} `yaml:"providers"`
+			}
+			raw := readFile(p)
+			if err := yaml.Unmarshal([]byte(raw), &c); err != nil {
+				t.Fatalf("%v\n%s", err, raw)
+			}
+			mp := c.Providers[magpieID]
+			if mp.Name != "My GW" || mp.Default != "deepseek/pro" || mp.Timeout != 900 || mp.KeyCmd != "cat ~/.gw-key" || mp.Headers["X-Mine"] != "1" {
+				t.Errorf("%s: the user's settings not kept in %s:\n%s", when, p, raw)
+			}
+			if mp.BaseURL == "http://127.0.0.1:1/v1" || mp.APIKey == "" || mp.APIMode != "chat_completions" || mp.Headers["User-Agent"] != "hermes-agent" ||
+				slices.Contains(mp.Models, "gone/old") || !slices.Contains(mp.Models, "kimi/k3") {
+				t.Errorf("%s: magpie's own parts not written in %s:\n%s", when, p, raw)
+			}
+		}
+	}
+	check("sync")
+	if err := f.Set("magpie/kimi/k3"); err != nil {
+		t.Fatal(err)
+	}
+	check("pick")
+}
+
+// PaulT on Discord: a key made under Gateway keys, put in Hermes's
+// config.yaml in place of magpie's, goes through magpie all the same, so
+// the check is quiet and a sync keeps it. A key the gateway doesn't take
+// still is drift.
+func TestHermesWithAGatewayKeyOfTheUsers(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro"}}); err != nil {
+		t.Fatal(err)
+	}
+	dir := appdir.HermesHomeIn(home)
+	path := filepath.Join(dir, "config.yaml")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(path, []byte("model:\n  default: x\n"), 0o644)
+	a := hermes(home)
+	if err := a.Field("model").Set("magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	if d := a.Check(); d != "" {
+		t.Fatalf("as magpie wrote it: %s", d)
+	}
+	secret, err := access.Update("add-key", access.Change{Name: "hermes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := edit.SetYAML(path, edit.KV{Path: "providers.magpie.api_key", Value: secret}); err != nil {
+		t.Fatal(err)
+	}
+	if d := a.Check(); d != "" {
+		t.Fatalf("a key the gateway issued is drift: %s", d)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := edit.GetYAML(path, "providers.magpie.api_key"); v != secret {
+		t.Fatalf("a sync wrote over the user's key: %q", v)
+	}
+	if err := edit.SetYAML(path, edit.KV{Path: "providers.magpie.api_key", Value: "sk-not-this-gateways"}); err != nil {
+		t.Fatal(err)
+	}
+	if d := a.Check(); !strings.Contains(d, "api_key") {
+		t.Fatalf("a key the gateway doesn't take is not reported: %q", d)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := edit.GetYAML(path, "providers.magpie.api_key"); v != gateway.Token {
+		t.Fatalf("a key the gateway doesn't take is kept: %q", v)
+	}
+}
+
+// PaulT on Discord: Hermes's provider written as Hermes keeps keys, the
+// api_key "${MAGPIE_API_KEY}" with the key in Hermes's .env, was marked as
+// needing attention. A reference names the key Hermes sends: one that
+// reaches magpie is not drift and a sync keeps it; one magpie can't see is
+// unknown, kept and not drift; one naming a key the gateway doesn't take
+// is drift, and a sync puts magpie's key into the .env, the reference kept.
+func TestHermesWithAKeyInItsEnvFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("MAGPIE_API_KEY", "")
+	os.Unsetenv("MAGPIE_API_KEY")
+	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Chat: "https://api.deepseek.com/v1", Key: "k", Models: []string{"pro"}}); err != nil {
+		t.Fatal(err)
+	}
+	dir := appdir.HermesHomeIn(home)
+	path := filepath.Join(dir, "config.yaml")
+	env := filepath.Join(dir, ".env")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(path, []byte("model:\n  default: x\n"), 0o644)
+	a := hermes(home)
+	if err := a.Field("model").Set("magpie/deepseek/pro"); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := access.Update("add-key", access.Change{Name: "hermes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the reporter's provider, as he wrote it
+	mine := "model:\n  default: deepseek/pro\n  provider: magpie\nproviders:\n  magpie:\n    name: magpie\n    api_key: \"${MAGPIE_API_KEY}\"\n    api_mode: chat_completions\n    base_url: " + here(home).v1() + "\n"
+	if err := os.WriteFile(path, []byte(mine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref := func(what string) {
+		t.Helper()
+		if v, _ := edit.GetYAML(path, "providers.magpie.api_key"); v != "${MAGPIE_API_KEY}" {
+			t.Fatalf("%s: the user's reference was written over: %q", what, v)
+		}
+	}
+	for _, c := range []struct{ name, line string }{
+		{"a gateway key", "MAGPIE_API_KEY=" + secret},
+		{"magpie's own key, quoted", "export MAGPIE_API_KEY=\"" + gateway.Token + "\""},
+	} {
+		os.WriteFile(env, []byte("OPENROUTER_API_KEY=sk-or\n"+c.line+"\n"), 0o600)
+		if d := a.Check(); d != "" {
+			t.Fatalf("%s in .env is drift: %s", c.name, d)
+		}
+		if err := a.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		ref(c.name)
+		if err := a.Field("model").Set("magpie/deepseek/pro"); err != nil {
+			t.Fatal(err)
+		}
+		ref(c.name + ", then a pick")
+	}
+	// ${env:VAR}, Hermes's other spelling, from the environment
+	os.Remove(env)
+	if err := edit.SetYAML(path, edit.KV{Path: "providers.magpie.api_key", Value: "${env:MAGPIE_API_KEY}"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MAGPIE_API_KEY", secret)
+	if d := a.Check(); d != "" {
+		t.Fatalf("a gateway key in the environment is drift: %s", d)
+	}
+	os.Unsetenv("MAGPIE_API_KEY")
+	if err := edit.SetYAML(path, edit.KV{Path: "providers.magpie.api_key", Value: "${MAGPIE_API_KEY}"}); err != nil {
+		t.Fatal(err)
+	}
+	// a variable only the shell sets, which magpie doesn't see: unknown
+	if d := a.Check(); d != "" {
+		t.Fatalf("a variable magpie can't see is drift: %s", d)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	ref("a variable magpie can't see")
+	if _, err := os.Stat(env); err == nil {
+		t.Fatal("a sync made a .env for a variable magpie can't see")
+	}
+	// a key the gateway doesn't take
+	os.WriteFile(env, []byte("# keys\nMAGPIE_API_KEY=sk-not-this-gateways\nOTHER=1\n"), 0o600)
+	if d := a.Check(); !strings.Contains(d, "api_key") {
+		t.Fatalf("a key the gateway doesn't take is not reported: %q", d)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	ref("a key the gateway doesn't take")
+	b, _ := os.ReadFile(env)
+	if want := "# keys\nMAGPIE_API_KEY=" + gateway.Token + "\nOTHER=1\n"; string(b) != want {
+		t.Fatalf(".env after a sync:\n%s\nwant:\n%s", b, want)
+	}
+	if d := a.Check(); d != "" {
+		t.Fatalf("after a sync: %s", d)
+	}
+	// more than the one reference: magpie's key, as before
+	if err := edit.SetYAML(path, edit.KV{Path: "providers.magpie.api_key", Value: "x${MAGPIE_API_KEY}"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := edit.GetYAML(path, "providers.magpie.api_key"); v != gateway.Token {
+		t.Fatalf("a value that doesn't reach magpie is kept: %q", v)
+	}
+}
+
+// keyHolds, which every agent's check of magpie's key goes through: a key
+// of the gateway's own stands in for magpie's, never for a URL or another
+// value, and one the gateway doesn't take doesn't.
+func TestKeyHoldsTakesAGatewayKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	secret, err := access.Update("add-key", access.Change{Name: "mine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		v, want string
+		ok      bool
+	}{
+		{gateway.Token, gateway.Token, true},
+		{secret, gateway.Token, true},
+		{secret, gateway.TokenFor("alma"), true},
+		{"sk-other", gateway.Token, false},
+		{"", gateway.Token, false},
+		{secret, "http://127.0.0.1:3425/v1", false},
+		{secret, "chat_completions", false},
+	} {
+		if got := keyHolds(c.v, c.want); got != c.ok {
+			t.Errorf("keyHolds(%q, %q) = %v", c.v, c.want, got)
+		}
+	}
+	if d := wiringOff("X", "x.yaml", func(string) (string, bool) { return secret, true }, "api_key", gateway.Token); d != "" {
+		t.Fatalf("wiringOff: %s", d)
 	}
 }

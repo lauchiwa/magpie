@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -44,19 +45,19 @@ func identityCmd(args []string) error {
 		return identityUnbind(rest[1:])
 	case "rm", "remove":
 		return identityRemove(rest[1:])
+	case "reconcile":
+		return identityReconcile(rest[1:])
 	}
-	return fmt.Errorf("usage: magpie identity [ls|import|arm|disarm|confirm|bind|unbind|rm]")
+	return fmt.Errorf("usage: magpie identity [ls|import|arm|disarm|confirm|bind|unbind|rm|reconcile]")
 }
 
 func identityList() error {
-	ps, err := identity.Profiles()
+	// profiles and bindings from one read (lifecycle_fork.go)
+	view, err := provider.ReadIdentityView(false)
 	if err != nil {
 		return err
 	}
-	bound, err := identity.Bindings()
-	if err != nil {
-		return err
-	}
+	ps, bound := view.Snapshot.Profiles(), view.Snapshot.Bindings()
 	defer identityArmedNote()
 	if len(ps) == 0 {
 		fmt.Println("no identity profiles. Import one from a request a client sent:")
@@ -266,12 +267,12 @@ func identityBind(args []string) error {
 	if err != nil {
 		return err
 	}
-	// said here rather than at the first request: a profile bound to an
-	// account or a plugin's provider would be read and never sent
-	if why := p.IdentityApplies(); why != "" {
-		return fmt.Errorf("%s: %s", p.Name, why)
-	}
-	if err := identity.Bind(p.ID, args[1]); err != nil {
+	// bound as the provider read here: renamed since, under its new id;
+	// deleted or made anew, refused. BindIdentity says first, rather than
+	// the first request, that a profile bound to an account or a plugin's
+	// provider would be read and never sent
+	between("bind")
+	if err := provider.BindIdentity(*p, args[1]); err != nil {
 		return err
 	}
 	fmt.Printf("%s now presents %s on every request magpie makes to it\n", p.Name, args[1])
@@ -284,12 +285,34 @@ func identityUnbind(args []string) error {
 	}
 	p, err := provider.Find(args[0])
 	if err != nil {
-		return err
+		return unbindOrphan(args[0], err)
 	}
-	if err := identity.Unbind(p.ID); err != nil {
+	between("unbind")
+	if err := provider.UnbindIdentity(*p); err != nil {
 		return err
 	}
 	fmt.Printf("%s presents no identity profile\n", p.Name)
+	return nil
+}
+
+// unbindOrphan removes the binding a provider no longer stored left under
+// id (deleted, or bound by hand): there is no provider to unbind it as.
+// With no binding there either, notFound is the answer; bindings that can't
+// be read are said, never taken for none.
+func unbindOrphan(id string, notFound error) error {
+	id = strings.ToLower(strings.TrimSpace(id))
+	bound, err := identity.Bindings()
+	if err != nil {
+		return fmt.Errorf("%w; whether a binding is left under %q is unknown: %v", notFound, id, err)
+	}
+	if _, ok := bound[id]; !ok {
+		return notFound
+	}
+	between("unbind")
+	if err := provider.UnbindOrphan(id); err != nil {
+		return err
+	}
+	fmt.Printf("no provider %s is stored; the binding left under it is removed\n", id)
 	return nil
 }
 
@@ -302,4 +325,123 @@ func identityRemove(args []string) error {
 	}
 	fmt.Printf("removed %s, and every binding to it\n", args[0])
 	return nil
+}
+
+const reconcileUsage = "usage: magpie identity reconcile [--yes [--keep|--drop]]"
+
+// identityReconcile is `magpie identity reconcile`: lifecycle.json put in
+// step with providers.json after a change magpie didn't make (an older
+// magpie, an editor, a providers.json read from its .bak). Alone it shows
+// each provider id's instance and the bindings left undecided, and writes
+// nothing. --yes writes, keeping the old lifecycle.json (and a journal
+// that couldn't be finished) aside first; with undecided bindings it also
+// needs --keep (leave them) or --drop (unbind them). Any other argument
+// is refused before anything is read.
+func identityReconcile(args []string) error {
+	yes, keep, drop := false, false, false
+	for _, a := range args {
+		switch a {
+		case "--yes", "-y":
+			yes = true
+		case "--keep":
+			keep = true
+		case "--drop":
+			drop = true
+		default:
+			return fmt.Errorf("%s: unknown argument %q", reconcileUsage, a)
+		}
+	}
+	if keep && drop {
+		return fmt.Errorf("%s: --keep and --drop can't both be given", reconcileUsage)
+	}
+	if !yes {
+		plan, err := provider.PreviewReconcile()
+		if err != nil {
+			return err
+		}
+		printReconcile(plan)
+		if plan.Pending != "" || plan.State != "legacy" && plan.State != "current" || len(plan.Affected) > 0 {
+			switch {
+			case len(plan.Affected) > 0:
+				fmt.Println("nothing was written. To write it: magpie identity reconcile --yes --keep (leave these bindings) or --drop (unbind them)")
+			default:
+				fmt.Println("nothing was written. To write it: magpie identity reconcile --yes")
+			}
+		}
+		return nil
+	}
+	choice := provider.ReconcileUndecided
+	switch {
+	case keep:
+		choice = provider.ReconcileKeep
+	case drop:
+		choice = provider.ReconcileDrop
+	}
+	plan, err := provider.Reconcile(choice)
+	for _, k := range plan.Kept {
+		fmt.Printf("kept %s\n", k)
+	}
+	if errors.Is(err, provider.ErrReconcileChoice) {
+		printReconcile(plan)
+		return fmt.Errorf("nothing was written: %d binding(s) are undecided; add --keep to leave them or --drop to unbind them", len(plan.Affected))
+	}
+	if err != nil {
+		return err
+	}
+	printReconcile(plan)
+	if plan.Wrote {
+		fmt.Println("reconciled")
+	}
+	return nil
+}
+
+func printReconcile(plan provider.ReconcilePlan) {
+	if plan.Pending != "" {
+		fmt.Printf("an operation is pending in %s: --yes finishes it, or keeps it aside when its files no longer match it\n", plan.Pending)
+	}
+	switch plan.State {
+	case "legacy":
+		fmt.Println("no lifecycle.json: providers are matched to their bindings by id, and there is nothing to reconcile")
+		return
+	case "current":
+		if len(plan.Affected) == 0 {
+			fmt.Println("lifecycle.json matches providers.json")
+		}
+	case "adopt":
+		fmt.Println("providers.json was changed outside magpie; lifecycle.json would take it as below")
+	case "corrupt":
+		fmt.Println("lifecycle.json is corrupt; --yes keeps it aside and gives every provider a new instance (requests read before then are refused once)")
+	case "fallback":
+		fmt.Println("providers.json can't be read and its .bak is read in its place; fix it, or save any provider change, then reconcile")
+	case "missing":
+		fmt.Println("providers.json is not there; add a provider (or put it back), then reconcile")
+		return
+	}
+	for _, r := range plan.Rows {
+		inst := r.Instance
+		switch {
+		case r.Change == "deleted":
+			inst = "(retired)"
+		case inst == "":
+			inst = "(new instance)"
+		case len(inst) > 12:
+			inst = inst[:12]
+		}
+		change := ""
+		if r.Change != "" {
+			change = "  " + r.Change + " outside magpie"
+		}
+		fmt.Printf("  %-24s %s%s\n", r.ID, inst, change)
+	}
+	if len(plan.Affected) == 0 {
+		return
+	}
+	fmt.Println("undecided bindings (their requests are refused until reconciled):")
+	for _, a := range plan.Affected {
+		why := "added under an id this binding was left on"
+		if a.Gone {
+			why = "removed from providers.json while bound"
+		}
+		fmt.Printf("  %-24s %s  %s\n", a.ID, a.Profile, why)
+	}
 }

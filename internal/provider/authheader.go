@@ -66,7 +66,7 @@ func RetryOneAuth(p Provider, req *http.Request, res *http.Response, do func(*ht
 			return nil, err
 		}
 		if res.StatusCode != http.StatusUnauthorized && res.StatusCode != http.StatusForbidden {
-			LearnAuthHeader(p.ID, only)
+			LearnAuthHeader(p.ID, only, Expect(p))
 			return res, nil
 		}
 	}
@@ -77,7 +77,7 @@ var learnMu sync.Mutex
 
 // LearnAuthHeader keeps only as the header provider id's key goes in, when
 // it sends both still: one the user picked is theirs.
-func LearnAuthHeader(id, only string) {
+func LearnAuthHeader(id, only string, opts ...WriteOption) {
 	learnMu.Lock()
 	defer learnMu.Unlock()
 	f, err := read()
@@ -90,7 +90,7 @@ func LearnAuthHeader(id, only string) {
 				return
 			}
 			f.Providers[i].AuthHeader = only
-			_ = store(f)
+			_ = storeWith(f, opts...) // fork: only to the provider it was learned of
 			return
 		}
 	}
@@ -102,5 +102,5 @@ func (p Provider) listAuth(ctx context.Context) context.Context {
 	if !p.BothAuth() {
 		return ctx
 	}
-	return catalog.WithListAuth(ctx, p.AuthHeader, func(only string) { LearnAuthHeader(p.ID, only) })
+	return catalog.WithListAuth(ctx, p.AuthHeader, func(only string) { LearnAuthHeader(p.ID, only, Expect(p)) })
 }

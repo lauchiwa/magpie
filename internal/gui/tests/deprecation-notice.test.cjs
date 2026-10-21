@@ -105,6 +105,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // a phone: under the text, at its end, nothing wider than the page
         await page.setViewportSize({ width: 390, height: 760 });
+        // the sidebar gives way on the width's media change (layoutNav), which
+        // a busy machine runs later than any fixed pause: it is waited for
+        await page.waitForFunction(() => !document.body.classList.contains("side-nav"));
         await page.waitForTimeout(150);
         await shot("phone");
         const p = await look();

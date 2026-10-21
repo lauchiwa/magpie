@@ -1,7 +1,12 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
+	"regexp"
+	"strconv"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -12,6 +17,22 @@ import (
 func outputLimit(p provider.Provider, model string) int {
 	for _, e := range provider.Served() {
 		if e.Group == "" && e.Provider.ID == p.ID && (e.Model == model || e.ID == model) && e.Output > 0 {
+			return e.Output
+		}
+	}
+	return 0
+}
+
+// userOutput is the Max output the user set for p's model (provider ›
+// model, or the provider's "*"), 0 when they set none. A request asking
+// for more is lowered to it on any route, not only in a group: Claude Code
+// asks claude-* models for their full 128000 and isn't told magpie's
+// figure for them (claudeOutput), so a key whose quota is held per request
+// as max_tokens times the price turned every turn away, and the field the
+// editor says caps max_tokens did nothing (YaCo on Discord).
+func userOutput(p provider.Provider, model string) int {
+	for _, e := range provider.Served() {
+		if e.Group == "" && e.Provider.ID == p.ID && (e.Model == model || e.ID == model) && e.OutputSet && e.Output > 0 {
 			return e.Output
 		}
 	}
@@ -92,4 +113,75 @@ func withMaxOutput(proto provider.Protocol, body []byte, limit int) []byte {
 		return body
 	}
 	return withFields(body, fields)
+}
+
+// replyLeft reads, from a refusal that counts the reply asked for in the
+// window (DeepSeek's and vLLM's "This model's maximum context length is
+// 1000000 tokens. However, you requested 1100000 tokens (706784 in the
+// messages, 393216 in the completion)"), the tokens the window has left
+// for a reply after the prompt; 0 when the error isn't one of those, or
+// the prompt alone fills the window.
+func replyLeft(msg []byte) int {
+	window, prompt := 0, 0
+	if m := windowAndPrompt.FindSubmatch(msg); m != nil {
+		window, _ = strconv.Atoi(string(m[1]))
+		prompt, _ = strconv.Atoi(string(m[2]))
+		if m[2] == nil {
+			prompt, _ = strconv.Atoi(string(m[3]))
+		}
+	} else if m := inputPlusReply.FindSubmatch(msg); m != nil {
+		prompt, _ = strconv.Atoi(string(m[1]))
+		window, _ = strconv.Atoi(string(m[2]))
+	}
+	if window <= 0 || prompt <= 0 || prompt >= window {
+		return 0
+	}
+	return window - prompt
+}
+
+// windowAndPrompt matches the window and the prompt's part of a refusal
+// that adds the reply's allowance to the prompt: "(N in the messages, M in
+// the completion)", or vLLM's newer "your prompt contains at least N input
+// tokens".
+var windowAndPrompt = regexp.MustCompile(`(?is)maximum context length is (\d+) tokens.{0,200}?(?:\((\d+) in the messages, \d+ in the completion\)|your prompt contains at least (\d+) input tokens)`)
+
+// inputPlusReply is Anthropic's words for the same, which an endpoint
+// speaking its API may answer with: "input length and `max_tokens` exceed
+// context limit: 197202 + 21333 > 200000".
+var inputPlusReply = regexp.MustCompile(`(?i)input length and .{0,3}max_tokens.{0,3} exceed context limit:\s*(\d+)\s*\+\s*\d+\s*>\s*(\d+)`)
+
+// leastReplyLeft is the least room left for a reply that is worth asking
+// for: less, and the conversation needs compacting, which the refusal
+// tells the agent as it is (DeepSeek's own default reply is 8K).
+const leastReplyLeft = 8192
+
+// withReplyCap is body asking for a reply of at most limit tokens, in
+// proto's words, whether or not it named a limit before: a request that
+// named none was given the vendor's own, which was too large. false when
+// it asked for no more already, or proto keeps no such field magpie sets.
+func withReplyCap(proto provider.Protocol, body []byte, limit int) ([]byte, bool) {
+	if limit <= 0 {
+		return nil, false
+	}
+	out := withMaxOutput(proto, body, limit)
+	if !bytes.Equal(out, body) {
+		return out, true
+	}
+	var key string
+	switch proto {
+	case provider.Chat:
+		if gjson.GetBytes(body, "max_tokens").Exists() || gjson.GetBytes(body, "max_completion_tokens").Exists() {
+			return nil, false
+		}
+		key = "max_tokens"
+	case provider.Responses:
+		if gjson.GetBytes(body, "max_output_tokens").Exists() {
+			return nil, false
+		}
+		key = "max_output_tokens"
+	default:
+		// Anthropic's always names one; Gemini's is lowered above
+		return nil, false
+	}
+	return withFields(body, map[string]any{key: limit}), true
 }

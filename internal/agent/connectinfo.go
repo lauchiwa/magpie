@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/edit"
-	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -61,7 +61,10 @@ func (a *Agent) Source() string {
 		if codexChatGPT(dir) {
 			return "chatgpt"
 		}
-		if v, _ := edit.GetJSON(filepath.Join(dir, "auth.json"), "OPENAI_API_KEY"); v != "" {
+		var k struct {
+			Key string `json:"OPENAI_API_KEY"`
+		}
+		if b, ok := provider.CodexSignIn(dir); ok && json.Unmarshal(b, &k) == nil && k.Key != "" {
 			return "key"
 		}
 	case "opencode", "mimocode", "deveco":
@@ -143,22 +146,7 @@ type runningProc struct {
 
 // running lists the processes a pgrep -f pattern matches. A var so tests
 // can say.
-var running = func(pat string) []runningProc {
-	out, _ := proc.Command("pgrep", "-f", pat).Output()
-	pids := strings.Fields(string(out))
-	if len(pids) == 0 {
-		return nil
-	}
-	out, _ = proc.Command("ps", "-o", "etime=,command=", "-p", strings.Join(pids, ",")).Output()
-	var ps []runningProc
-	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		et, cmd, _ := strings.Cut(strings.TrimSpace(l), " ")
-		if up, ok := elapsed(et); ok {
-			ps = append(ps, runningProc{up, strings.TrimSpace(cmd)})
-		}
-	}
-	return ps
-}
+var running = listRunning
 
 // changedAt is when magpie last changed what the agent reads at start. It
 // is kept in the stash with a digest of what that was, so neither the

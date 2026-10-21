@@ -7,6 +7,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -142,7 +143,7 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openAsk(ask{crumbs: []string{"providers", p.Name, "key"}, input: in,
 			hint: "now " + dash(provider.Mask(p.Key)) + " · the key is kept in magpie's providers file",
 			onEnter: func(v string) tea.Cmd {
-				return saveProvider(p.ID, func(p *provider.Provider) { p.Key = v; provider.ForgetBalances() }, p.Name+" key "+provider.Mask(v))
+				return saveProvider(p, func(p *provider.Provider) { p.Key = v; provider.ForgetBalances() }, p.Name+" key "+provider.Mask(v))
 			}})
 	case "w":
 		if p.IsVertex() {
@@ -151,7 +152,7 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		pr := provider.Preset(p.Preset)
 		if pr != nil && pr.Kind == provider.KindLocal {
-			id, name := p.ID, p.Name
+			name := p.Name
 			now := provider.AddressOf(p.Chat, p.Responses, p.Anthropic)
 			m.openAsk(localAddressAsk(*pr, []string{"providers", name, "address"}, now, func(v string) tea.Cmd {
 				q := p
@@ -161,11 +162,18 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if at := provider.AddressOf(q.Chat, q.Responses, q.Anthropic); v == "" || at == now {
 					return func() tea.Msg { return flashMsg{text: name + " address unchanged", ok: true} }
 				}
-				return saveProvider(id, func(p *provider.Provider) {
+				return saveProvider(p, func(p *provider.Provider) {
 					_ = p.AtAddress(v)
 					provider.ForgetBalances()
 				}, name+" address "+provider.AddressOf(q.Chat, q.Responses, q.Anthropic))
 			}))
+			return m, nil
+		}
+		if pr == nil && p.Account == nil && len(customURLs(p)) > 0 {
+			// a provider of the user's own: its base URLs, one by one
+			// (luluxiu_1_4392 on Discord: on Linux, the TUI had no way to
+			// change one)
+			m.openAsk(customURLsAsk(p, customURLs(p), nil))
 			return m, nil
 		}
 		if pr == nil || pr.Endpoint == "" {
@@ -179,9 +187,9 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p.IsRemoteMagpie() {
 			now = p.Anthropic // the address as typed, without /v1
 		}
-		id, name := p.ID, p.Name
+		name := p.Name
 		m.openAsk(endpointAsk(*pr, []string{"providers", name, "address"}, now, func(v string) tea.Cmd {
-			return saveProvider(id, func(p *provider.Provider) {
+			return saveProvider(p, func(p *provider.Provider) {
 				p.Chat, p.Responses = v, v
 				if p.IsRemoteMagpie() {
 					p.Anthropic = "" // put again from the address typed
@@ -195,7 +203,7 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openAsk(ask{crumbs: []string{"providers", p.Name, "family"}, input: in, empty: true,
 			hint: "agents can be shown only some families: magpie visible <agent> <family>",
 			onEnter: func(v string) tea.Cmd {
-				return saveProvider(p.ID, func(p *provider.Provider) { p.Family = v }, p.Name+" family "+dash(v))
+				return saveProvider(p, func(p *provider.Provider) { p.Family = v }, p.Name+" family "+dash(v))
 			}})
 	case "u":
 		on := !p.Unlisted
@@ -203,7 +211,7 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if on {
 			what = "serves only through routing groups"
 		}
-		return m, saveProvider(p.ID, func(p *provider.Provider) { p.Unlisted = on }, p.Name+" "+what)
+		return m, saveProvider(p, func(p *provider.Provider) { p.Unlisted = on }, p.Name+" "+what)
 	case "o":
 		off := !p.Off
 		what := "switched on"
@@ -211,7 +219,7 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			what = "switched off: agents are given none of its models"
 		}
 		id := p.ID
-		return m, reseatCmd(func() error { return provider.SetOff(id, off) }, p.Name+" "+what)
+		return m, reseatCmd(func() error { return provider.SetOff(id, off, provider.Expect(p)) }, p.Name+" "+what)
 	case "t":
 		m.flash, m.flashOK = "testing "+p.Name+"…", true
 		return m, testCmd(p)
@@ -222,12 +230,13 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		if m.confirm != "provider/"+p.ID {
 			m.confirm = "provider/" + p.ID
+			m.confirmProv = p // fork: the second d removes this one, as it was read
 			m.flash, m.flashOK = "press d again to remove "+p.Name, false
 			return m, nil
 		}
 		m.confirm = ""
-		id := p.ID
-		return m, reseatCmd(func() error { return provider.Delete(id) }, "removed "+p.Name)
+		sel := m.confirmProv
+		return m, reseatCmd(func() error { return provider.DeleteChecked(sel) }, "removed "+p.Name)
 	}
 	return m, nil
 }
@@ -237,7 +246,16 @@ func (m model) updateProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func reseatCmd(change func() error, done string) tea.Cmd {
 	return func() tea.Msg {
 		moved, err := agent.Reseat(change)
-		if err != nil {
+		// fork: made, with a step after it failed (a removed provider's
+		// StepFun sign-in): that step is done once more, never the change
+		var fu *provider.FollowUpError
+		if errors.As(err, &fu) && fu.Committed {
+			if rerr := fu.Redo(); rerr != nil {
+				done += ", but its " + fu.Step + " step failed again: " + rerr.Error()
+			} else {
+				err = nil
+			}
+		} else if err != nil {
 			return flashMsg{text: err.Error()}
 		}
 		for _, mv := range moved {
@@ -247,19 +265,21 @@ func reseatCmd(change func() error, done string) tea.Cmd {
 			}
 			done += "; moved " + mv.String()
 		}
-		return flashMsg{text: done, ok: true}
+		return flashMsg{text: done, ok: err == nil}
 	}
 }
 
-// saveProvider changes one provider and saves it.
-func saveProvider(id string, change func(*provider.Provider), done string) tea.Cmd {
+// saveProvider changes one provider, sel as the list read it, and saves
+// it: the change is made to it as it is now, and refused when another
+// provider has its id since (renamed, deleted or made anew).
+func saveProvider(sel provider.Provider, change func(*provider.Provider), done string) tea.Cmd {
 	return func() tea.Msg {
-		p, err := provider.Find(id)
+		p, err := provider.Find(sel.ID)
 		if err != nil {
 			return flashMsg{text: err.Error()}
 		}
 		change(p)
-		if err := provider.Save(*p); err != nil {
+		if err := provider.Save(*p, provider.Expect(sel)); err != nil {
 			return flashMsg{text: err.Error()}
 		}
 		return flashMsg{text: done, ok: true}
@@ -384,12 +404,16 @@ func modelOptions(id string) []agent.Option {
 // for agents, and the list stays open.
 func (m *model) openProviderModels(id string) {
 	p := m.provs[m.prow]
+	opened := p // fork: what the toggles save is checked against
 	m.pk = picker{
 		crumbs: []string{"providers", p.Name, "models"},
 		input:  newInput("filter models"),
 		items:  modelOptions(id),
 		relist: func() []agent.Option { return modelOptions(id) },
-		empty:  "no models known yet · m on the providers list asks the vendor for them",
+		empty:  "no models known yet · ctrl+r asks the vendor for them",
+		// the list asked again from here, where its models are looked at
+		// (#2113), as m does on the providers list
+		refetch: func() tea.Cmd { return refetchCmd(id) },
 		toggle: func(model string) ([]agent.Option, string, bool) {
 			p, err := provider.Find(id)
 			if err != nil {
@@ -412,7 +436,7 @@ func (m *model) openProviderModels(id string) {
 				ids = append(slices.Clone(ids), model)
 			}
 			p.Models = ids
-			if err := provider.Save(*p); err != nil {
+			if err := provider.Save(*p, provider.Expect(opened)); err != nil {
 				return nil, err.Error(), false
 			}
 			items := modelOptions(id)
@@ -544,6 +568,73 @@ func customURLAsk(api customAPI) ask {
 							return askMsg{addKeyAsk(p)}
 						}
 					}}}
+			}
+		}}
+}
+
+// customURLs are the APIs a provider of the user's own has a base URL
+// for, in customAPIs' order.
+func customURLs(p provider.Provider) []customAPI {
+	var out []customAPI
+	for _, c := range customAPIs {
+		if customURLOf(p, c) != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// customURLOf is p's base URL on api.
+func customURLOf(p provider.Provider, api customAPI) string {
+	switch api.id {
+	case "custom-openai":
+		return p.Chat
+	case "custom-responses":
+		return p.Responses
+	case "custom-anthropic":
+		return p.Anthropic
+	}
+	return p.Gemini
+}
+
+// customURLsAsk asks for each of p's base URLs in turn, the one it has
+// now typed in, and saves those changed once all are answered: enter
+// alone keeps one, as typed or emptied.
+func customURLsAsk(p provider.Provider, apis []customAPI, typed []string) ask {
+	api := apis[len(typed)]
+	in := newInput(api.example)
+	in.SetValue(customURLOf(p, api))
+	return ask{crumbs: []string{"providers", p.Name, "base URL"}, input: in, empty: true,
+		hint: api.name + " · enter keeps it",
+		onEnter: func(v string) tea.Cmd {
+			return func() tea.Msg {
+				if v != "" {
+					u, err := url.Parse(v)
+					if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+						return flashMsg{text: "the base URL is an http:// or https:// address, e.g. " + api.example}
+					}
+				}
+				typed := append(slices.Clone(typed), strings.TrimRight(v, "/"))
+				if len(typed) < len(apis) {
+					return askMsg{customURLsAsk(p, apis, typed)}
+				}
+				var set []int
+				var said []string
+				for i, c := range apis {
+					if typed[i] != "" && typed[i] != customURLOf(p, c) {
+						set = append(set, i)
+						said = append(said, typed[i])
+					}
+				}
+				if len(set) == 0 {
+					return flashMsg{text: p.Name + " base URL unchanged", ok: true}
+				}
+				return saveProvider(p, func(q *provider.Provider) {
+					for _, i := range set {
+						apis[i].set(q, typed[i])
+					}
+					provider.ForgetBalances()
+				}, p.Name+" base URL "+strings.Join(said, " · "))()
 			}
 		}}
 }
@@ -905,9 +996,13 @@ func ownAppName(r provider.WorkBuddyCheckin) string {
 	return "the vendor"
 }
 
-// ownAppWords says a check-in the vendor pays only to its own app
-// (Trae CN's 9074, #808) is to be done in that app.
+// ownAppWords says a check-in the vendor pays only to its own app is to
+// be done in that app. Trae CN's (9074, #808) says what is known: Trae CN
+// refused it; that only its app is paid isn't so (#1920).
 func ownAppWords(r provider.WorkBuddyCheckin) string {
+	if r.By == "trae" {
+		return provider.TraeRefusedWords
+	}
 	name := ownAppName(r)
 	return name + " only gives check-in credits to its own app; check in in the " + name + " app"
 }
@@ -940,6 +1035,9 @@ func checkinCell(q provider.SubscriptionQuota, now time.Time) string {
 	case provider.CheckinCaptcha:
 		return sMuted.Render("签到 needs a captcha · check in in its app")
 	case provider.CheckinOwnApp:
+		if r.By == "trae" {
+			return sMuted.Render("签到 refused by Trae CN (9074) · check in in its app")
+		}
 		return sMuted.Render("签到 only in " + ownAppName(*r) + "'s own app · check in there")
 	}
 	return sBad.Render("签到 failed") + sMuted.Render(" · c tries again")
@@ -949,7 +1047,14 @@ func (m model) updateUsage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	i := slices.Index(periods, m.period)
 	switch msg.String() {
 	case "u":
+		// the choice is Settings' QuotaLeft, which the app and the menu bar
+		// read too: u turns it for them as well (#122)
 		m.qleft = !m.qleft
+		s := settings.Load()
+		s.QuotaLeft = m.qleft
+		if err := settings.Save(s); err != nil {
+			m.flash, m.flashOK = err.Error(), false
+		}
 		return m, nil
 	case "c":
 		// WorkBuddy's daily check-in, as the app's "Check in now"
@@ -1030,6 +1135,15 @@ func fmtCost(t usage.Totals) string {
 	return "≈" + s
 }
 
+// credits is " · " and what the credited calls cost in their plans'
+// credits, as the replies said (#2512); "" when none said.
+func credits(t usage.Totals) string {
+	if c := usage.FormatCredits(t); c != "" {
+		return " · " + c
+	}
+	return ""
+}
+
 var bars = []rune(" ▁▂▃▄▅▆▇█")
 
 func (m model) viewUsage() string {
@@ -1087,6 +1201,7 @@ func (m model) usageBlock(b *strings.Builder, s usage.Summary, room int, names m
 	if s.Unpriced > 0 { // calls with no known price, not in the cost (#1856)
 		line += sMuted.Render(fmt.Sprintf(" (%d call%s unpriced)", s.Unpriced, plural(s.Unpriced)))
 	}
+	line += sMuted.Render(credits(s.Totals))
 	if s.Errors > 0 {
 		line += sMuted.Render(" · ") + sBad.Render(fmt.Sprintf("%d error%s", s.Errors, plural(s.Errors)))
 	}
@@ -1126,7 +1241,7 @@ func (m model) usageBlock(b *strings.Builder, s usage.Summary, room int, names m
 				break
 			}
 			share := fmt.Sprintf("%3.0f%%", 100*float64(g.Tokens())/float64(max(1, s.Tokens())))
-			b.WriteString(pad + "  " + sText.Render(padRight(name(g), w)) + "  " + sMuted.Render(share) + "  " + sText.Render(padRight(fmtTokens(g.Tokens()), 7)) + "  " + sFaint.Render(padRight(fmt.Sprintf("%d call%s", g.Calls, plural(g.Calls)), 10)) + "  " + sOK.Render(fmtCost(g.Totals)) + "\n")
+			b.WriteString(pad + "  " + sText.Render(padRight(name(g), w)) + "  " + sMuted.Render(share) + "  " + sText.Render(padRight(fmtTokens(g.Tokens()), 7)) + "  " + sFaint.Render(padRight(fmt.Sprintf("%d call%s", g.Calls, plural(g.Calls)), 10)) + "  " + sOK.Render(fmtCost(g.Totals)) + sMuted.Render(credits(g.Totals)) + "\n")
 		}
 		b.WriteString("\n")
 	}
@@ -1198,7 +1313,12 @@ func quotaLines(qs []provider.SubscriptionQuota, asked, left bool, width int, no
 		}
 		switch {
 		case q.Balance != "" && len(q.Windows) == 0:
-			out = append(out, line+"  "+sText.Render(q.Balance)+sMuted.Render(" left")+ci)
+			c := sText.Render(q.Balance) + sMuted.Render(" left")
+			if len(q.BalanceSplit) > 0 {
+				// what it is made of: DeepSeek's granted credit apart
+				c += sFaint.Render(" (" + provider.SplitWords(q.BalanceSplit) + ")")
+			}
+			out = append(out, line+"  "+c+ci)
 			continue
 		case q.Error != "":
 			out = append(out, line+"  "+sMuted.Render(trunc(q.Error, max(20, width-tw-2-lipgloss.Width(ci))))+ci)
@@ -1229,8 +1349,10 @@ func quotaLines(qs []provider.SubscriptionQuota, asked, left bool, width int, no
 			if r.Until != nil {
 				c += sFaint.Render(" until " + provider.ResetClock(*r.Until, now))
 			}
-			if provider.AutoResets(q.Provider, q.User) {
-				c += sFaint.Render(" · auto") // spent by itself once the week is used up
+			if q.Provider == "codex" {
+				if auto := provider.AutoResetWords(q.User); auto != "" {
+					c += sFaint.Render(" · " + auto) // spent by itself: its week used up, before one expires, or both
+				}
 			}
 			cells = append(cells, c)
 		}

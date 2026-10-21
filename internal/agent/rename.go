@@ -14,10 +14,24 @@ import (
 func RenameProvider(from, to string) ([]string, error) {
 	from = strings.ToLower(strings.TrimSpace(from))
 	to = strings.ToLower(strings.TrimSpace(to))
-	type move struct {
-		a        *Agent
-		key, val string
+	moves := renameMoves(from, to) // fork: RenameChecked computes them too
+	if err := provider.Rename(from, to); err != nil {
+		return nil, err
 	}
+	return applyRenameMoves(moves, from, to)
+}
+
+// renameMove is an agent's field set to the model by a provider's new id.
+type renameMove struct {
+	a        *Agent
+	key, val string
+}
+
+// renameMoves are the agents' fields on one of from's models, as they are
+// to be once it is renamed to. fork: split out of RenameProvider, so
+// RenameChecked (rename_fork.go) shares it.
+func renameMoves(from, to string) []renameMove {
+	type move = renameMove
 	// what the agents are on is read before: the picker's options name
 	// the provider by the id it has
 	var moves []move
@@ -55,9 +69,13 @@ func RenameProvider(from, to string) ([]string, error) {
 			}
 		}
 	}
-	if err := provider.Rename(from, to); err != nil {
-		return nil, err
-	}
+	return moves
+}
+
+// applyRenameMoves writes moves, then what else in the agents' configs
+// names from (RenameRefs), and answers the agents it moved. fork: split
+// out of RenameProvider, so RenameChecked can redo it alone.
+func applyRenameMoves(moves []renameMove, from, to string) ([]string, error) {
 	var moved []string
 	for _, m := range moves {
 		if err := m.a.Apply(m.key, m.val); err != nil {

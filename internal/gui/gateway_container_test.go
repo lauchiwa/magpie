@@ -61,7 +61,10 @@ func TestGatewayHeldByAContainer(t *testing.T) {
 			name += ".exe"
 		}
 		bin := filepath.Join(dir, name)
-		if err := os.Link(self, bin); err != nil {
+		// a copy on Windows, as gateway_takeover_test.go makes: a link to
+		// the running test binary is the running binary, which Windows won't
+		// let the temp folder's cleanup delete
+		if runtime.GOOS == "windows" || os.Link(self, bin) != nil {
 			b, err := os.ReadFile(self)
 			if err != nil {
 				t.Fatal(err)

@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -24,7 +25,8 @@ type Call struct {
 	Time       time.Time `json:"t"`
 	Agent      string    `json:"agent"`   // claude (Claude Code's CLI), claude-desktop (Desktop's Code tab and Cowork), codex
 	Session    string    `json:"session"` // the id the agent sends the gateway as its session header
-	Model      string    `json:"model"`   // the model the file names: for Claude, the one the vendor answered
+	ThreadID   string    `json:"thread_id,omitempty"`
+	Model      string    `json:"model"` // the model the file names: for Claude, the one the vendor answered
 	// Requested: the model Claude Code was running as (its identity note) when it made
 	// the call, as it was asked for: claude-opus-5[1m] for claude-opus-5 with the long context
 	Requested string `json:"requested,omitempty"`
@@ -41,11 +43,17 @@ type Call struct {
 	ErrorText string `json:"error_text,omitempty"` // its message, the first 400 characters
 	// Codex: the turn's own figures, set only when the turn made just this call
 	TTFT int64 `json:"ttft_ms,omitempty"`
+	// Compaction is Codex's explicit marker that this response compacted the context.
+	Compaction bool `json:"compaction,omitempty"`
 	// Millis: how long the call took. Codex's, of a turn that made this call alone, is what
 	// it says; the rest are told from the file's times, the call's last line less the line
 	// that asked for it (a prompt, a tool's result), and so a little more or less than it was
-	Millis int64  `json:"ms,omitempty"`
-	Cwd    string `json:"cwd,omitempty"`
+	Millis int64 `json:"ms,omitempty"`
+	// Compact: how long a compaction of the context kept the agent waiting, in ms.
+	// Codex's is on the compaction's own call (its Millis); Claude Code's is the
+	// durationMs its compact_boundary line says, on the first call after it
+	Compact int64  `json:"compact_ms,omitempty"`
+	Cwd     string `json:"cwd,omitempty"`
 	// Where the call is in its file, for reading what was said in it (ContentOf): the file,
 	// from where what it was asked began — after the reply before it — to where it ended,
 	// and for Claude Code the id of its message
@@ -82,19 +90,25 @@ type callFile struct {
 	Requested          string
 	LastUser, LastAsst time.Time
 	Began              map[string]time.Time
+	// how long a compaction its file told of took, for the call after it
+	CompactMs int64
 	// Codex
 	CX *cxRun
+	// Pi and omp
+	Pi *piCarry
+	// dsh
+	Dsh *dshCarry
 }
 
 // cxRun is where a rollout's read stands: what its lines have said so far.
 type cxRun struct {
-	Meta                              bool // session_meta seen
-	Session, Cwd, Model, Effort, Turn string
-	Upstream, AccountID, UserID       string
-	Usage                             *codexUsageState
-	Contexts                          map[string]cxContext
-	Turns                             map[string]cxOpen
-	LastIn, LastCall                  time.Time // the last thing the model was given, and the last call's end
+	Meta                                        bool // session_meta seen
+	Session, ThreadID, Cwd, Model, Effort, Turn string
+	Upstream, AccountID, UserID                 string
+	Usage                                       *codexUsageState
+	Contexts                                    map[string]cxContext
+	Turns                                       map[string]cxOpen
+	LastIn, LastCall                            time.Time // the last thing the model was given, and the last call's end
 	// Answering is set from a call's first output item until its usage line:
 	// AskedAt is what the model had last been given when the call began to
 	// answer, Answered its last output item. An older rollout writes a call's
@@ -136,11 +150,91 @@ func DesktopDataDirs() []string { return callDesktopDirs() }
 // Calls reads per-file request shards, separately from the session summaries.
 // Only changed files are scanned, and only a bounded number of parses stay in
 // memory. Conversation text is read by ContentOf when a detail is opened.
-func Calls(since time.Time) []Call { return callsFor(since, "") }
+//
+// Over a long history a read decodes every shard (#2278: 68k of them, 415
+// MB), so callers asking at once share one read of the same files, and only
+// one read of every file runs at a time: the Sessions page's requests
+// arriving together each held a whole read's calls, and the app grew to
+// 85 GB.
+func Calls(since time.Time) []Call { return sharedCalls(since, "") }
 
-func callsFor(since time.Time, session string) []Call {
-	files := callSources()
-	pruneCalls(files)
+// AgentCalls is Calls of one agent's session files only: Codex's model and
+// effort per thread need Codex's calls, not a read of every agent's.
+func AgentCalls(since time.Time, agent string) []Call { return sharedCalls(since, agent) }
+
+type callsKey struct {
+	since int64
+	zero  bool
+	agent string
+}
+
+type callsFlight struct {
+	done    chan struct{}
+	calls   []Call
+	waiters int
+}
+
+var (
+	callsFlights = struct {
+		sync.Mutex
+		on map[callsKey]*callsFlight
+	}{on: map[callsKey]*callsFlight{}}
+	// callsReading holds one read of every file at a time.
+	callsReading sync.Mutex
+	// readingCalls, in tests, is told each time Calls reads the files.
+	readingCalls func()
+)
+
+func sharedCalls(since time.Time, agent string) []Call {
+	key := callsKey{since.UnixNano(), since.IsZero(), agent}
+	callsFlights.Lock()
+	if fl := callsFlights.on[key]; fl != nil {
+		fl.waiters++
+		callsFlights.Unlock()
+		<-fl.done
+		return slices.Clone(fl.calls)
+	}
+	fl := &callsFlight{done: make(chan struct{})}
+	callsFlights.on[key] = fl
+	callsFlights.Unlock()
+	// Whatever happens to the read, the flight ends and its waiters go on.
+	defer func() {
+		callsFlights.Lock()
+		if callsFlights.on[key] == fl {
+			delete(callsFlights.on, key)
+		}
+		callsFlights.Unlock()
+		close(fl.done)
+	}()
+	func() {
+		callsReading.Lock()
+		defer callsReading.Unlock()
+		if readingCalls != nil {
+			readingCalls()
+		}
+		fl.calls = callsFor(since, "", agent)
+	}()
+	// none joins once the flight is out of the map, so the count read with
+	// that is every waiter
+	callsFlights.Lock()
+	if callsFlights.on[key] == fl {
+		delete(callsFlights.on, key)
+	}
+	shared := fl.waiters > 0
+	callsFlights.Unlock()
+	if shared { // the waiters copy fl.calls, so the caller's own is another
+		return slices.Clone(fl.calls)
+	}
+	return fl.calls
+}
+
+func callsFor(since time.Time, session, agent string) []Call {
+	all := callSources()
+	pruneCalls(all)
+	files := all
+	if agent != "" {
+		files = slices.DeleteFunc(slices.Clone(all), func(f file) bool { return f.agent != agent })
+	}
 	// Earlier files own messages copied into a resumed Claude session.
 	sort.Slice(files, func(i, j int) bool {
 		if !files[i].mod.Equal(files[j].mod) {
@@ -216,15 +310,16 @@ func callFiles() []file {
 	return out
 }
 
-// callSources are callFiles and the agents whose calls are read whole
-// rather than line by line: OpenCode's (#680) and ZCode's, whose calls are
-// rows of their database or their JSON files; DeepSeek Harness's, whose
-// session file is packed in frames and so cannot be read on from the middle
-// of one; and WorkBuddy's, whose usage lines repeat a reply's id as it goes
-// on, as CodeBuddy Code's do (#1779); and MiniMax Code's, whose messages
-// file a later generation of its history may replace (#1605); and Kimi
-// Code's, whose forks copy their parent's records (#1607). Every agent here
-// needs an entry in wholeCallReaders.
+// callSources are callFiles and the other agents' session files. Most are
+// read whole rather than line by line: OpenCode's (#680) and ZCode's, whose
+// calls are rows of their database or their JSON files; and WorkBuddy's, whose usage lines repeat a reply's id as it
+// goes on, as CodeBuddy Code's do (#1779); and MiniMax Code's, whose messages
+// file a later generation of its history may replace (#1605). Kimi Code's
+// (#1607), Pi's and omp's (#1951) are lines of a file only appended to,
+// read on as callFiles' are; DeepSeek Harness's, a file only appended to
+// that may be packed in zstd frames, is read on from the frame it was
+// left in (readDshCalls). Every agent here needs an entry in
+// wholeCallReaders, lineCallReaders or resumeCallReaders.
 func callSources() []file {
 	out := callFiles()
 	out = append(out, openCodeCallFiles()...)
@@ -235,6 +330,7 @@ func callSources() []file {
 	out = append(out, wslFiles("kimi")...)
 	out = append(out, piCallFiles()...)
 	out = append(out, codebuddyCallFiles()...)
+	out = append(out, agyCallFiles()...) // #2097
 	return append(out, workbuddyCallFiles()...)
 }
 
@@ -274,14 +370,14 @@ func prepareCalls(f file, old *callFile) *callFile {
 
 	head := headOf(f.path)
 	var st *callFile
-	if old != nil && !packed(f.path) && f.size >= old.Size && old.Off <= f.size && sameHead(head, old.Head, old.HeadSize) && old.ContentHash != "" && prefixHash(f.path, old.Size) == old.ContentHash {
+	if old != nil && !packed(f.path) && f.size >= old.Size && old.Off <= f.size && sameHead(head, old.Head, old.HeadSize) && old.ContentHash != "" && prefixHash(f.path, old.Off) == old.ContentHash {
 		st = old.clone()
 	} else {
 		st = &callFile{Agent: f.agent}
 		if f.agent == "codex" {
 			st.CX = &cxRun{}
 			if m := rolloutName.FindStringSubmatch(filepath.Base(f.path)); m != nil {
-				st.CX.Session = m[1]
+				st.CX.Session, st.CX.ThreadID = m[1], m[1]
 			}
 		} else {
 			st.Session = sessionOfPath(f.path)
@@ -305,6 +401,18 @@ func (st *callFile) clone() *callFile {
 		r.Contexts = maps.Clone(r.Contexts)
 		r.Timings = append([]cxCallTiming(nil), r.Timings...)
 		c.CX = &r
+	}
+	if st.Pi != nil {
+		p := *st.Pi
+		c.Pi = &p
+	}
+	if st.Dsh != nil {
+		d := *st.Dsh
+		if d.Tail != nil {
+			t := *d.Tail
+			d.Tail = &t
+		}
+		c.Dsh = &d
 	}
 	return &c
 }
@@ -384,28 +492,8 @@ func SubagentParent(p string) string {
 	if SubagentOf(p) == "" {
 		return ""
 	}
-	meta := strings.TrimSuffix(p, ".jsonl") + ".meta.json"
-	if v, ok := subagentParents.Load(meta); ok {
-		return v.(string)
-	}
-	b, err := os.ReadFile(meta)
-	if err != nil {
-		return ""
-	}
-	var m struct {
-		ParentAgentID string `json:"parentAgentId"`
-	}
-	if json.Unmarshal(b, &m) != nil {
-		return ""
-	}
-	parent := m.ParentAgentID[:min(len(m.ParentAgentID), 128)]
-	subagentParents.Store(meta, parent)
-	return parent
+	return ccMeta(p).ParentAgentID
 }
-
-// subagentParents: SubagentParent's meta files read, by path. Claude Code
-// writes one as it starts the subagent and never changes it.
-var subagentParents sync.Map
 
 // str is s kept once per file, as the calls of a file repeat a few.
 func (st *callFile) str(s string) string {
@@ -478,6 +566,16 @@ func claudeCallLine(st *callFile, b []byte) {
 			}
 			if json.Unmarshal(b, &n) == nil && n.Attachment.Identity.ModelID != "" {
 				st.Requested = st.str(n.Attachment.Identity.ModelID)
+			}
+		case bytes.Contains(b, ccCompact):
+			// {"type":"system","subtype":"compact_boundary","compactMetadata":{"durationMs":48913,…}}
+			var n struct {
+				Meta struct {
+					DurationMs int64 `json:"durationMs"`
+				} `json:"compactMetadata"`
+			}
+			if json.Unmarshal(b, &n) == nil && n.Meta.DurationMs > 0 {
+				st.CompactMs = n.Meta.DurationMs
 			}
 		case bytes.Contains(b, ccUserLine):
 			// what a reply is asked by: a prompt, or a tool's result
@@ -622,6 +720,9 @@ func claudeCallLine(st *callFile, b []byte) {
 		}
 		st.Msgs[c.Msg], st.Began[c.Msg] = m.Call, asked
 	}
+	if c.Error == "" {
+		c.Compact, st.CompactMs = st.CompactMs, 0
+	}
 	st.Calls = append(st.Calls, c)
 }
 
@@ -636,6 +737,7 @@ func firstChars(s string, n int) string {
 var (
 	ccIdentity  = []byte(`"identity":{"modelId":"`)
 	ccUserLine  = []byte(`"type":"user"`)
+	ccCompact   = []byte(`"subtype":"compact_boundary"`)
 	cxToolOut   = []byte(`"type":"function_call_output"`)
 	cxCustomOut = []byte(`"type":"custom_tool_call_output"`)
 	cxStarted   = []byte(`"type":"task_started"`)
@@ -651,6 +753,7 @@ type cxCall struct {
 		Type        string   `json:"type"`
 		ID          string   `json:"id"`
 		SessionID   string   `json:"session_id"`
+		ThreadID    string   `json:"thread_id"`
 		Upstream    string   `json:"model_provider"`
 		AccountID   string   `json:"creator_account_id"`
 		UserID      string   `json:"creator_user_id"`
@@ -721,6 +824,9 @@ func codexCallLine(st *callFile, b []byte) {
 			return
 		}
 		r.Meta = true
+		if p.ID != "" {
+			r.ThreadID = st.str(p.ID)
+		}
 		if p.SessionID != "" {
 			r.Session = p.SessionID
 		} else if p.ID != "" {
@@ -772,6 +878,7 @@ func codexCallLine(st *callFile, b []byte) {
 		r.Turns[p.TurnID] = turn
 		if turn.N == 1 {
 			st.Calls[turn.First].TTFT, st.Calls[turn.First].Millis = p.FirstToken, p.Duration
+			st.codexCompact(turn.First)
 			st.markCall(turn.First)
 		}
 	case l.Type == "compacted":
@@ -779,7 +886,7 @@ func codexCallLine(st *callFile, b []byte) {
 		st.codexChanged(r.Usage.compacted(tsAt(b, false), r.Model, p.cxCompaction))
 	case l.Type == "token_usage_record":
 		if p.Usage != nil {
-			st.codexChanged(r.Usage.record(codexContribution{ResponseID: p.ResponseID, Session: p.SessionID, Turn: p.TurnID, Model: r.Model, At: tsAt(b, false), Usage: *p.Usage, Total: p.ThreadUsage}))
+			st.codexChanged(r.Usage.record(codexContribution{ResponseID: p.ResponseID, Session: p.SessionID, ThreadID: p.ThreadID, Turn: p.TurnID, Model: r.Model, At: tsAt(b, false), Usage: *p.Usage, Total: p.ThreadUsage}))
 		}
 	case l.Type == "event_msg" && p.Type == "token_count":
 		if p.Info != nil {
@@ -812,8 +919,12 @@ func (st *callFile) codexChanged(change *codexChange) {
 	if !ok {
 		context = cxContext{r.Model, r.Effort, r.Cwd, r.Upstream, r.LastIn}
 	}
-	c := Call{Time: v.At, Agent: "codex", Session: r.Session, Model: v.Model, Tokens: spent(v.Usage.raw()), ResponseID: v.ResponseID,
-		Upstream: context.Upstream, AccountID: r.AccountID, UserID: r.UserID, Reasoning: v.Usage.Reasoning, Effort: context.Effort, Cwd: context.Cwd, File: st.Path, From: r.LastEnd, To: st.End}
+	threadID := v.ThreadID
+	if threadID == "" && !v.ThreadIDConflict {
+		threadID = r.ThreadID
+	}
+	c := Call{Time: v.At, Agent: "codex", Session: r.Session, ThreadID: threadID, Model: v.Model, Tokens: spent(v.Usage.raw()), ResponseID: v.ResponseID,
+		Upstream: context.Upstream, AccountID: r.AccountID, UserID: r.UserID, Reasoning: v.Usage.Reasoning, Effort: context.Effort, Compaction: v.Compaction, Cwd: context.Cwd, File: st.Path, From: r.LastEnd, To: st.End}
 	if c.Session == "" {
 		c.Session = r.Session
 	}
@@ -896,8 +1007,19 @@ func (st *callFile) codexTiming(i int) {
 	if turn.N == 1 && turn.Complete {
 		c.Millis, c.TTFT = turn.Duration, turn.FirstToken
 	}
+	st.codexCompact(i)
 	st.markCall(i)
 
+}
+
+// codexCompact notes a compaction's call's time as the wait it made: Codex
+// compacts by a call of its own to the model.
+func (st *callFile) codexCompact(i int) {
+	c := &st.Calls[i]
+	c.Compact = 0
+	if e := st.CX.Usage.Entries; i < len(e) && e[i].Compaction {
+		c.Compact = c.Millis
+	}
 }
 
 func hashHead(head string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(head))) }

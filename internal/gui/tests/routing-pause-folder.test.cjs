@@ -34,18 +34,26 @@ const routeFrom = (folder) => ({
   tries: [{ id: "b", model: "opus", start: new Date(now - 2000).toISOString(), done: true, ms: 800, status: 200 }],
 });
 
+// the rule's ⋯ menu: turned to send-to, and back to a pause
+const TURN = {
+  en: ["Send to the model instead", "Pause the model instead"],
+  zh: ["改为先发给该模型", "改为暂停该模型"],
+  "zh-TW": ["改為先發給該模型", "改為暫停該模型"],
+  ja: ["代わりにモデルへ送信", "代わりにモデルを一時停止"],
+  de: ["Stattdessen an das Modell senden", "Stattdessen Modell pausieren"],
+};
 const words = {
   en: { cond: "not in ~/big-task", dir: "The agent works in /Users/me/scratch.", none: "The agent didn't say which folder it works in.", label: "not in folder", in: "in folder",
     aside: "a/opus is paused by rule 1 (not in ~/big-task), so it is left out until that ends. The agent works in /Users/me/scratch.",
-    bad: "Rule 1: a folder is a whole path, like ~/work or /Users/me/work", bare: "Rule 1: a pause needs hours, days, agents or folders", edit: "Edit", save: "Save", pause: "pause", send: "send to" },
+    bad: "Rule 1: a folder is a whole path, like ~/work or /Users/me/work", bare: "Rule 1: a pause needs hours, days, agents or folders. Add one with its +, or remove the rule from its ⋯ menu", edit: "Edit", save: "Save", pause: "pause", send: "send to" },
   zh: { cond: "不在 ~/big-task 中", dir: "Agent 的工作目录是 /Users/me/scratch。", none: "Agent 没有说明它的工作目录。", label: "不在文件夹", in: "项目文件夹",
-    bad: "规则 1：文件夹需是完整路径，如 ~/work 或 /Users/me/work", bare: "第 1 条规则：暂停需要设时段、星期、Agent 或文件夹", edit: "编辑", save: "保存", pause: "暂停", send: "先发给" },
+    bad: "规则 1：文件夹需是完整路径，如 ~/work 或 /Users/me/work", bare: "第 1 条规则：暂停需要设时段、星期、Agent 或文件夹。用它的 + 添加，或在它的 ⋯ 菜单里删除这条规则", edit: "编辑", save: "保存", pause: "暂停", send: "先发给" },
   "zh-TW": { cond: "不在 ~/big-task 中", dir: "Agent 的工作目錄是 /Users/me/scratch。", none: "Agent 沒有說明它的工作目錄。", label: "不在資料夾", in: "專案資料夾",
-    bad: "規則 1：資料夾需是完整路徑，如 ~/work 或 /Users/me/work", bare: "第 1 條規則：暫停需要設時段、星期、Agent 或資料夾", edit: "編輯", save: "儲存", pause: "暫停", send: "先發給" },
+    bad: "規則 1：資料夾需是完整路徑，如 ~/work 或 /Users/me/work", bare: "第 1 條規則：暫停需要設時段、星期、Agent 或資料夾。用它的 + 新增，或在它的 ⋯ 選單裡刪除這條規則", edit: "編輯", save: "儲存", pause: "暫停", send: "先發給" },
   ja: { cond: "~/big-task 以外", dir: "エージェントの作業フォルダは /Users/me/scratch です。", none: "エージェントは作業フォルダを伝えていません。", label: "除外フォルダ", in: "フォルダ",
-    bad: "ルール 1：フォルダは ~/work や /Users/me/work のような完全なパスで指定してください", bare: "ルール 1：一時停止には時間帯、曜日、エージェント、またはフォルダが必要です", edit: "編集", save: "保存", pause: "一時停止", send: "送信先" },
+    bad: "ルール 1：フォルダは ~/work や /Users/me/work のような完全なパスで指定してください", bare: "ルール 1：一時停止には時間帯、曜日、エージェント、またはフォルダが必要です。+ で追加するか、⋯ メニューからこのルールを削除してください", edit: "編集", save: "保存", pause: "一時停止", send: "送信先" },
   de: { cond: "nicht in ~/big-task", dir: "Der Agent arbeitet in /Users/me/scratch.", none: "Der Agent hat nicht gesagt, in welchem Ordner er arbeitet.", label: "nicht im Ordner", in: "im Ordner",
-    bad: "Regel 1: Ein Ordner ist ein ganzer Pfad, etwa ~/work oder /Users/me/work", bare: "Regel 1: eine Pause braucht Uhrzeiten, Tage, Agenten oder Ordner", edit: "Bearbeiten", save: "Speichern", pause: "pausieren", send: "senden an" },
+    bad: "Regel 1: Ein Ordner ist ein ganzer Pfad, etwa ~/work oder /Users/me/work", bare: "Regel 1: eine Pause braucht Uhrzeiten, Tage, Agenten oder Ordner. Füge mit ihrem + etwas hinzu oder entferne die Regel über ihr ⋯-Menü", edit: "Bearbeiten", save: "Speichern", pause: "pausieren", send: "senden an" },
 };
 
 function serve(lang, posts, route) {
@@ -91,12 +99,14 @@ async function open(t, engine, lang, width, folder) {
   return { page, group, errors, posts };
 }
 
-// the view wheeled down to a button, as the reader would (the page keeps
+// the view wheeled to a button, as the reader would (the page keeps
 // still for any other scroll), and the button clicked where it is
 async function press(page, b) {
   await page.mouse.move(Math.min(550, page.viewportSize().width / 2), 600);
-  for (let i = 0; i < 10 && (await b.boundingBox()).y > 1400 - 160; i++) {
-    await page.mouse.wheel(0, 300);
+  for (let i = 0; i < 20; i++) {
+    const y = (await b.boundingBox()).y;
+    if (y > 80 && y < 1400 - 160) break;
+    await page.mouse.wheel(0, y < 80 ? -300 : 300);
     await page.waitForTimeout(150);
   }
   const bb = await b.boundingBox();
@@ -119,7 +129,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const title = await group.evaluate((g) => [...g.querySelectorAll("[title]")].map((e) => e.title).join("\n"));
       assert(title.includes(`1. ${w.cond} → ${w.pause}`), `the rule reads by its folders: ${title}`);
 
-      // the editor: a pause shows both folder conditions, the request's are hidden
+      // the editor: a pause shows the folder condition it has; in folder
+      // is offered for it, the request's conditions aren't
       await group.locator("button", { hasText: w.edit }).click();
       const ed = page.locator(".rt-gedit");
       const row = ed.locator(".rt-rule").first();
@@ -127,9 +138,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await xf.waitFor();
       assert.equal(await xf.getAttribute("class"), "rt-cond xf on");
       assert.equal(await xf.locator("span").first().textContent(), w.label);
-      assert.equal(await row.locator(".rt-cond.fd").isVisible(), true, "in folder on a pause");
-      assert.equal(await row.locator(".rt-cond.fd span").first().textContent(), w.in);
-      assert.equal(await row.locator(".rt-cond.tk").isVisible(), false, "no tokens on a pause");
+      assert.equal(await row.locator(".rt-cond.fd").count(), 0, "in folder isn't set, so not drawn");
+      assert.equal(await row.locator(".rt-cond.tk").count(), 0, "no tokens on a pause");
+      await press(page, row.locator(".rt-addc"));
+      const offered = await page.locator(".proto-menu .pm-item .pm-name").allTextContents();
+      assert(offered.includes(w.in), `in folder offered on a pause: ${offered}`);
+      assert(!offered.includes(w.label), `not in folder is set already: ${offered}`);
+      await page.keyboard.press("Escape");
       const box = xf.locator("input");
       assert.equal(await box.inputValue(), "~/big-task");
 
@@ -149,12 +164,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // turned to send-to and back to a pause, the folders typed are kept
       await box.fill("~/big-task , ~/My Task/,");
-      await press(page, row.locator(".rt-act"));
+      await press(page, row.locator(".rt-rmore"));
       assert.equal(await page.locator("select").count(), 0, "the app menu, not a native select");
-      await page.locator("#list li").filter({ hasText: w.send }).first().click();
-      assert.equal(await ed.locator(".rt-rule").first().locator(".rt-cond.tk").isVisible(), true, "a send-to rule's tokens");
-      await press(page, ed.locator(".rt-rule").first().locator(".rt-act"));
-      await page.locator("#list li").filter({ hasText: w.pause }).first().click();
+      await page.locator(".row-menu .rm-item", { hasText: TURN[lang][0] }).click();
+      assert.equal(await ed.locator(".rt-rule").first().locator(".rt-act").count(), 0, "a send-to rule says no action");
+      await press(page, ed.locator(".rt-rule").first().locator(".rt-addc"));
+      assert(await page.locator(".proto-menu .pm-item").count() > 4, "a send-to rule is offered the request's conditions too");
+      await page.keyboard.press("Escape");
+      await press(page, ed.locator(".rt-rule").first().locator(".rt-rmore"));
+      await page.locator(".row-menu .rm-item", { hasText: TURN[lang][1] }).click();
       const xf2 = ed.locator(".rt-rule").first().locator(".rt-cond.xf");
       assert.equal(await xf2.getAttribute("class"), "rt-cond xf on");
       assert.equal(await xf2.locator("input").inputValue(), "~/big-task, ~/My Task/");
@@ -175,7 +193,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const xf = row.locator(".rt-cond.xf");
       await xf.waitFor();
       const r = await row.boundingBox();
-      for (const c of [xf, row.locator(".rt-cond.fd")]) {
+      for (const c of [xf, row.locator(".rt-addc"), row.locator(".rt-model")]) {
         const b = await c.boundingBox();
         assert(b.x >= r.x - 1 && b.x + b.width <= r.x + r.width + 1, `the folders' condition stays in its rule: ${JSON.stringify([b, r])}`);
       }

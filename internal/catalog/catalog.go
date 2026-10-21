@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -55,6 +56,10 @@ type Model struct {
 	MaxContext int `json:",omitempty"`
 	// Output is the most tokens a reply may hold, when known.
 	Output int `json:",omitempty"`
+	// OutputSet is set when Output is a Max output the user typed for the
+	// model or its provider (provider.Entry.OutputSet): an agent that trims
+	// a vendor's figure for its own reasons hands this one on as it is.
+	OutputSet bool `json:"-"`
 	// Compact is where the user has Codex compact a conversation on this
 	// model (#876), its own or its provider's (settings.ModelCompacts), or
 	// Context itself when that is a window the user typed (#1809,
@@ -72,13 +77,19 @@ type Model struct {
 	// Tiers, in one ChatGPT account's own model list, are the service
 	// tiers its plan offers on the model ("priority", "ultrafast"); in
 	// another magpie's, the tiers it offers its Codex on the model
-	// (#1234).
+	// (#1234); in a provider plugin's, the tiers it says its vendor serves
+	// the model at (#2514).
 	Tiers []string `json:",omitempty"`
 	// OwnTier is set on a model of a provider the user added by its
 	// address, which the gateway sends the tier Codex asks for as it is
 	// (gateway Request.Tier): Codex offers it the tiers of its own entry
 	// for the same model, Fast on another GPT model.
 	OwnTier bool `json:",omitempty"`
+	// CodexFast is set on a GPT model a ChatGPT account serves itself, not
+	// through a routing group: one Codex's /fast (service_tier "priority")
+	// is asked of, which OpenCode is offered as fast variants (#2379).
+	// Not kept with a list: it is the provider's, worked out each time.
+	CodexFast bool `json:"-"`
 	// AgentsV2 is set on a model Codex is told multi-agent V2 for, so its
 	// Ultra hands work to Codex's agents: one offering Ultra that no
 	// ChatGPT account answers for (provider.Entry's).
@@ -278,9 +289,12 @@ func (p Price) CostSplit(input, output, cacheRead, cacheWrite, cacheWrite1h int)
 }
 
 type mdProvider struct {
-	ID     string             `json:"id"`
-	Name   string             `json:"name"`
-	Env    []string           `json:"env"`
+	ID   string   `json:"id"`
+	Name string   `json:"name"`
+	Env  []string `json:"env"`
+	// API is the base URL models.dev says the provider serves its models
+	// at (AMD's https://developer.amd.com.cn/radeon/api/v1)
+	API    string             `json:"api"`
 	Models map[string]mdModel `json:"models"`
 }
 
@@ -319,13 +333,30 @@ type mdModel struct {
 	} `json:"limit"`
 }
 
-// efforts are the reasoning levels models.dev says the model takes.
-func (m mdModel) efforts() []string {
+// reasoningOffProviders are models.dev providers whose APIs have verified
+// that their toggled models accept the off effort (#1098).
+var reasoningOffProviders = map[string]struct{}{
+	"deepseek":              {},
+	"kimi-code-plan-cn":     {},
+	"kimi-code-plan-global": {},
+}
+
+// efforts are the reasoning levels models.dev says the model takes. A
+// toggle adds the off level only for providers whose APIs verified it;
+// other providers keep their listed levels because they may reject "none".
+func (m mdModel) efforts(providerID string) []string {
 	var out []string
+	toggle := false
 	for _, r := range m.Reasoning {
-		if r.Type == "effort" {
+		switch r.Type {
+		case "toggle":
+			toggle = true
+		case "effort":
 			out = r.Values
 		}
+	}
+	if _, ok := reasoningOffProviders[providerID]; ok && toggle && len(out) > 0 && !slices.Contains(out, "none") {
+		return append([]string{"none"}, out...)
 	}
 	return out
 }
@@ -336,26 +367,31 @@ func (m mdModel) efforts() []string {
 // thinking models of its family released by then (gpt-6-sol's). A family
 // whose models all take a thinking switch alone (Xiaomi's mimo) gives
 // none, as before (#214).
-func (p mdProvider) levels(m mdModel) []string {
-	if e := m.efforts(); len(e) > 0 || !m.Thinks || m.Family == "" || m.budgeted() {
+func (p mdProvider) levels(m mdModel, providerID string) []string {
+	if e := m.efforts(providerID); len(e) > 0 || !m.Thinks || m.Family == "" || m.budgeted() {
 		return e
 	}
-	var kin *mdModel
-	for _, x := range p.Models {
-		if x.Family != m.Family || !x.Thinks || x.ID == m.ID || len(x.efforts()) == 0 {
+	// the kin is kept by its id, date and levels, not as &x: a pointer to
+	// the loop's copy put every model of p on the heap, for every model
+	// asked (~6 GB in 48 minutes of a user's magpie, #1956)
+	var kinID, kinDate string
+	var kin []string
+	for id := range p.Models {
+		x := p.Models[id]
+		if x.Family != m.Family || !x.Thinks || x.ID == m.ID {
 			continue
 		}
 		if m.ReleaseDate != "" && x.ReleaseDate > m.ReleaseDate {
 			continue
 		}
-		if kin == nil || x.ReleaseDate > kin.ReleaseDate || x.ReleaseDate == kin.ReleaseDate && x.ID > kin.ID {
-			kin = &x
+		if kin != nil && (x.ReleaseDate < kinDate || x.ReleaseDate == kinDate && x.ID <= kinID) {
+			continue
+		}
+		if e := x.efforts(providerID); len(e) > 0 {
+			kinID, kinDate, kin = x.ID, x.ReleaseDate, e
 		}
 	}
-	if kin == nil {
-		return nil
-	}
-	return kin.efforts()
+	return kin
 }
 
 // window is the tokens a prompt to m may hold: the input limit where
@@ -401,7 +437,12 @@ var (
 	// while a call is pricing its model
 	loadMu sync.Mutex
 	loaded bool
-	mdev   map[string]mdProvider
+	// built are Provider's lists of this load, by provider: dsh's wiring
+	// asks for them every 30 seconds, and each built every model again.
+	// gen counts Resets, so a list built from an older load isn't kept.
+	built map[string][]Model
+	gen   int
+	mdev  map[string]mdProvider
 	// images are the models, by bare id, most of the providers serving
 	// them say take images (a few mislabel a text model)
 	images map[string]bool
@@ -429,7 +470,7 @@ var (
 	// is, so it is never taken for another either (renamed)
 	canonical map[string]bool
 
-	syncMu sync.Mutex
+	syncCh = make(chan struct{}, 1)
 )
 
 // CachePath is where `magpie sync` stores the models.dev catalog.
@@ -485,7 +526,11 @@ func load() map[string]mdProvider {
 							}
 							named[who][x.Name]++
 						}
-						if e := x.efforts(); len(e) > 0 {
+						// This vote answers what the catalog lists for the
+						// model across providers. A verified provider's toggle
+						// support is applied only when that provider itself is
+						// queried; it must not leak into relays or aggregates.
+						if e := x.efforts(""); len(e) > 0 {
 							l := strings.Join(e, ",")
 							if levels[who] == nil {
 								levels[who] = map[string]int{}
@@ -495,7 +540,7 @@ func load() map[string]mdProvider {
 								levels[who][l]++
 							}
 						}
-						if x.Thinks || len(x.efforts()) > 0 {
+						if x.Thinks || len(x.efforts("")) > 0 {
 							reasons[who]++
 						} else {
 							reasons[who]--
@@ -580,19 +625,44 @@ func load() map[string]mdProvider {
 	return mdev
 }
 
-// Reset forgets the loaded catalog so the next call re-reads the cache.
+// Reset forgets the loaded catalog so the next call re-reads the cache,
+// and tells Forget: what the provider package built of the old one (the
+// windows and output limits of its entries) is kept between requests
+// for a moment, and would answer for the old catalog meanwhile.
 func Reset() {
 	loadMu.Lock()
-	defer loadMu.Unlock()
 	loaded = false
+	built = nil
+	gen++
 	mdev, images, windows, outputs, efforts, thinks, names, listed, canonical = nil, nil, nil, nil, nil, nil, nil, nil, nil
+	loadMu.Unlock()
+	if Forget != nil {
+		Forget()
+	}
 }
 
 // Sync downloads the models.dev catalog into CachePath. It serializes with
 // itself so a background refresh and a manual one cannot interleave writes.
 func Sync(ctx context.Context) error {
-	syncMu.Lock()
-	defer syncMu.Unlock()
+	return syncLock(ctx, false)
+}
+
+// SyncIfMissing is Sync, but returns nil if a catalog already exists once the
+// lock is acquired.
+func SyncIfMissing(ctx context.Context) error {
+	return syncLock(ctx, true)
+}
+
+func syncLock(ctx context.Context, onlyIfMissing bool) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case syncCh <- struct{}{}:
+	}
+	defer func() { <-syncCh }()
+	if onlyIfMissing && Source() != "" {
+		return nil
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsDevURL, nil)
 	if err != nil {
 		return err
@@ -754,9 +824,11 @@ func canonicallyPriced(all map[string]mdProvider, providers []string, b string) 
 func dashed(id string) string { return strings.ReplaceAll(id, ".", "-") }
 
 // APIOf is the API a models.dev provider's model is served on, when the
-// catalog says it's one of its own: "responses" or "anthropic" for a model
-// OpenCode serves through OpenAI's or Anthropic's SDK, not the
-// OpenAI-compatible one the rest of its models go through.
+// catalog says it's one of its own: "responses", "anthropic" or "gemini"
+// for a model OpenCode serves through OpenAI's, Anthropic's or Google's
+// SDK (Gemini's generateContent: Zen's Gemini models, Go's Gemini 4 Argon
+// Contributor, #2168), not the OpenAI-compatible one the rest of its
+// models go through.
 func APIOf(providerID, modelID string) string {
 	if p, ok := load()[providerID]; ok {
 		if m, ok := p.Models[modelID]; ok && m.Provider != nil {
@@ -765,6 +837,8 @@ func APIOf(providerID, modelID string) string {
 				return "responses"
 			case "@ai-sdk/anthropic":
 				return "anthropic"
+			case "@ai-sdk/google":
+				return "gemini"
 			}
 		}
 	}
@@ -776,7 +850,27 @@ func APIOf(providerID, modelID string) string {
 // A vendor's own /models answer, once fetched, is layered over it by the
 // provider package (see provider.Provider.Available).
 func Provider(id string) []Model {
-	p, ok := load()[id]
+	loadMu.Lock()
+	out, ok := built[id]
+	at := gen
+	loadMu.Unlock()
+	if ok {
+		return slices.Clone(out)
+	}
+	out = provider(load(), id)
+	loadMu.Lock()
+	if at == gen {
+		if built == nil {
+			built = map[string][]Model{}
+		}
+		built[id] = out
+	}
+	loadMu.Unlock()
+	return slices.Clone(out)
+}
+
+func provider(all map[string]mdProvider, id string) []Model {
+	p, ok := all[id]
 	if !ok {
 		return nil
 	}
@@ -788,7 +882,7 @@ func Provider(id string) []Model {
 		mm := Model{ID: m.ID, Name: m.Name, Provider: id, Released: m.ReleaseDate, Price: m.Cost, Temperature: m.Temperature,
 			Images: slices.Contains(m.Modalities.Input, "image"), ImageInput: imageInput(m.Modalities.Input), Context: m.window(), Output: m.Limit.Output,
 			InputModalities: m.Modalities.Input, OutputModalities: m.Modalities.Output}
-		mm.Efforts = p.levels(m)
+		mm.Efforts = p.levels(m, id)
 		mm.Reasoning = m.Thinks || len(mm.Efforts) > 0
 		out = append(out, mm)
 	}
@@ -827,7 +921,7 @@ func NameOf(id string) string {
 	if n, ok := found(b, names); ok {
 		return n
 	}
-	r, w, ok := renamed(b)
+	r, w, ok := renamedBy(b, false)
 	if !ok {
 		return ""
 	}
@@ -900,6 +994,14 @@ func fillNames(ms []Model, fallback []string, reserved ...Model) {
 // any provider, as ContextOf and EffortsOf match it.
 func Knows(id string) bool {
 	return ContextOf(id) > 0 || len(EffortsOf(id)) > 0 || Thinks(id)
+}
+
+// Lists reports whether models.dev lists a model by this very id (its
+// last part, any case), not one found by another spelling: claude-opus-5.5
+// only when that is how one of its providers spells it.
+func Lists(id string) bool {
+	load()
+	return listed[bareID(id)]
 }
 
 // SeesImages reports whether models.dev says a model of this id takes
@@ -1003,17 +1105,30 @@ func found[T any](b string, table map[string]T) (T, bool) {
 // claude-deepseek-v4.1-flash (#1383).
 var relayPrefixes = []string{"claude-"}
 
+// channelPrefix is any other word a relay puts before a model's id to name
+// the channel it serves it on: nyro-gpt-5.5, nyro-gemini-3.8-flash (#2157).
+// It is letters alone, as every such word models.dev's own lists put before
+// a model another of them lists is (openai-, databricks-, doubao-, zai-):
+// the model after it is the same model, its window, levels and images
+// included.
+var channelPrefix = regexp.MustCompile(`^[a-z]{2,24}-`)
+
 // renamed is the model a relay renamed to b, when models.dev lists none
 // by b (found), and the window the rename names, if any: a window mark
 // taken off ("deepseek-v4.1-flash[1m]", "[200k]", and Claude Code's
 // claude-opus-5[1m], which is claude-opus-5), then a relay's prefix
-// ("claude-deepseek-v4.1-flash"). An id models.dev lists, or knows as an
-// entry's canonical_model_id, is always its own model, never renamed
-// (cortecs's claude-sonnet-4 is claude-sonnet-4-0, not sonnet-4-0); a
-// prefix comes off only when what is left is known — listed, or an entry's
-// canonical_model_id (#1520) — and names a version ("claude-auto" is not
-// the router "auto").
-func renamed(b string) (string, int, bool) {
+// ("claude-deepseek-v4.1-flash", and a channel's word, "nyro-gpt-5.5").
+// An id models.dev lists, or knows as an entry's canonical_model_id, is
+// always its own model, never renamed (cortecs's claude-sonnet-4 is
+// claude-sonnet-4-0, not sonnet-4-0); a prefix comes off only when what is
+// left is known — listed, or an entry's canonical_model_id (#1520) — and
+// names a version ("claude-auto" is not the router "auto").
+func renamed(b string) (string, int, bool) { return renamedBy(b, true) }
+
+// renamedBy is renamed, a channel's word (channelPrefix) taken off only
+// with channels: the name a model is shown by keeps a channel's word, so
+// a relay's nyro-gpt-5.5 and its gpt-5.5 still read apart.
+func renamedBy(b string, channels bool) (string, int, bool) {
 	if _, ok := found(b, listed); ok || canonical[b] {
 		return "", 0, false
 	}
@@ -1029,6 +1144,11 @@ func renamed(b string) (string, int, bool) {
 			continue
 		}
 		if knownModel(rest) {
+			return rest, w, true
+		}
+	}
+	if pre := channelPrefix.FindString(r); channels && pre != "" {
+		if rest := r[len(pre):]; strings.ContainsAny(rest, "0123456789") && knownModel(rest) {
 			return rest, w, true
 		}
 	}
@@ -1086,6 +1206,18 @@ func unmarked(b string) (string, int) {
 // lists mimo-v2.6-flash with a switch alone, where gateways reselling it
 // give levels up to max, which Xiaomi turns away (#214).
 func ListedBy(providers []string, id string) ([]string, bool) {
+	return listedBy(providers, id, true)
+}
+
+// ListedByBorrowed is ListedBy for levels borrowed from another provider:
+// it uses the levels the catalog lists, without adding a verified provider's
+// toggle-only off level. A provider's API accepting "none" does not verify
+// that a relay, reseller, or another provider does too.
+func ListedByBorrowed(providers []string, id string) ([]string, bool) {
+	return listedBy(providers, id, false)
+}
+
+func listedBy(providers []string, id string, providerOverrides bool) ([]string, bool) {
 	all := load()
 	b := bareID(id)
 	if r, _, ok := renamed(b); ok {
@@ -1100,7 +1232,11 @@ func ListedBy(providers []string, id string) ([]string, bool) {
 				if bareID(key) != want {
 					continue
 				}
-				if e := all[pid].levels(m); len(e) > 0 || !m.budgeted() {
+				providerID := ""
+				if providerOverrides {
+					providerID = pid
+				}
+				if e := all[pid].levels(m, providerID); len(e) > 0 || !m.budgeted() {
 					return slices.Clone(e), true
 				}
 			}
@@ -1127,7 +1263,7 @@ func KinEfforts(providers []string, id string) ([]string, bool) {
 	)
 	for _, pid := range providers {
 		for key, m := range all[pid].Models {
-			if !m.Thinks && len(m.efforts()) == 0 || m.budgeted() {
+			if !m.Thinks && len(m.efforts("")) == 0 || m.budgeted() {
 				continue
 			}
 			if s, ok := versionless(bareID(key)); !ok || s != shape {
@@ -1136,7 +1272,7 @@ func KinEfforts(providers []string, id string) ([]string, bool) {
 			// the newest; of two the same day, the first provider's, then
 			// the greater id, whatever order the map gives
 			if !found || m.ReleaseDate > newest || m.ReleaseDate == newest && pid == from && key > name {
-				levels, newest, from, name, found = all[pid].levels(m), m.ReleaseDate, pid, key, true
+				levels, newest, from, name, found = all[pid].levels(m, ""), m.ReleaseDate, pid, key, true
 			}
 		}
 	}
@@ -1277,10 +1413,12 @@ func draws(m mdModel) bool {
 }
 
 // DrawsID is whether a model's id names one that makes images, for a model
-// the catalog doesn't know (one typed in, or a vendor's own list's).
+// the catalog doesn't know (one typed in, or a vendor's own list's). Banana
+// is the Nano Banana the Gemini image models are called on a relay, whatever
+// its spelling there (#2071).
 func DrawsID(id string) bool {
 	id = strings.ToLower(id)
-	for _, w := range []string{"image", "imagen", "imagine", "dall-e", "flux", "seedream", "cogview", "stable-diffusion", "sdxl", "wanx", "kolors", "hidream"} {
+	for _, w := range []string{"image", "imagen", "imagine", "dall-e", "flux", "seedream", "cogview", "stable-diffusion", "sdxl", "wanx", "kolors", "hidream", "banana"} {
 		if strings.Contains(id, w) {
 			return true
 		}
@@ -1341,6 +1479,28 @@ func Drawers(id string) []Model {
 	return out
 }
 
+// AtEndpoint are the models.dev providers whose models are served at base
+// (their "api"), in order: the catalog of a provider the user added by its
+// endpoint alone. A trailing slash and the case of the address don't count.
+func AtEndpoint(base string) []string {
+	want := endpointKey(base)
+	if want == "" {
+		return nil
+	}
+	var ids []string
+	for id, p := range load() {
+		if endpointKey(p.API) == want {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func endpointKey(u string) string {
+	return strings.ToLower(strings.TrimRight(strings.TrimSpace(u), "/"))
+}
+
 // Providers returns models.dev provider ids known to the catalog.
 func Providers() []string {
 	var ids []string
@@ -1390,7 +1550,10 @@ func parseCodex(b []byte) ([]Model, error) {
 		if m.Visibility == "hide" || MagpieAdded(cache.ETag, m.Slug, m.Description) {
 			continue
 		}
-		mm := Model{ID: m.Slug, Name: m.DisplayName, Provider: "openai", ImageInput: imageInput(m.Input)}
+		// the window Codex holds a conversation to (272K on a ChatGPT
+		// plan), which models.dev's input limit for the id, OpenAI's
+		// API's (gpt-5.5's 922K), would otherwise stand in for
+		mm := Model{ID: m.Slug, Name: m.DisplayName, Provider: "openai", ImageInput: imageInput(m.Input), Context: Window(m.Context)}
 		if m.Max > m.Context && m.Context > 0 {
 			mm.MaxContext = m.Max
 		}

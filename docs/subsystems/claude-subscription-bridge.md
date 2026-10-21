@@ -35,6 +35,36 @@ FrierenF on Discord). A run as anyone else has its env as before. Only the
 bridge's run gets it; the warm-up and `/usage` runs don't skip
 permissions.
 
+Every Claude Code magpie starts for the subscription (a turn's run, the
+warm-up and model test `askClaude`, `/usage`, and the sign-in's
+`auth login` and `auth status`) is given its proxy through one helper,
+`claudeCLI.proxied` in each package, which is
+`netproxy.EnvForBunWith`: the account's own proxy, else the
+subscription's, else the global one (`netproxy.EnvWith`), with a SOCKS5
+proxy replaced by magpie's loopback HTTP bridge to it (`netproxy.Bridge`,
+as for every bun magpie starts, #1409). Claude Code is built with Bun,
+which takes only http:// and https:// proxies: given `socks5://`, every
+request failed as `UnsupportedProxyProtocol`, after about three minutes of
+Claude Code's own retries, as a 502 (#2651). A Claude Code in a WSL
+distro that doesn't share Windows' loopback (`wslrun.Tool.Host` set)
+can't reach the bridge, so there, and where the bridge can't start, a
+SOCKS proxy is refused before Claude Code starts, with an error that says
+to use an http:// proxy. The `settings.json` env that magpie writes for the
+user's own Claude Code sessions leaves a SOCKS proxy out (see
+[Providers and accounts](providers-accounts.md)).
+
+The helper offers each of the client's tools under `bridgeToolName`
+(`bridgeTools`), which Claude Code calls `mcp__magpie__<name>`. Claude Code
+keeps only `[A-Za-z0-9_-]` of an MCP tool's name, so a name it would change
+(`spawn.agent`, `fs/read`), one longer than 51 (64 with the prefix) or one
+ending as a changed name ends (`_` and 12 hex digits) is cut, made of those
+characters and given a hash of the whole name: unique (`a.b` and `a_b`
+stay apart), the same in every run, so a resumed session, the history
+(`renderParts`) and the tool-choice line (`toolChoiceAsk`) name it as the
+run was offered it. `subscriptionRun.names` (`bridgeNames`) maps it back
+to the declared name in `toolStart`, for streamed and whole messages, and
+in `mcpCall` (#2649).
+
 The run's MCP server is magpie itself (`magpie claude-mcp-helper`,
 `internal/claudebridge`), which hands each tool call back to the gateway
 at `POST /_magpie/claude-mcp/<token>` (`mcpCall`), where the call is
@@ -58,8 +88,8 @@ started a new Claude Code told the whole conversation (#1546).
 A run started anew is told the whole conversation in one user message
 (`renderClaudePrompt`), a prefix the prompt cache has never seen, so the
 conversation is written to the cache again and its images are sent again.
-That message holds the history in blocks of `historyChunk` messages, and
-magpie's one mark (Claude Code keeps three of Anthropic's four) is on the
+By default, that message holds the history in blocks of `historyChunk`
+messages, and magpie's one mark (Claude Code keeps three of Anthropic's four) is on the
 last whole block, else on the caller's instructions: a later run started
 anew for the same conversation within the hour reads the history up to an
 earlier run's mark, found within Anthropic's 20-block lookback. A
@@ -70,6 +100,99 @@ history is not chunked, and image blocks count toward the lookback.
 A turn that goes on in the run that had the last one is told only the
 messages since (`renderClaudeTurn`), and Anthropic reads the rest from the
 cache.
+
+## Client-placed cache marks (#1717)
+
+A client can send `X-Magpie-Cache-Marks: client` on a `/v1/messages`
+request to a Claude subscription. Without that header, the bridge behaves
+as before. Chat Completions and Responses ignore the header. The mode is
+part of the run's identity, including rewritten conversations and tool-result
+handoffs: opted-in and ordinary requests never share a run.
+
+An opted-in run sets `DISABLE_PROMPT_CACHING=1`. Its four cache slots belong
+to the client. `claude_cache.go` validates the marks before run selection;
+`renderClaudePrompt` places them in a new run's first user message.
+
+| Client mark | Bridge behavior |
+| --- | --- |
+| `cache_control` without `ttl` | Uses `5m`. |
+| System block | Ends its own instruction block with the same TTL. |
+| Top-level `cache_control` | Sets the request-level tail through `CLAUDE_CODE_EXTRA_BODY`. |
+| Last message block | Sets the same request-level tail. |
+| Earlier message block, new run | Ends a block at that point in the rendered history with the same TTL. |
+| Earlier message block, running or saved run | Dropped and reported; the existing history cannot be edited. |
+| Tool definition | Dropped and reported; Claude Code owns the tools. |
+| Bridge history-chunk mark | Uses only a free slot and never a longer TTL than a preceding mark. |
+
+`setSafeguards` updates the tail before each turn or tool-result handoff
+that changes its TTL, and clears it when a request no longer asks for it.
+An explicit last-block mark and a top-level mark both count toward the
+request limit. The bridge represents their shared boundary with one tail
+when their TTLs match. Different TTLs at that boundary are rejected. Marks retained
+in the first user message survive shelving. A new tail that cannot fit
+the retained slots or TTL order starts a new session with the rendered
+history.
+
+More than four marks, or a `1h` mark after a `5m` mark in tools → system →
+messages order, returns HTTP 400 with Anthropic's `type: error` and
+`invalid_request_error` shape. The count includes top-level
+`cache_control`. Both error messages and the omitted-TTL default were
+checked through a relay to the live Anthropic API.
+
+`X-Magpie-Cache-Marks-Dropped` lists counts by section, such as
+`tools:1,messages:3`. It is absent when nothing was dropped. A mark on a
+system block removed with the billing header is reported as `system`.
+The bridge also reports marks on content it cannot render. Cache usage
+retains Anthropic's `cache_creation.ephemeral_5m_input_tokens` and
+`ephemeral_1h_input_tokens` values.
+
+The dropped-mark header and its keepalive hold belong only to a Claude
+subscription try. An API-key member keeps the client's marks and clears
+any report or hold left by an earlier subscription try. Validation still
+applies before routing among the members.
+
+The dropped-mark header is best-effort on streaming responses. Validation
+and tool-drop counts are known before headers are sent. An opted-in
+Claude subscription try waits at most two seconds for run selection to
+decide the other drops. Selection releases that hold before process startup or upstream
+output. If selection takes longer, the gateway logs the missing report
+and sends keepalives without the dropped-mark header. Later fallback can
+also change the selected run after headers have been sent. Reporting never
+fails the request or delays an ordinary request's keepalives.
+
+## The caller's instructions as the system prompt (`claudeLeanPrompt`)
+
+Every run is the real Claude Code. By default it keeps Claude Code's own
+system prompt, and the caller's instructions go in the run's first user
+message inside `<external_system_instructions>`. Settings › Models ›
+Replies › Short Claude system prompt (`claudeLeanPrompt`, off by default)
+starts a run with `--system-prompt-file` instead. The file is `system.md`
+in the run's temp folder, under the distro's mount in WSL (`claudeCLI.file`).
+It holds `leanSystem`: the caller's instructions without a client Claude
+Code's billing line, plus the tool-choice line. The first message then holds
+the conversation alone. Claude Code still sends its billing block and its
+identity line, so requests come from the real binary. They no longer carry
+Claude Code's prompt, and that is the ban risk the setting names.
+
+A request with client cache marks (#1717) is never lean: its system marks
+are placed in the first message. The mode is part of the run's identity
+(`cacheIdentity`, and the tool-results check in `serveSubscription`), so a
+run started in one mode never takes a turn of the other. After the setting
+changes, the next turn starts a run with the rendered history.
+
+Measured on 2026-10-16 with a real Claude subscription on Sonnet 5.5,
+Claude Code 2.1.301:
+
+| Client | Off | On |
+| --- | --- | --- |
+| Chat client, ~600-token prompt, 2 tools, 3 turns | 10,048 input tokens | 6,580 (−35%) |
+| `claude -p` as the client, Read and Bash, 4 requests | 85,453 / 85,471 | 81,948 / 81,977 (−4%) |
+
+The saving is a fixed ~0.9–1.2K tokens a request. It is large for light
+clients and small for clients with Claude Code-sized prompts. Without any
+tool, Claude Code's built-in tools are already off (`--tools ""`). A run
+told the whole conversation again costs far more, because it writes the
+history to the 1h cache at 2×.
 
 ## Runtime path for a new turn
 
@@ -111,6 +234,15 @@ A Claude Code that ends before it answers a control request
 exit status and the end of its stderr (`endedBefore`), as one that ends
 before it reads its input is (`whyEnded`). The tool-results path and
 `resume` already start a new run when the one they found has ended.
+
+magpie ends a run (`abort`) by asking Claude Code to end with SIGTERM
+(`proc.Tree.Stop`) and kills its tree only once it has exited or
+`stopGrace` (5s) has passed; Windows kills the job at once. Claude Code
+removes `~/.claude/.oauth_refresh.lock` as it exits on SIGTERM (2.1.299
+exits within half a second), and the SIGKILL magpie sent before left the
+lock for the next requests to fail on (#2195). The run counts as ended at
+once; the gateway stopping (`abortAll`) waits for every tree. Covered by
+`TestClaudeAbortAllowsLockCleanup` and `TestTreeStop*`.
 
 ## A side question after a reply (#1638)
 
@@ -290,6 +422,57 @@ A client that drops the images' message without adding text to a result
 goes on only when that message held images alone, no text. A tool result of an image alone (pi-ai's "(see attached image)")
 whose text is replaced by the line is not this shape, and starts anew.
 
+## How many Claude Code processes run (`claudeRoom`, #2956)
+
+Every Claude Code magpie starts for a Claude subscription takes a place in
+`claudeRoom` (`claude_room.go`) before it starts, and frees it once its
+process has exited: each conversation's run (`startRun`), busy, idle or
+parked on tool results, and each one-off test, warm-up and /usage read
+(`runClaudeTree`). Nothing bounded them before. Claude Code 2.1.303 holds
+about 205 MiB RSS idle on Linux arm64, 86–112 MiB of it its own, and a
+512 MiB systemd service had 2 busy runs and 14 starting at once when the
+kernel's OOM killer ended them. In Docker under a 512 MiB memory cgroup,
+six idle runs were enough for two OOM kills.
+
+How many may run (`claudeRunsMost`):
+
+- the user's `claudeRunsMost` in settings.json, set with
+  `magpie claude-code runs N` (`auto` clears it). It is this machine's own
+  setting (`KeepOwn`): a sync never brings a desktop's number to a server.
+- otherwise, on Linux, `(limit − 256 MiB) / 128 MiB`, at least 1, where
+  the limit is the least of MemTotal, the cgroup v2 `memory.max` and
+  `memory.high` of magpie's cgroup and every one above it, and the cgroup v1
+  `memory.limit_in_bytes` (`memLimit`). 512 MiB gives 2, 1 GiB 6, a 964 MiB
+  machine with no cgroup limit 5. It is read once per process.
+- otherwise no bound: macOS, Windows, and a Linux whose limits can't be
+  read. A limit not known is not a small one.
+
+An ask that finds no room (`take`):
+
+1. lets go of the run idle longest, of any bridge. Its session is shelved,
+   as a run pushed past `idleMost` is, so its conversation's next turn
+   resumes it (`--resume`) and is told only the new messages.
+2. otherwise lets go of the run parked longest on tool results, once it has
+   waited `parkLongest`. Busy runs, and runs waiting on tool calls made
+   recently, are never let go.
+3. otherwise waits for one to end: woken when a process exits or a run
+   goes idle (`nudge`), and it looks again every `roomLook` (5s) for a
+   parked run that has come to wait `parkLongest`.
+
+A run being ended counts as `leaving`, so several waiting asks don't each
+let one go for the same room. After `claudeRoomWait` (2 minutes), or once
+the request's context ends, the ask gives up. A conversation's turn is
+answered 503 with "N Claude Code processes are running, as many as may run
+at once (why); none ended within …" and how to set the number. `start`
+doesn't retry without the saved session after such an error. A /usage read
+returns it as its error.
+
+Routing treats that 503 (`claudeNoRoom`) as a protected failure. No
+account is rested, no other Claude account is asked next (each would wait
+for the same room), and the request isn't tried again after a moment. A
+member of the group at another provider answers it. Alone, the client gets
+the 503.
+
 ## Files a run leaves
 
 - Its session: `<config>/projects/<work project>/<session>.jsonl`, for
@@ -354,6 +537,23 @@ ways a run is told them keep them apart from the tool's output:
   ends with one `result`. Handed over after the results, a message could
   come after the model's reply and start a turn of its own.
 
+What the client's agent puts beside the results is not the user's (#2060).
+Claude Code 2.1.296 sends its hooks' notices ("PreToolUse:Bash hook
+additional context: …"), its `<total_tokens>` count and a message the user
+sent mid-turn as one `{role: "system"}` message after the results; older
+versions send them as `<system-reminder>` text blocks in the results'
+message. `saidWithResults` takes from a system message only the words
+after "The user sent a new message while you were working:" (or "The user
+sent the following message:"), without Claude Code's ask around them, and
+leaves out a text that `agentNotice` knows: empty within its reminder
+tags, a hook's notice of a known kind, a token count, or a lead `userWords`
+drops (`injected`). Before, nearly every call of a client with a hook was
+followed by "The user sent a new message while you were working:" and the
+hook's output, or nothing (the run's Claude Code doesn't show a bare
+`<total_tokens>`). `renderParts` closes a result before such a notice
+without marking it `[user message]`. A reminder with other words in it is
+still the user's, as #872's was.
+
 Where the result ends is said by the message's parts alone. A tool whose
 output says "Do not use tools." has it told as its output, inside the
 result. The words of a message that holds images (pi-ai's "Attached
@@ -392,7 +592,16 @@ carries none.
 ## Verification
 
 ```sh
+go test -tags nogui ./internal/gateway/ -run '^TestClaudeClientCache' -count=1
+go test -tags nogui ./internal/gateway/ -run '^TestClaudeLeanPrompt' -count=1
 go test -tags nogui ./internal/claudecode/ -count=1
+go test -tags nogui ./internal/gateway/ -run '^TestClaudeCodeGivenTheBridgeForASOCKSProxy$' -count=1
+go test -tags nogui ./internal/provider/ -run '^TestClaudeSignInBridgesASOCKSProxy$' -count=1
+go test -tags nogui ./internal/netproxy/ -run '^TestEnvForBunWith' -count=1
+go test -tags nogui ./internal/gateway/ -run '^TestClaudeToolNamesComeBackAsDeclared$' -count=1
+go test -tags nogui ./internal/gateway/ -run 'TestClaudeRunsHeldToTheRoom|TestClaudeRoom|TestClaudeOneOffsTakeRoom|TestClaudeMemRuns|TestClaudeRunsMost|TestClaudeNoRoom' -count=1
+go test -tags nogui ./internal/cli/ -run '^TestClaudeCodeRunsSetsTheUsersOwn$' -count=1
+go test -tags nogui ./internal/settings/ -run '^TestClaudeRunsMostIsMachineLocal$' -count=1
 go test -tags nogui ./internal/gateway/ -run 'ClaudeSubscriptionRunsTheDownloaded|ClaudeSubscriptionWithoutClaudeCode|ClaudeRewritten|LostMedia|ImagesTakenOut|RunLetGoWhenTheClientRewrote|ClaudeSessionTempFiles|ClaudeLetGo|ClaudeSessionFiles|ClaudeOldSessions|ClaudeSubscriptionReplySaysTheAllowance|ClaudeAllowanceHeaders|ClaudeForksAnsweringTheLeadsCalls|ClaudeTurnGivenUpOn|ClaudeToolResultsGivenUpOn|ClaudePromptMarksEarlierTurns|ClaudeHistoryCachedAcrossNewRuns|ClaudeUnloadableSession|ClaudeEndedRunSaysWhy|ClaudeIdle|ClaudeSideQuestion|ClaudeNoRunSaysWhy|ClaudeToolResultsNoRunSaysWhy|ClaudePromptToldUserText|ClaudePromptKeepsInstructions|ClaudeToolResultsGoOnWithTheUsersWords|ClaudeToolResultsKeepInstructions|ToolResultKeepsUserTextSentMidTurn' -count=1
 ```
 

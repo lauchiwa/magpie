@@ -82,9 +82,10 @@ func TestClaudeTierEffort(t *testing.T) {
 	if env(claudeContextEnv) != "200000" {
 		t.Fatalf("window: %s", env(claudeContextEnv))
 	}
-	// the effort stays with the tier through a new model, and back to the
-	// main model's
-	set("haiku", "v/glm")
+	// the effort stays with the tier through a new model, and back to
+	// following the main model ("Same as main model"; the main model
+	// picked by name is the tier's own, #2654)
+	set("haiku", "")
 	if env("ANTHROPIC_DEFAULT_HAIKU_MODEL") != "v/glm:low" || a.Field("haiku").Get() != "" {
 		t.Fatalf("haiku on the main model: %v", a.Values())
 	}
@@ -92,7 +93,7 @@ func TestClaudeTierEffort(t *testing.T) {
 	// one of its own keeps its model
 	set("model", "v/flash")
 	if env("ANTHROPIC_DEFAULT_SONNET_MODEL") != "v/flash:medium" || env("ANTHROPIC_DEFAULT_HAIKU_MODEL") != "v/flash:low" ||
-		env("ANTHROPIC_DEFAULT_OPUS_MODEL") != "v/big:high[1m]" || env("ANTHROPIC_DEFAULT_FABLE_MODEL") != "v/flash" {
+		env("ANTHROPIC_DEFAULT_OPUS_MODEL") != "v/big:high[1m]" || env("ANTHROPIC_DEFAULT_FABLE_MODEL") != "" {
 		t.Fatalf("new main model: %v", a.Values())
 	}
 	// the tier's effort taken away: its model as before

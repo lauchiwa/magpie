@@ -5,6 +5,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { reach } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const now = new Date();
@@ -141,13 +142,28 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(boxes.meta.left >= boxes.to.right - 1 || boxes.meta.top >= boxes.to.bottom - 1, `metadata overlaps destination at ${width}px`);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `horizontal page overflow at ${width}px`);
         if (width === 480) {
-          await page.locator("#rtMetrics").click();
+          // clicks where the page shows the picker and its menu: once the
+          // story's head wraps at this width (its "Request and response"
+          // button) the page is scrolled, and Playwright's WebKit then
+          // places them hundreds of pixels lower, under the footer. The
+          // reader wheels to them first (reach): the page puts back a
+          // scroll that isn't the reader's, as scrollIntoView from here
+          // is, and the click landed on whatever the put-back left there
+          // (#2658)
+          const tap = async (loc) => {
+            await reach(page, loc);
+            const [x, y] = await loc.evaluate((e) => { const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; });
+            await page.mouse.click(x, y);
+          };
+          await tap(page.locator("#rtMetrics"));
           const menu = page.locator(".rt-metric-menu");
           const cost = menu.getByRole("menuitemcheckbox", { name: lang === "zh" ? "费用" : "Cost", exact: true });
-          await cost.click();
+          await tap(cost);
+          await page.waitForFunction(() => !document.querySelector(".rt-req .cost"));
           assert.equal(await rows.nth(0).locator(".cost").count(), 0, "narrow layout updates before closing the menu");
           assert.equal(await menu.isVisible(), true);
-          await cost.click();
+          await tap(cost);
+          await rows.nth(0).locator(".cost").waitFor();
           assert.equal(await rows.nth(0).locator(".cost").count(), 1);
           assert.equal(await menu.isVisible(), true);
           await page.keyboard.press("Escape");

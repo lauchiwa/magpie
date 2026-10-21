@@ -58,6 +58,9 @@ type groupJSON struct {
 	// Decides: it is a group of decision models, asked at /v1/systemone
 	// and by a group's classifier, never by an agent
 	Decides bool `json:"decides,omitempty"`
+	// Ref: the id agents pick it by (provider.Group.Ref): auto/<model> for
+	// a group magpie found, group/<id> for any other
+	Ref string `json:"ref"`
 	// ClassifierFailed: its classifier couldn't say the last time it was
 	// asked, and why (gateway.ClassifierFailure), which its card says
 	// (#1929): otherwise only each request's details did
@@ -224,7 +227,17 @@ func groupsState() groupsJSON {
 			out.Templates[i].Group.Members = []string{} // one that can't be made has none
 		}
 	}
-	for _, e := range provider.Deciders() {
+	// the decision models a group's pickers offer: a provider's picks, and
+	// any a group names already, whatever the picks, so its card still
+	// reads it as a decision model
+	named, all := map[string]bool{}, provider.Groups()
+	for _, g := range all {
+		for _, m := range g.Members {
+			named[m] = true
+		}
+		named[g.Classifier] = true
+	}
+	for _, e := range provider.OfferedDeciders(func(id string) bool { return named[id] }) {
 		out.Deciders = append(out.Deciders, modelRef{ID: e.ID, Name: e.Name, Provider: e.Provider.ID, PName: e.Provider.Name, Icon: e.Provider.Icon, Sub: e.Provider.Account != nil})
 	}
 	served := provider.Served()
@@ -236,7 +249,7 @@ func groupsState() groupsJSON {
 	// every provider's models read once for the groups, not once a group
 	// (#1762)
 	find := provider.GroupFinder()
-	for _, g := range provider.Groups() {
+	for _, g := range all {
 		gj := groupJSON{Group: g, Info: []memberJSON{}, Holds: []string{}, Offers: []string{}, Shared: []string{}, Patterns: []provider.PatternHit{}}
 		if gj.Members == nil {
 			// a group of patterns that match nothing now — a plugin's
@@ -246,13 +259,14 @@ func groupsState() groupsJSON {
 		}
 		gj.Patterns = append(gj.Patterns, provider.PatternHits(g)...)
 		gj.Decides = g.Decides()
+		gj.Ref = g.Ref()
 		if g.Classifier != "" {
 			if why, at, ok := classifierFailure(g.Classifier); ok {
 				gj.ClassifierFailed = &classifierFailedJSON{Error: why, At: at}
 			}
 		}
 		for _, e := range served {
-			if e.ID == provider.GroupPrefix+g.ID {
+			if e.Group == g.ID {
 				gj.Offers, gj.Shared = append(gj.Offers, e.Efforts...), append(gj.Shared, e.Shared...)
 				break
 			}
@@ -272,7 +286,7 @@ func groupsState() groupsJSON {
 				// a group in the group: what agents see of it
 				m.Group = true
 				for _, e := range served {
-					if e.ID == id {
+					if e.Group == gid {
 						_, ms, _ := find(id)
 						m.Ready, m.Name, m.Icon, m.On = true, e.Name, e.Provider.Icon, len(ms)
 						m.Context, m.Images, m.ImagesUnknown = e.Context, seesImages(e), imagesUnknown(e)
@@ -417,6 +431,10 @@ func groupRoutes(mux *http.ServeMux) {
 			err = provider.SwitchGroup(in.ID, body.On)
 		case "arrange":
 			err = provider.SetGroupOrder(body.Order)
+		case "pick":
+			// a Manual group's member every request goes to, and nothing
+			// else of it (#2489: the tray panel switches it)
+			err = provider.PickGroup(in.ID, in.Pick)
 		default:
 			http.NotFound(rw, r)
 			return

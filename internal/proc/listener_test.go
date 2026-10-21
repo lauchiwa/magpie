@@ -34,6 +34,42 @@ func TestListeningOn(t *testing.T) {
 	}
 }
 
+// A listener on IPv6 alone is found too: Windows keeps it in a table of
+// its own (MIB_TCP6ROW_OWNER_PID), its fields where IPv4's aren't.
+func TestListeningOnIPv6(t *testing.T) {
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback here: %v", err)
+	}
+	defer ln.Close()
+	pids, err := ListeningOn(context.Background(), ln.Addr().(*net.TCPAddr).Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(pids, os.Getpid()) {
+		t.Fatalf("listening on [::1]: %v, not this process (%d)", pids, os.Getpid())
+	}
+}
+
+// A port nothing listens on is no listener and no error, on every system:
+// the take-over reads exactly that to know an older magpie let the port go
+// (#2231, where Windows answered "exit status 1").
+func TestNothingListeningIsNoError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	pids, err := ListeningOn(context.Background(), port)
+	if err != nil {
+		t.Fatalf("nothing listens on %d: %v", port, err)
+	}
+	if len(pids) != 0 {
+		t.Fatalf("nothing listens on %d, read %v", port, pids)
+	}
+}
+
 func evalPath(p string) string {
 	if q, err := filepath.EvalSymlinks(p); err == nil {
 		return q

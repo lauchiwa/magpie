@@ -3,23 +3,21 @@ package provider
 import (
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 
-	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/settings"
 )
 
 // Rename gives a provider another id, the one its models are picked by
 // (<id>/<model>). What magpie keeps that names it by id follows: the
 // routing groups it is in and their rules and classifiers, the other
-// providers' fallbacks, and which agents are shown it. The old id stays
+// providers' fallbacks, which agents are shown it, and its StepFun sign-in. The old id stays
 // with it (Was), so an agent still running on a config that names it the
 // old way reaches it, and its usage so far is counted with it; the agents'
 // own files are the agent package's to rewrite (agent.RenameProvider).
 // A signed-in account keeps the id of its agent.
-func Rename(from, to string) error {
+func Rename(from, to string, opts ...WriteOption) error {
 	from = strings.ToLower(strings.TrimSpace(from))
 	to = strings.ToLower(strings.TrimSpace(to))
 	if to == "" || to != Slug(to) {
@@ -47,6 +45,8 @@ func Rename(from, to string) error {
 		return errors.New(`"magpie" is what agents call the gateway itself; pick another id`)
 	case to == strings.TrimSuffix(GroupPrefix, "/"):
 		return errors.New(`"group" starts the ids of routing groups; pick another id`)
+	case to == autoID:
+		return errAutoID
 	case subscriptionID(to):
 		return fmt.Errorf("%q is the id of the %s subscription; pick another", to, to)
 	}
@@ -95,25 +95,48 @@ func Rename(from, to string) error {
 		g.Classifier = renamedRef(g.Classifier, from, to)
 		g.Pick = renamedRef(g.Pick, from, to)
 	}
-	// the vendor's list last fetched goes with it
-	os.Rename(catalog.LivePath(from), catalog.LivePath(to))
-	os.Rename(catalog.LivePath(decisionsID(from)), catalog.LivePath(decisionsID(to)))
-	if err := store(f); err != nil {
+	// its identity binding goes with it, in the same commit; the vendor's
+	// list last fetched only once that is committed (lifecycle_api.go)
+	if err := renameCommit(f, i, from, to, opts); err != nil {
 		return err
 	}
-	s := settings.Load()
-	changed := renameModelPrefs(&s, from, to)
-	for a, names := range s.Visible {
-		for k, n := range names {
-			if strings.EqualFold(n, from) {
-				s.Visible[a][k], changed = to, true
+	// so is its StepFun sign-in, kept by provider id
+	moveSignIn := func() error { return signInMoved(from, to) }
+	moveSettings := func() error {
+		s := settings.Load()
+		changed := renameModelPrefs(&s, from, to)
+		for a, names := range s.Visible {
+			for k, n := range names {
+				if strings.EqualFold(n, from) {
+					s.Visible[a][k], changed = to, true
+				}
 			}
 		}
+		if changed {
+			return settings.Save(s)
+		}
+		return nil
 	}
-	if changed {
-		return settings.Save(s)
+	// fork: the rename is done; a step that fails is done again alone
+	// (FollowUpError.Redo), the other still made
+	var failed []string
+	var errs []error
+	var steps []func() error
+	for _, st := range []struct {
+		name string
+		do   func() error
+	}{{StepSignIn, moveSignIn}, {StepSettings, moveSettings}} {
+		if err := st.do(); err != nil {
+			failed, errs, steps = append(failed, st.name), append(errs, err), append(steps, st.do)
+		}
 	}
-	return nil
+	return FollowUp(strings.Join(failed, ", "), errors.Join(errs...), func() error {
+		var errs []error
+		for _, do := range steps {
+			errs = append(errs, do())
+		}
+		return errors.Join(errs...)
+	})
 }
 
 // renamedRef is a model id ("provider/model", "magpie/provider/model")

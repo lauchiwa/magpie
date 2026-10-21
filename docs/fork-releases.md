@@ -85,6 +85,70 @@ Leave the stale tag unused and publish the correct one. Deleting a pushed tag
 or a published release is destructive and can confuse an install that already
 saw it.
 
+## Syncing upstream
+
+A sync merges an upstream tag into a `sync-vX.Y.Z` branch and reaches `main`
+through a PR. The fork keeps its logic in files upstream doesn't have
+(`internal/lifecycle/*`, `*_fork.go`, `internal/provider/lifecycle_*.go`,
+`internal/provider/identity.go`, `internal/identity/*`,
+`internal/gui/identity.go`, `internal/cli/identity_cli.go`,
+`internal/cli/lifecycle_cli.go`, `internal/gui/assets/lifecycle.js`).
+Upstream files carry only short hooks: field declarations, delegating calls,
+variadic options and single request-body fields, many marked `fork:`. After
+the merge, `git diff <previous upstream tag> HEAD` over the upstream files
+lists them, and `git grep -n "fork:"` finds the marked ones. A conflict there
+is resolved by keeping upstream's change and putting the hook back.
+
+The sync PR records each item below as checked, with what was run:
+
+- **The whole suite.** `go test -tags nogui ./...` and the GUI suite in
+  Chromium and WebKit ([code standards](code-standards.md)).
+  `TestNoProductionStoreOfALiteralFile` fails on a new production
+  `store(file{…})`.
+- **Provider writes** (`internal/provider`): `store` is still
+  `commit(f, intent{})` in `provider.go`. `Save`, `AddCopy`, `Delete`,
+  `Rename` (`rename.go`), `Mirror` (`backup.go`) and `AddKeys` (`keys.go`)
+  still take `opts ...WriteOption`, and `AddChecked`/`AddCopyChecked`
+  (`lifecycle_token.go`) still reach `add`/`AddCopy`. The learners (`LearnAuthHeader`, `LearnZhipuCoding`,
+  `fixV1`'s write in `models.go`, `dropGonePicks`) still pass `Expect(p)`. A new write path upstream adds goes through `store` or
+  `storeWith`, never around it. A change to `Rename`, `Was` or `Delete`
+  semantics is re-read against `lifecycle_commit.go`'s diff of rows.
+- **Who signs.** A new caller of `Provider.Sign` or `identityListHeaders`,
+  or a new way a `Provider` is handed out (beyond `All`, `Find` and the
+  held reads), is checked for its lifecycle marker. `notUnderCommit` stays
+  in `provider.go`'s `load`, `read` and `All`, `account.go`'s `Accounts`
+  and `hold.go`'s `heldEntries`.
+- **Start-up.** `cli/main.go`'s `run` still calls `readyAtStart(args)`
+  right after `settings.Migrate()`, and a new early return before it is
+  something that writes no provider.
+- **Sync and backup.** `backup.Collect` still keeps `StoredBase`'s base
+  (`backup/backup.go`); `davsync.go`'s `bring` still passes
+  `onCollected(local)` at each of its calls, and `syncNow` still retries on
+  `changedHere`.
+- **Command line and TUI.** `cli/providers_cli.go` still uses `saveFound`,
+  `deleteFound` and `SetOff(…, Expect(*p))`. `tui/pages.go` still deletes
+  `confirmProv` and saves line edits with `Expect`.
+- **GUI, Go side.** `gui/providers.go`'s save chain (`AddChecked` or
+  `SaveChecked`, `renameSaved`, `addKeysTo`, `stepOn`, `savedFind`), its
+  `DeleteChecked`, `providerJSON.Rev`; `gui/api.go`'s `fail()` still calls
+  `lifecycleFail`.
+- **GUI, page.** `index.html` still loads `lifecycle.js` before `app.js`.
+  In `app.js`: `api()` still calls `lifecycleError(err, data)`; `draftOf`
+  still carries `rev`, and both editors' Save bodies, both Removes,
+  `switchProvider` and the identity bind/unbind still send it;
+  `duplicateProvider` still clears it; `providerAction`'s catch still
+  closes on `committed`/`pending` and rereads on `stale`.
+  `provider-lifecycle-rev.test.cjs` covers each of these.
+  `TestCoreScriptBudget` counts `lifecycle.js`.
+- **GUI strings.** `tests/strings.cjs` still reads `lifecycle.js` as a
+  file with its own words, and `tests/i18n-keys.test.cjs` still lets it own
+  only itself.
+
+What R1 doesn't guarantee stays listed in
+[providers and accounts](subsystems/providers-accounts.md#coordinated-provider-writes):
+the id-keyed setters, and the moment between `CheckCurrent` and the
+`settings.json` write after it.
+
 ## What still points at upstream
 
 The download page and the install script are upstream's: `usemagpie.ai` and

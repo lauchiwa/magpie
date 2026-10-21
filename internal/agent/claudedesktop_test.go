@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -290,6 +291,120 @@ func TestClaudeDesktopChangedSince(t *testing.T) {
 	}
 }
 
+// #2035 (capiton0): settings the user made in Desktop's third-party window
+// live in magpie's profile. Switching Desktop off magpie and on again
+// brings them back, the gateway's address and key set anew.
+func TestClaudeDesktopOffOnKeepsTheUsersSettings(t *testing.T) {
+	home, p := desktopSandbox(t)
+	os.MkdirAll(p.dir, 0o755)
+	a := claudeDesktop(home)
+	f := a.Field("provider")
+	if err := f.Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	desktopWrite(t, p.prof, `{"inferenceProvider":"gateway","inferenceGatewayBaseUrl":"http://old:1","inferenceGatewayApiKey":"old","inferenceGatewayAuthScheme":"bearer",`+
+		`"disableDeploymentModeChooser":false,"coworkEgressAllowedHosts":["corp.example"],"inferenceModels":["claude-opus-4-7"],"isClaudeCodeForDesktopEnabled":true}`)
+	if err := f.Set(""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p.prof); !os.IsNotExist(err) {
+		t.Fatal("magpie's profile is still there after off")
+	}
+	if err := f.Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	prof := desktopJSON(t, p.prof)
+	want := map[string]any{
+		"inferenceProvider": "gateway", "inferenceGatewayBaseUrl": gateway.URL(),
+		"inferenceGatewayApiKey": "magpie-claude-desktop", "inferenceGatewayAuthScheme": "bearer",
+		"disableDeploymentModeChooser": false, "coworkEgressAllowedHosts": []any{"corp.example"},
+		"inferenceModels": []any{"claude-opus-4-7"}, "isClaudeCodeForDesktopEnabled": true,
+	}
+	if !reflect.DeepEqual(prof, want) {
+		t.Errorf("profile after off and on:\n%v\nwant\n%v", prof, want)
+	}
+	if f.Get() != "magpie" || a.Check() != "" {
+		t.Errorf("get %q, check %q", f.Get(), a.Check())
+	}
+}
+
+// #2035 (capiton0): a profile the user made in Desktop's window for
+// magpie's gateway, applied when magpie is switched on, starts magpie's
+// profile: their settings (as they posted them) are kept, only the
+// gateway's address, key and auth scheme set. Their own profile is left
+// as it was and applied again when magpie is switched off.
+func TestClaudeDesktopOnKeepsTheUsersOwnGatewayProfile(t *testing.T) {
+	home, p := desktopSandbox(t)
+	const theirs = `{
+  "inferenceGatewayBaseUrl": "` + "%s" + `",
+  "inferenceGatewayApiKey": "magpie",
+  "sshHostAllowlist": ["*"],
+  "chatTabEnabled": true,
+  "chatAdvancedFileAnalysisEnabled": true,
+  "isDesktopExtensionEnabled": true,
+  "modelPrefer1mContext": true,
+  "defaultModelEffort": "max",
+  "autoModeEnabled": true,
+  "toolSearchEnabled": true,
+  "skipWebFetchPreflight": true,
+  "coworkEgressAllowedHosts": ["*"],
+  "disableDeploymentModeChooser": true,
+  "disableDeepLinkRegistration": true,
+  "inferenceProvider": "gateway",
+  "inferenceCredentialKind": "static"
+}`
+	own := filepath.Join(p.library, "5b0d0c6e-1f2a-4c3b-9d4e-0a1b2c3d4e5f.json")
+	body := fmt.Sprintf(theirs, gateway.URL())
+	desktopWrite(t, own, body)
+	desktopWrite(t, p.meta, `{"appliedId":"5b0d0c6e-1f2a-4c3b-9d4e-0a1b2c3d4e5f","entries":[{"id":"5b0d0c6e-1f2a-4c3b-9d4e-0a1b2c3d4e5f","name":"mine"}]}`)
+	a := claudeDesktop(home)
+	f := a.Field("provider")
+	if err := f.Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	var want map[string]any
+	json.Unmarshal([]byte(body), &want)
+	want["inferenceGatewayApiKey"] = "magpie-claude-desktop"
+	want["inferenceGatewayAuthScheme"] = "bearer"
+	if prof := desktopJSON(t, p.prof); !reflect.DeepEqual(prof, want) {
+		t.Errorf("magpie's profile:\n%v\nwant\n%v", prof, want)
+	}
+	if b, _ := os.ReadFile(own); string(b) != body {
+		t.Errorf("their profile was changed:\n%s", b)
+	}
+	if err := f.Set(""); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := desktopJSON(t, p.meta)["appliedId"].(string); id != "5b0d0c6e-1f2a-4c3b-9d4e-0a1b2c3d4e5f" {
+		t.Errorf("applied after off: %q", id)
+	}
+	if b, _ := os.ReadFile(own); string(b) != body {
+		t.Errorf("their profile after off:\n%s", b)
+	}
+}
+
+// A profile for somewhere else (another gateway, Bedrock) is not carried
+// into magpie's: its models and settings are for that place.
+func TestClaudeDesktopOnLeavesOtherProfilesOut(t *testing.T) {
+	for name, prof := range map[string]string{
+		"other gateway": `{"inferenceProvider":"gateway","inferenceGatewayBaseUrl":"https://llm.example.com","inferenceModels":["corp-model"],"chatTabEnabled":true}`,
+		"bedrock":       `{"inferenceProvider":"bedrock","inferenceBedrockRegion":"us-east-1","chatTabEnabled":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			home, p := desktopSandbox(t)
+			desktopWrite(t, filepath.Join(p.library, "abc.json"), prof)
+			desktopWrite(t, p.meta, `{"appliedId":"abc","entries":[{"id":"abc","name":"mine"}]}`)
+			if err := claudeDesktop(home).Field("provider").Set("magpie"); err != nil {
+				t.Fatal(err)
+			}
+			got := desktopJSON(t, p.prof)
+			if _, ok := got["chatTabEnabled"]; ok {
+				t.Errorf("magpie's profile took another place's settings: %v", got)
+			}
+		})
+	}
+}
+
 // A file magpie can't read as Desktop writes it is left alone, and so is
 // everything else.
 func TestClaudeDesktopRefusesOddFiles(t *testing.T) {
@@ -540,5 +655,106 @@ func TestClaudeDesktopMSIXChecksTheFoldersDesktopRuns(t *testing.T) {
 	}
 	if got := a.Field("sonnet").Get(); got != "v/a" {
 		t.Errorf("sonnet: %q", got)
+	}
+}
+
+// Claude-3p is a userData of its own, so Desktop on magpie started in the
+// system's language, not the one picked signed in with Anthropic (memory
+// and Osal on Discord: Chinese gone). The language is carried into
+// Claude-3p's config.json, nothing else of Claude's is, and off takes the
+// file magpie made for it away again.
+func TestClaudeDesktopCarriesTheLanguage(t *testing.T) {
+	home, p := desktopSandbox(t)
+	own := "{\n  \"locale\": \"zh-CN\",\n  \"userThemeMode\": \"dark\"\n}\n"
+	desktopWrite(t, p.app, own)
+	before := desktopTree(t, p)
+
+	f := claudeDesktop(home).Field("provider")
+	if err := f.Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if m := desktopJSON(t, p.app3p); !reflect.DeepEqual(m, map[string]any{"locale": "zh-CN"}) {
+		t.Errorf("Claude-3p's config.json: %v", m)
+	}
+	if b, _ := os.ReadFile(p.app); string(b) != own {
+		t.Errorf("Claude's config.json changed:\n%s", b)
+	}
+	if err := f.Set(""); err != nil {
+		t.Fatal(err)
+	}
+	if after := desktopTree(t, p); !reflect.DeepEqual(after, before) {
+		t.Fatalf("off left:\n%v\nwas:\n%v", after, before)
+	}
+}
+
+// A language already set in 3p mode (Desktop's, or the user's by hand) is
+// theirs: no write of magpie's changes Claude-3p's config.json, on, again,
+// off and on again, and off leaves it there.
+func TestClaudeDesktopKeepsThe3pLanguage(t *testing.T) {
+	home, p := desktopSandbox(t)
+	desktopWrite(t, p.app, `{"locale":"zh-CN"}`)
+	mine := "{\n  \"locale\": \"ja-JP\",\n  \"windowBounds\": {\n    \"width\": 900\n  }\n}\n"
+	desktopWrite(t, p.app3p, mine)
+
+	f := claudeDesktop(home).Field("provider")
+	for i, v := range []string{"magpie", "magpie", "", "magpie"} {
+		if err := f.Set(v); err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := os.ReadFile(p.app3p); string(b) != mine {
+			t.Fatalf("step %d (%q): Claude-3p's config.json is now\n%s", i, v, b)
+		}
+	}
+}
+
+// Wired, and Desktop has written its config.json since: the user then
+// sets the language there by hand. Applying magpie again keeps every key;
+// off keeps the file, which is no longer magpie's alone.
+func TestClaudeDesktopUserEditsThenReapply(t *testing.T) {
+	home, p := desktopSandbox(t)
+	f := claudeDesktop(home).Field("provider")
+	if err := f.Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(p.app3p); err == nil {
+		t.Fatal("config.json written with no language to carry")
+	}
+	desktopWrite(t, p.app, `{"locale":"zh-CN"}`)
+	edited := "{\n  \"locale\": \"zh-TW\",\n  \"hasCompletedOnboarding\": true\n}\n"
+	desktopWrite(t, p.app3p, edited)
+	for _, v := range []string{"magpie", "", "magpie"} {
+		if err := f.Set(v); err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := os.ReadFile(p.app3p); string(b) != edited {
+			t.Fatalf("%q: the user's edit is gone:\n%s", v, b)
+		}
+	}
+}
+
+// Only a language Desktop can name is carried, and a Claude-3p config.json
+// magpie can't read as an object is left as it is, the takeover going on.
+func TestClaudeDesktopLanguageOddValues(t *testing.T) {
+	for _, own := range []string{`{"locale":"../../x"}`, `{"locale":7}`, `{"locale":""}`, `not json`} {
+		home, p := desktopSandbox(t)
+		desktopWrite(t, p.app, own)
+		if err := claudeDesktop(home).Field("provider").Set("magpie"); err != nil {
+			t.Fatal(err)
+		}
+		if b, err := os.ReadFile(p.app3p); err == nil {
+			t.Errorf("%s: carried %s", own, b)
+		}
+	}
+	home, p := desktopSandbox(t)
+	desktopWrite(t, p.app, `{"locale":"zh-CN"}`)
+	desktopWrite(t, p.app3p, `[1]`)
+	if err := claudeDesktop(home).Field("provider").Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p.app3p); string(b) != `[1]` {
+		t.Errorf("odd config.json written: %s", b)
+	}
+	if m := desktopJSON(t, p.config3p); m["deploymentMode"] != "3p" {
+		t.Errorf("takeover stopped: %v", m)
 	}
 }

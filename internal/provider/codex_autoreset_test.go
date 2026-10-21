@@ -60,6 +60,83 @@ func TestSetCodexAutoReset(t *testing.T) {
 	}
 }
 
+// #2078 (alanwalk): each of the two times is its own switch. An account
+// kept from before the two were split uses one at both; turning one off
+// keeps the other, and with both off the account is gone from the list.
+// Kept to the one about to expire, a used-up week spends none, and kept
+// to the week, routing doesn't count on the one about to run out.
+func TestCodexAutoResetCases(t *testing.T) {
+	signIn(t)
+	s := settings.Load()
+	s.CodexAutoReset = []string{"me@example.com"} // as written before the split
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	if week, expiring := CodexAutoResetWhen("Me@example.com"); !week || !expiring {
+		t.Fatalf("kept from before: week %v expiring %v, want both", week, expiring)
+	}
+	if err := SetCodexAutoResetCase("Me@example.com", ResetCaseWeek, false); err != nil {
+		t.Fatal(err)
+	}
+	if week, expiring := CodexAutoResetWhen("me@example.com"); week || !expiring {
+		t.Fatalf("week off: week %v expiring %v", week, expiring)
+	}
+	if got := settings.Load().CodexAutoResetOnly; got["me@example.com"] != ResetCaseExpiring {
+		t.Fatalf("kept %v", got)
+	}
+	if !AutoResets("codex", "me@example.com") || AutoResetsWeek("codex", "me@example.com") {
+		t.Fatal("AutoResets is either time, AutoResetsWeek the week's only")
+	}
+
+	// kept to the one about to expire: a used-up week spends none
+	consumed := fakeWeekUsedUp(t)
+	if out, err := AutoUseCodexReset(t.Context(), "me@example.com"); err != nil || out.Code != "" {
+		t.Fatalf("the week used up, kept to the one about to expire: %+v %v", out, err)
+	}
+	if consumed.Load() != 0 {
+		t.Fatalf("consumed %d", consumed.Load())
+	}
+	until := time.Now().Add(time.Hour)
+	used := []QuotaWindow{{Span: 5 * time.Hour, Used: 30}}
+	if got := resetRunsOut("codex", "me@example.com", used, &ResetCredits{Count: 1, Until: &until}); !got.Equal(until) {
+		t.Fatalf("routing doesn't count on the one about to run out: %v", got)
+	}
+
+	// the week on and the expiring off: the other way round
+	if err := SetCodexAutoResetCase("me@example.com", ResetCaseWeek, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetCodexAutoResetCase("me@example.com", ResetCaseExpiring, false); err != nil {
+		t.Fatal(err)
+	}
+	if week, expiring := CodexAutoResetWhen("me@example.com"); !week || expiring {
+		t.Fatalf("week only: week %v expiring %v", week, expiring)
+	}
+	if got := resetRunsOut("codex", "me@example.com", used, &ResetCredits{Count: 1, Until: &until}); !got.IsZero() {
+		t.Fatalf("kept to the week, routing counts on the one about to run out: %v", got)
+	}
+	if out, err := AutoUseCodexReset(t.Context(), "me@example.com"); err != nil || out.Code != "reset" {
+		t.Fatalf("the week used up, kept to the week: %+v %v", out, err)
+	}
+
+	// both off: gone from the list; both on again: nothing kept narrowing it
+	if err := SetCodexAutoResetCase("me@example.com", ResetCaseWeek, false); err != nil {
+		t.Fatal(err)
+	}
+	if s := settings.Load(); len(s.CodexAutoReset) != 0 || len(s.CodexAutoResetOnly) != 0 || CodexAutoReset("me@example.com") {
+		t.Fatalf("both off: %v %v", s.CodexAutoReset, s.CodexAutoResetOnly)
+	}
+	if err := SetCodexAutoResetCase("me@example.com", "sometimes", true); err == nil {
+		t.Fatal("an unknown time was taken")
+	}
+	if err := SetCodexAutoReset("me@example.com", true); err != nil {
+		t.Fatal(err)
+	}
+	if s := settings.Load(); !slices.Equal(s.CodexAutoReset, []string{"me@example.com"}) || len(s.CodexAutoResetOnly) != 0 {
+		t.Fatalf("both on: %v %v", s.CodexAutoReset, s.CodexAutoResetOnly)
+	}
+}
+
 // A reset spent by itself is kept past a restart: none is spent again
 // until the week it was spent in ends.
 func TestAutoResetKeptPastRestart(t *testing.T) {

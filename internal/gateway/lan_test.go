@@ -332,6 +332,7 @@ func TestNetworkGatewayGuardsEveryRoute(t *testing.T) {
 	routes := [][2]string{
 		{"GET", "/"}, {"GET", "/v1"}, {"GET", "/v1/models"}, {"GET", "/models"}, {"GET", "/v1/models/x"},
 		{"GET", "/muse-code/models"}, {"GET", "/api/hello"},
+		{"GET", "/api/version"}, {"GET", "/api/tags"}, {"POST", "/api/show"},
 		{"GET", "/v1/magpie/quotas"}, {"GET", "/v1/magpie/quotas/history"},
 		{"GET", provider.RemoteCardsPath}, {"POST", provider.RemoteRefreshPath},
 		{"GET", "/v1/magpie/route?session=s"}, {"GET", "/v1/magpie/concurrency"}, {"GET", "/v1/magpie/limit"},
@@ -342,6 +343,7 @@ func TestNetworkGatewayGuardsEveryRoute(t *testing.T) {
 		{"POST", "/v1/systemone"},
 		{"POST", "/v1/images/generations"}, {"POST", "/v1/images/edits"},
 		{"POST", "/v1/embeddings"}, {"POST", "/v1/rerank"},
+		{"POST", "/v1/audio/transcriptions"}, {"POST", "/v1/audio/translations"},
 		{"POST", "/v1/videos"}, {"GET", "/v1/videos/v1"}, {"GET", "/v1/videos/v1/content"},
 		{"POST", "/_magpie/claude-mcp/tok"}, {"POST", "/mcp/neon"},
 		{"POST", CodexPath + "/responses"}, {"GET", CodexCatalogPath},

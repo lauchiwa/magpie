@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -62,6 +63,9 @@ func (c *rowChunk) pack() *rowChunk {
 		put(uint64(p.Status))
 		put(uint64(p.Flags))
 		put(uint64(p.Tries))
+		if p.Flags&rowCredits != 0 {
+			put(math.Float64bits(p.Credits))
+		}
 	}
 	archive := s2.Encode(nil, data)
 	if int64(len(archive)) >= c.Bytes {
@@ -70,11 +74,32 @@ func (c *rowChunk) pack() *rowChunk {
 	next := *c
 	next.Rows, next.Strings, next.dict = nil, nil, nil
 	next.Archive, next.Locations = slices.Clip(archive), locations
-	next.Bytes = int64(len(next.Archive) + len(locations)*8)
+	next.Bytes = int64(len(next.Archive)+len(locations)*8) + codexActorBytes(next.codexActors)
 	return &next
 }
 
 func (c *rowChunk) unpack() *rowChunk { return c.unpackInto(nil) }
+
+// keptStrings copies out the strings that a result kept after a read takes
+// from the rows it visited. An unpacked block's strings are cut from one
+// allocation (unpackInto), so a cache holding one session id from a block
+// holds every string of that block: its request and response ids and its
+// errors. The Sessions and Routing caches kept a session id from nearly
+// every block, and so the decoded text of the whole history: ~200 MB at
+// rest for 600k calls.
+type keptStrings map[string]string
+
+func (k keptStrings) of(s string) string {
+	if s == "" {
+		return ""
+	}
+	if kept, ok := k[s]; ok {
+		return kept
+	}
+	kept := strings.Clone(s)
+	k[kept] = kept
+	return kept
+}
 
 // unpackInto is unpack decoding the rows into rows when it is large enough:
 // every field of a row is written, so a reused slice needs no clearing.
@@ -111,7 +136,7 @@ func (c *rowChunk) unpackInto(into []packedRow) *rowChunk {
 		next.Rows = make([]packedRow, int(rows))
 	}
 	next.Strings = make([]string, int(strs))
-	next.Bytes = int64(len(next.Rows)) * int64(unsafe.Sizeof(packedRow{}))
+	next.Bytes = int64(len(next.Rows))*int64(unsafe.Sizeof(packedRow{})) + codexActorBytes(next.codexActors)
 	// The strings are copied out in one piece: one allocation a block, not
 	// one a string.
 	at := make([]int, 0, 2*int(strs))
@@ -157,6 +182,10 @@ func (c *rowChunk) unpackInto(into []packedRow) *rowChunk {
 		p.FirstReasoning = int64(take())
 		p.Cost, p.Status, p.Flags = math.Float64frombits(take()), int32(take()), uint16(take())
 		p.Tries = int32(take())
+		p.Credits = 0
+		if p.Flags&rowCredits != 0 {
+			p.Credits = math.Float64frombits(take())
+		}
 	}
 	if !valid || len(data) != 0 {
 		return nil

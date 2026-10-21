@@ -103,8 +103,11 @@ func TestClaudeRunsAsRoot(t *testing.T) {
 }
 
 func TestClaudeAsRootEnv(t *testing.T) {
-	euid := claudeEuid
-	t.Cleanup(func() { claudeEuid = euid })
+	euid, rootOS := claudeEuid, claudeRootOS
+	t.Cleanup(func() { claudeEuid, claudeRootOS = euid, rootOS })
+	// fork: as on a server, on any system the test runs on; Windows has no
+	// root of its own (below)
+	claudeRootOS = "linux"
 	local := claudeCLI{path: "/usr/bin/claude"}
 	base := []string{"PATH=/bin", "HOME=/root"}
 
@@ -127,6 +130,12 @@ func TestClaudeAsRootEnv(t *testing.T) {
 		if got := local.asRoot(slices.Clone(c.env)); !slices.Equal(got, c.want) {
 			t.Errorf("root %q: %q, want %q", c.env, got, c.want)
 		}
+	}
+
+	// on Windows magpie is never root, whatever the uid reads
+	claudeRootOS = "windows"
+	if got := local.asRoot(slices.Clone(base)); !slices.Equal(got, base) {
+		t.Fatalf("Windows: %q, want %q as it was", got, base)
 	}
 
 	// a WSL distro's user decides, not magpie's on Windows; and IS_SANDBOX

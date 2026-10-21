@@ -30,12 +30,13 @@ func TestCopilotFolderFromAnIDEPluginIsNotTheCLI(t *testing.T) {
 	if copilot(home).Detected() {
 		t.Errorf("a ~/.copilot holding only the JetBrains plugin's folders is taken for the Copilot CLI")
 	}
-	writeAt(t, filepath.Join(bin, "copilot"), "#!/bin/sh\n")
-	os.Chmod(filepath.Join(bin, "copilot"), 0o755)
+	// exe: on Windows a command on PATH is found by its .exe
+	writeAt(t, filepath.Join(bin, exe("copilot")), "#!/bin/sh\n")
+	os.Chmod(filepath.Join(bin, exe("copilot")), 0o755)
 	if !copilot(home).Detected() {
 		t.Error("the copilot command on PATH no longer finds the Copilot CLI")
 	}
-	os.Remove(filepath.Join(bin, "copilot"))
+	os.Remove(filepath.Join(bin, exe("copilot")))
 	writeAt(t, a.Path, `{"model":"auto"}`)
 	if !copilot(home).Detected() {
 		t.Error("~/.copilot/settings.json no longer finds the Copilot CLI")
@@ -80,10 +81,53 @@ func TestQoderSettingsFromAnIDEPluginIsNotTheCLI(t *testing.T) {
 				}
 			}
 			writeAt(t, a.Path, plugin)
-			writeAt(t, filepath.Join(bin, c.bin), "#!/bin/sh\n")
-			os.Chmod(filepath.Join(bin, c.bin), 0o755)
+			writeAt(t, filepath.Join(bin, exe(c.bin)), "#!/bin/sh\n")
+			os.Chmod(filepath.Join(bin, exe(c.bin)), 0o755)
 			if !c.mk(home).Detected() {
 				t.Errorf("%s on PATH no longer finds %s", c.bin, a.Name)
+			}
+		})
+	}
+}
+
+// xiaozicoder's Windows has the Qoder app and the Qoder CN app
+// (Qoder-win-x64-user.exe, Qoder-CN-win-x64-user.exe) and no qodercli
+// (#2138). The app runs Qoder's CLI as its agent with ~/.qoder (~/.qoder-cn),
+// writes .qoder-app-status.json there, and its settings.json may hold only
+// the enabledPlugins of its bundled plugin: Qoder is there, and magpie's
+// provider reaches it. The JetBrains plugin's folder (#1495) has no status
+// file and still isn't Qoder.
+func TestQoderAppIsQoder(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("QODER_CONFIG_DIR", "")
+	t.Setenv("QODERCN_CONFIG_DIR", "")
+	for _, mk := range []func(string) *Agent{qoder, qoderCN} {
+		home := t.TempDir()
+		a := mk(home)
+		t.Run(a.ID, func(t *testing.T) {
+			writeAt(t, a.Path, `{"enabledPlugins":{"qoder-context@qoderapp-bundler":true}}`)
+			if mk(home).Detected() {
+				t.Fatalf("%s with a plugin's settings.json alone is taken for %s", a.Dir, a.Name)
+			}
+			for _, f := range []string{".qoder-app-status.json", ".qoder-app-canary-status.json", ".qoder-app-dev-status.json"} {
+				st := filepath.Join(a.Dir, f)
+				writeAt(t, st, `{"logged_in":true,"version":"0.4.7","schema_version":1,"product":"`+a.ID+`","writer":"main"}`)
+				if !mk(home).Detected() {
+					t.Errorf("the Qoder app's %s doesn't find %s", f, a.Name)
+				}
+				os.Remove(st)
+			}
+			// the app's folder before it wrote a settings.json at all
+			os.Remove(a.Path)
+			writeAt(t, filepath.Join(a.Dir, ".qoder-app-status.json"), `{}`)
+			if !mk(home).Detected() {
+				t.Errorf("the Qoder app's status file with no settings.json doesn't find %s", a.Name)
+			}
+			// a folder of that name is not the app's file
+			os.Remove(filepath.Join(a.Dir, ".qoder-app-status.json"))
+			os.MkdirAll(filepath.Join(a.Dir, ".qoder-app-status.json"), 0o755)
+			if mk(home).Detected() {
+				t.Errorf("a folder named .qoder-app-status.json is taken for %s", a.Name)
 			}
 		})
 	}

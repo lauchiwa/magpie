@@ -11,7 +11,9 @@
 // both since the last sync keeps the newer, and the one it replaced is
 // saved in the sync folder beside magpie's files and named in a notice.
 // What the server holds is mirrored: a provider removed on one computer
-// goes from the others.
+// goes from the others. A computer joining a folder keeps the gateway keys
+// the folder's store has never seen; after the join, a key removed on the
+// folder goes from every computer.
 package davsync
 
 import (
@@ -36,6 +38,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/backup"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/profile"
@@ -545,7 +548,14 @@ func loadState() state {
 	return st
 }
 
+// saveState writes st. loadState reads a file that doesn't parse as no
+// state, which starts sync afresh and loses a restore's Undo and the Blind
+// guard: such a file is kept aside first, and one that can't be isn't
+// written over.
 func saveState(st state) {
+	if lastgood.KeepUnparsed(path("sync-state.json"), lastgood.Into[state]) != nil {
+		return
+	}
 	b, _ := json.MarshalIndent(st, "", "  ")
 	edit.WriteAtomic(path("sync-state.json"), b)
 }
@@ -657,7 +667,7 @@ func syncNow(ctx context.Context, force bool) error {
 		st = state{Key: stateKey(c)}
 	}
 	err = syncOnce(ctx, c, &st)
-	if errors.Is(err, errChanged) { // another computer got in between: again, over its version
+	if errors.Is(err, errChanged) || changedHere(err) { // another computer, or a write here, got in between: again, over its version
 		err = syncOnce(ctx, c, &st)
 	}
 	st.Error, st.File = "", nil
@@ -942,8 +952,9 @@ func changed(part string, keys bool) time.Time {
 }
 
 // bring puts the server's part in here: providers and profiles mirrored,
-// so what went elsewhere goes here too.
-func bring(b backup.Bundle, part string) error {
+// so what went elsewhere goes here too. opts check the providers' write
+// (fork: provider.OnBase of the collect the decision was made from).
+func bring(b backup.Bundle, part string, opts ...provider.WriteOption) error {
 	switch part {
 	case "providers":
 		for name, data := range b.Icons {
@@ -954,7 +965,7 @@ func bring(b backup.Bundle, part string) error {
 				}
 			}
 		}
-		if err := provider.Mirror(b.Providers, b.Groups); err != nil {
+		if err := provider.Mirror(b.Providers, b.Groups, opts...); err != nil {
 			return err
 		}
 		if err := provider.MirrorOrder(b.Order); err != nil {
@@ -1001,6 +1012,32 @@ func bring(b backup.Bundle, part string) error {
 		return err
 	}
 	return nil
+}
+
+// keepUnseenGatewayKeys puts the gateway keys this computer holds that the
+// folder's store has never seen into the store a first sync is about to
+// bring in (#1714, 8ugMak1r). The store rides the settings part, so a
+// computer joining a folder whose store has none of its keys would have
+// them replaced — credentials the folder never held a chance to revoke. A
+// key the folder holds by id or by value is the folder's, and its copy
+// wins; the default key (LAN) follows the folder's settings either way.
+// This runs on the first sync alone: afterwards absence from a store this
+// computer has seen means a removal, which must go from every computer.
+func keepUnseenGatewayKeys(remote *backup.Bundle, local backup.Bundle) {
+	if local.GatewayKeys == nil || len(*local.GatewayKeys) == 0 || remote.GatewayKeys == nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, k := range *remote.GatewayKeys {
+		seen[k.ID], seen[k.Secret] = true, true
+	}
+	for _, k := range *local.GatewayKeys {
+		if k.LAN || k.Secret == "" || seen[k.ID] || seen[k.Secret] {
+			continue
+		}
+		*remote.GatewayKeys = append(*remote.GatewayKeys, k)
+		seen[k.ID], seen[k.Secret] = true, true
+	}
 }
 
 func syncOnce(ctx context.Context, c Config, st *state) error {
@@ -1149,6 +1186,9 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		case lc && !rc:
 			take(&merged, local, p)
 		case rc && !lc:
+			if first && p == "settings" {
+				keepUnseenGatewayKeys(&remote, local)
+			}
 			bringIn = append(bringIn, p)
 			if first {
 				here = append(here, p)
@@ -1179,7 +1219,7 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		saved = dir
 	}
 	for _, p := range bringIn {
-		if err := bring(remote, p); err != nil {
+		if err := bring(remote, p, onCollected(local)); err != nil {
 			return fmt.Errorf("bringing in the %s: %w", p, err)
 		}
 	}

@@ -8,6 +8,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path"
 	"runtime"
 	"slices"
 	"strings"
@@ -339,12 +340,12 @@ func (m *model) openLibAdd() {
 		input:  newInput("filter"),
 		items: []agent.Option{
 			{Value: "mcp server", Note: "a URL, or a command it runs"},
-			{Value: "skills", Note: "from a GitHub repository, or a folder on this machine"},
+			{Value: "skills", Note: "from GitHub, GitLab or any git repository, or a folder on this machine"},
 		},
 		onPick: func(v string) tea.Cmd {
 			return func() tea.Msg {
 				if v == "skills" {
-					in := newInput("a GitHub link (owner/repo, or a folder in one) or a folder's full path")
+					in := newInput("owner/repo, a GitHub or GitLab link, a git address (git@host:group/repo.git), or a folder's full path")
 					in.CharLimit = 400
 					return askMsg{ask{crumbs: []string{"library", "add", "skills"}, input: in,
 						hint:    "magpie looks there for skills, then you pick one",
@@ -456,6 +457,18 @@ func (m *model) openProbe(p *library.Probe) {
 	m.pk.refilter()
 	m.mode = modePick
 	m.back = modeList
+	// skills too big to install on their own, not in the list (#2062)
+	var left []string
+	for _, l := range p.Left {
+		name := p.Source
+		if l.Path != "" {
+			name = path.Base(l.Path)
+		}
+		left = append(left, fmt.Sprintf("%s (%d MB)", name, l.Size>>20))
+	}
+	if len(left) > 0 {
+		m.flash = "too big to install, over 200 MB a skill: " + strings.Join(left, ", ")
+	}
 }
 
 // editedMsg is the shared instructions as the editor left them.
@@ -535,9 +548,25 @@ func (m model) viewLibrary() string {
 	}
 	// the rows around the cursor, as many as fit
 	visible := max(4, m.h-6)
-	start := 0
-	if m.lrow >= visible-2 {
-		start = m.lrow - visible + 3
+	// where the window starts is counted in the lines it draws — counted in
+	// rows alone, a list of several sections drew heads the budget never
+	// paid for, and the row picked fell off the bottom of the page
+	spend := func(from int) int {
+		lines := 0
+		for i := from; i <= m.lrow && lines <= visible; i++ {
+			lines++
+			if i == from || m.lib[i].kind != m.lib[i-1].kind {
+				lines += 2 // the head, and the blank before it
+				if i == 0 {
+					lines-- // the list's first section has no blank above it
+				}
+			}
+		}
+		return lines
+	}
+	start := m.lrow
+	for start > 0 && spend(start-1) <= visible {
+		start--
 	}
 	last, lines := "", 0
 	for i := start; i < len(m.lib) && lines < visible; i++ {

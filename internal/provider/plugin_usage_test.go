@@ -72,8 +72,21 @@ func TestPluginUsage(t *testing.T) {
 		if extra.Used != 250 || extra.Display != "$2.50" || !extra.Aside {
 			t.Fatalf("%s: extra = %+v", agent, extra)
 		}
+		// when its soonest credits are lost, and how many, through the
+		// host (#2265); one it can't read is not known
+		if week.RunsOutAt == nil || time.Until(*week.RunsOutAt) < 47*time.Hour || time.Until(*week.RunsOutAt) > 49*time.Hour || week.RunsOut != 80 {
+			t.Fatalf("%s: week runs out %v, %v", agent, week.RunsOutAt, week.RunsOut)
+		}
+		if extra.RunsOutAt != nil || extra.RunsOut != 0 || w.RunsOutAt != nil {
+			t.Fatalf("%s: extra runs out %v, %v; five hours %v", agent, extra.RunsOutAt, extra.RunsOut, w.RunsOutAt)
+		}
 		if e := u["API key"].Error; e != "an API key has no plan" {
 			t.Fatalf("%s: the key's usage error = %q (%v)", agent, e, u)
+		}
+		// the plugin's own words are said on the card, not only hovered
+		// (aqiu817/magpie-sensenova#1); a clean reading is no error of it
+		if !u["API key"].PluginError || q.PluginError {
+			t.Fatalf("%s: plugin error = %v, a@fake's = %v", agent, u["API key"].PluginError, q.PluginError)
 		}
 		if first == nil {
 			first = q.Windows
@@ -145,6 +158,13 @@ func TestPluginUsage(t *testing.T) {
 	}
 	if q := LoginUsage(ctx, agent)["full@fake"]; q.Resets == nil || !q.Resets.ByWindow || q.Resets.FiveHour != 2 || q.Resets.Weekly != 1 || q.Resets.Count != 3 || q.User != "Full@Fake.example" {
 		t.Fatalf("full@fake = %+v, resets %+v", q, q.Resets)
+	}
+	// a team plan's resets, and each one's end, soonest first, as the
+	// built-in ZCode's are shown (zcode_team.go)
+	if r := LoginUsage(ctx, agent)["full@fake"].Resets; !r.Team || len(r.Each) != 3 ||
+		r.Each[0].Until == nil || r.Each[0].Until.Day() != 1 || r.Each[1].Until.Day() != 2 ||
+		r.Each[2].Until != nil || r.Each[2].Window != "weekly" {
+		t.Fatalf("full@fake's resets %+v, each %+v", r, r.Each)
 	}
 	full := allowanceOf(LoginUsage(ctx, agent)["full@fake"].Windows, time.Now())
 	if used, _ := full.For("fake-claude", time.Now()); used != 100 {

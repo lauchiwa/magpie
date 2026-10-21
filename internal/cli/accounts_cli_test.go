@@ -72,7 +72,9 @@ func TestAccountsCachedReading(t *testing.T) {
 				"SystemRoot=" + os.Getenv("SystemRoot"), "USER=magpie-test", "NO_COLOR=1",
 				// so that the binary keeps this home instead of a sandbox of its own
 				testenv.Marker + "=" + os.Getenv(testenv.Marker),
-				"TMP=" + os.Getenv("TMP"), "TEMP=" + os.Getenv("TEMP"), "TMPDIR=" + os.Getenv("TMPDIR")}
+				"TMP=" + os.Getenv("TMP"), "TEMP=" + os.Getenv("TEMP"), "TMPDIR=" + os.Getenv("TMPDIR"),
+				// t.TempDir made home in GOTMPDIR when one is set
+				"GOTMPDIR=" + os.Getenv("GOTMPDIR")}
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("accounts: %v: %s", err, out)

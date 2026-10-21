@@ -1,5 +1,12 @@
 # Dropdown browser regression
 
+`plugin-gateway.test.cjs` checks gateway-only plugin identification, the existing
+JSON options editor and aggregate diagnostics in all five languages on Chromium
+and WebKit. It uses local API fixtures, saves options through the real page, and
+checks that request hooks have no provider badge. `MAGPIE_GATEWAY_ASSETS` selects
+an older asset directory for a failing regression comparison; user settings and
+live gateways are never accessed.
+
 `settings-proxy-auth.test.cjs` checks optional SOCKS5/SOCKS5h usernames and
 passwords in Settings, using the real page with isolated API fixtures. It
 covers saving and reloading, escaped and non-UTF-8 credentials, masked
@@ -280,6 +287,13 @@ method's questions (a pick, then a text the plugin checks), then takes the
 code the browser page shows; an API-key way opens the account. English and
 Chinese, Chromium and WebKit, with the API faked.
 
+`plugin-options.test.cjs` checks the switches a plugin declares for its
+provider (#2038), in its editor: the plugin's words shown as text, wrapped
+inside the editor; a confirm asked before one is turned on, and Cancel
+leaving it off; Save posting each changed one by the plugin's provider id
+before the provider, and none switched back. Chromium and WebKit, 1100 and
+420 wide, every language.
+
 `plugin-move-overflow.test.cjs` checks a Plugins card that offers a
 built-in's accounts: the button is one word beside the name, as Install is
 ("Move", its title saying whose accounts and how many), on one line, and it
@@ -399,6 +413,30 @@ model and "unless the lead names another" beside it. Picking a model posts
 `subagent`, and the square still carries the hint. Clicking the first entry
 unsets it again. A click doesn't scroll the page. Claude Code's subagents
 still say "same as model".
+
+`desktop-subagent-model.test.cjs` checks Claude Desktop's gateway-applied
+subagent model in its row opened from the agent link: one square, hidden
+when unwired with no options or value, opening the app's model picker (no
+native select), translated title and Default note, a model posted as
+`subagent_model` and Default as "". No click scrolls, no square or picker
+row has a coloured left border, and the picker fits at 1100px and 420px.
+The effort square opens the shared effort slider, takes the selected model's levels, posts a level or Default without changing the model, and explains
+that Default keeps Claude Code's requested effort. Desktop routing stories
+with no kind explain the moved or kept model and the configured effort,
+including an effort-only pick with no model replacement. Chromium and WebKit, English,
+Chinese, Traditional Chinese, Japanese and German; all APIs are faked.
+Run with `node --test internal/gui/tests/desktop-subagent-model.test.cjs`.
+
+`claude-subagent-tag.test.cjs` checks the Routing page's tag on a Claude Code
+subagent's turn, Desktop's and a terminal's, which has no kind but a
+`subagentId` in its route. It reads as Codex's subagents do, with Codex's
+reasons under the pointer (moved, in a routing group, on the model asked for):
+beside the model in the request list, by request and by session, in the story
+(the reason said once), in the replay and in the tray panel. A kind wins over
+a stray id, the lead and a route kept before the id have no tag, and the
+Purpose filter keeps the tagged turns under Unmarked. Nothing is cut out of
+its row. Chromium and WebKit, five languages, 1100 and 420 wide; all APIs are
+faked. Run with `node --test internal/gui/tests/claude-subagent-tag.test.cjs`.
 
 `tier-effort.test.cjs` draws Claude Code's per-tier effort (#536) in Chromium
 and WebKit, English and Chinese: no tier's effort is a field of its own; the
@@ -665,6 +703,14 @@ over them; the allowances' tab named Allowances. A click, with the panel
 scrolled, asks for the window's Routing page on that request and moves
 nothing; the window opened so has that request picked. In English and
 Chinese.
+
+`panel-routing-pick.test.cjs` switches a Manual routing group's model from
+the tray panel's Routing tab (#2489): only a Manual group of two or more
+that is on gets a row, its picked member a button opening the app's menu
+(no native select), a member no provider serves noted so. A pick posts
+/api/groups/pick with the group's id and the member alone, and the row says
+the new one; the picked one again posts nothing. At 440px, nothing runs out
+of the panel. Chromium and WebKit, in every language.
 
 `login-import.test.cjs` brings ChatGPT accounts in from CLIProxyAPI's auth
 files: offered from the accounts list and from a browser sign-in under way,
@@ -1610,13 +1656,18 @@ names the subscription, and reopening the menu shows it ticked. No click
 moves the page. The checks run in English and Chinese, in Chromium and
 WebKit.
 
-`codex-auto-reset.test.cjs` checks the Auto-use toggle beside a Codex
-account's resets, on the Usage page's card and on the menu bar panel's. It is
-off until turned on; a click posts `settings/codex-auto-reset` for that
-account, shows it pressed and says so, and a second click turns it off. A GLM
-team's resets get no toggle. No click moves the page, and nothing has a
-left-border accent. The checks run in English and Chinese, in Chromium and
-WebKit.
+`codex-auto-reset.test.cjs` checks a Codex account's resets used by
+themselves, on the Usage page's card and on the menu bar panel's: the two
+times one is used, its week used up and one about to expire, each on its own
+line with its own switch (#2078). Each is off until turned on; a click posts
+`settings/codex-auto-reset` for that account and that time (`when`), turns
+that switch alone, and says what the account does now; the resets-held line
+says the one about to expire is kept only while that time is on. An account
+in brief has one switch for both, posted without `when`, its title naming
+each time. A GLM team's resets get no switch. No click moves the page, the
+switches fit the card, nothing has a left-border accent and there is no
+native select. The checks run in English, Chinese, Traditional Chinese,
+Japanese and German, 1100 and 420 wide, in Chromium and WebKit.
 
 `library-all.test.cjs` opens the Library with an All chip ahead of each
 server's and skill's agent chips (Discord: MCP 服务器 SKILL 都得一个个选):
@@ -2107,8 +2158,9 @@ WebKit, in English and Chinese:
 node --test internal/gui/tests/plugin-progressive.test.cjs
 
 `lightweight.test.cjs` checks Settings → General's Lightweight mode row
-(#580): off by default, On and Off saved as `lightweight` true and false
-without the page moving, another setting's save keeping it, no left-border
+(#580): on for a user who never chose, Off and On saved as `lightweight`
+false and true without the page moving, another setting's save keeping the
+choice or leaving it unchosen (no `lightweight` posted), no left-border
 accent, and no such row on a browser's page (`web`). English and Chinese,
 Chromium and WebKit, with `/api/settings` faked:
 node --test internal/gui/tests/lightweight.test.cjs
@@ -2297,8 +2349,9 @@ node --test internal/gui/tests/ledger-protocol.test.cjs
 
 `library-rtk-nohook.test.cjs` checks that an agent RTK has no hook for
 (DeepSeek Harness) is listed in Library › RTK with a No RTK hook tag saying
-why, and that its switch can't be turned on, while Pi's can. English and
-Chinese, Chromium and WebKit.
+why, and that its switch can't be turned on, while Pi's can. Grok Build's
+tag gives its own reason and rtk-ai/rtk#2136, never dsh's #3847. English
+and Chinese, Chromium and WebKit.
 
 ```sh
 node --test internal/gui/tests/library-rtk-nohook.test.cjs
@@ -2391,3 +2444,31 @@ and 50 once Plugins › Built-in sets it. Chromium and WebKit, every language,
 ```sh
 node --test internal/gui/tests/plugin-kernel.test.cjs internal/gui/tests/builtins.test.cjs
 ```
+
+`quota-curve.test.cjs` also checks per-account historical cycle selection in
+all five languages and both engines at 440px: natural expiry, an early
+manual reset and an unscheduled refill with an unchanged deadline. The
+historical legend and pace use the selected readings; other accounts stay
+on their own cycle, missing short-window history is not invented, and
+selecting a cycle does not scroll. `MAGPIE_QUOTA_ASSETS` selects an older
+assets directory to verify the regression fails before the picker existed.
+
+Historical quota selections also update the 5-hour and weekly meters from
+the last readings inside the selected interval. The cycle menu describes
+observed duration rather than the nominal window name. Regression checks
+cover missing windows, historical end and sampling dates, Used/Left,
+restoring live values on 2 days/current cycle, and hiding live account
+controls while inspecting history.
+
+
+`quota-curve.test.cjs` also checks that a completed cycle loads its own
+5-hour and weekly whole-window estimates from
+`/api/usage/quotas/history/holds`, never today's (#2009). It shows
+"Loading…" while the answer is pending and drops an answer that arrives
+after another cycle was picked. It reuses a cycle's answer until the card's
+Refresh. A window the server can't reckon says "not enough data" with its
+reason, and one with no estimate and no reason shows nothing, as a live card
+does. Both engines, at 440px. The reckoning itself is covered by
+`TestHistoricalWindowHoldsUsesEachWindowsOwnReading`,
+`TestWindowHoldsResetBeforeRefillReading` and
+`TestWindowHoldsDryAgainAfterReset`.

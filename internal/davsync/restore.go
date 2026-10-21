@@ -93,7 +93,7 @@ func Restore(ctx context.Context) ([]string, error) {
 				return fmt.Errorf("keeping this computer's setup before restoring: %w", err)
 			}
 			for _, p := range brought {
-				if err := bring(remote, p); err != nil {
+				if err := bring(remote, p, onCollected(local)); err != nil {
 					return fmt.Errorf("bringing in the %s: %w", p, err)
 				}
 			}
@@ -217,7 +217,7 @@ func Undo() ([]string, error) {
 			if L[p] == K[p] || !c.syncs(p) || (p == "library" && kept.Library == nil) {
 				continue
 			}
-			if err := bring(kept, p); err != nil {
+			if err := bring(kept, p, onCollected(local)); err != nil {
 				return fmt.Errorf("bringing back the %s: %w", p, err)
 			}
 			back = append(back, p)
