@@ -88,8 +88,10 @@ func TestLinkedProvidersCommitWritesTarget(t *testing.T) {
 	a, b, _ := seam(t)
 	defer mustLock(t)()
 	p := linkedPlan(t)
-	if p.Participants[0].Target != a {
-		t.Fatalf("journal target %q, want %q", p.Participants[0].Target, a)
+	// the journal records the canonical target: on macOS the temp dir is
+	// under /var, a link to /private/var
+	if want := canonical(a); p.Participants[0].Target != want {
+		t.Fatalf("journal target %q, want %q", p.Participants[0].Target, want)
 	}
 	if err := Commit(p); err != nil {
 		t.Fatal(err)
