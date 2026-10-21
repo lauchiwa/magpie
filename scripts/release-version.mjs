@@ -36,6 +36,8 @@
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // numeric is a SemVer numeric identifier: no leading zeros, so "01" is
 // refused rather than taken as 1 and sorted as text later.
@@ -130,7 +132,10 @@ function main(argv) {
   throw new Error("usage: release-version.mjs <next|check> <version-or-tag>");
 }
 
-if (process.argv[1] && import.meta.url === new URL(process.argv[1], "file:").href) {
+// Run only as a script, not when imported by the tests. pathToFileURL, not
+// new URL(argv[1], "file:"): on Windows the latter reads "D:\…" as a URL with
+// scheme "d:", so the check never matched and the script printed nothing.
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     main(process.argv.slice(2));
   } catch (error) {
