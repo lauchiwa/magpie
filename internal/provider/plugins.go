@@ -234,6 +234,10 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
 		if c.Name == "" {
 			c.Name = m.ID
 		}
+		// a model that searches the web by itself, asked in plain words
+		if m.Searches {
+			c.WebSearch = "native"
+		}
 		if m.Reasoning {
 			c.Efforts, c.Reasoning = m.Variants, true
 		}
@@ -342,8 +346,9 @@ func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
 		// Codex's namespaced tools go to Grok flat, as the built-in sends
 		// them (#404): the plugin's own rewrite would leave them out; and
 		// a plain agent_message goes as the user's message, as the plugin
-		// itself sends it from 0.1.11
-		a.body = grokBody
+		// itself sends it from 0.1.11. A lone tool_choice "none" stays,
+		// for the plugin to read (grokPluginBody, #3110)
+		a.body = grokPluginBody
 	}
 	if pp.ID == "zed" {
 		// an OpenAI model's request as Zed's cloud reads it: Codex's
