@@ -5,7 +5,7 @@
 // file says every one of its keys in every language.
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { strings } = require("./strings.cjs");
+const { strings, FORK } = require("./strings.cjs");
 
 test("no language has a key twice", () => {
   const { files, twice } = strings();
@@ -52,8 +52,8 @@ test("a plugin's words are its own", () => {
   walk(repo);
   const shared = [];
   for (const { file, dict } of strings().files.slice(1)) {
-    // a plugin owns its folder; lifecycle.js (the fork's), only itself
-    const own = path.dirname(file) === "." ? path.join(assets, file) : path.join(assets, path.dirname(file)) + path.sep;
+    if (FORK.includes(file)) continue; // fork: always loaded, never off like a plugin
+    const own = path.join(assets, path.dirname(file)) + path.sep;
     const rest = texts.filter(([p]) => !p.startsWith(own));
     for (const k of Object.keys(dict.zh)) {
       const at = rest.find(([, s]) => s.includes(k) || s.includes(JSON.stringify(k).slice(1, -1)));
