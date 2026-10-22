@@ -27,7 +27,13 @@ func desktopSandbox(t *testing.T) (string, desktopPaths) {
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
-	p := desktopPathsOf(desktopDirs(runtime.GOOS, home, os.Getenv))
+	// the set the code under test writes, not paths built beside it:
+	// desktopSets puts app at Desktop's signed-in userData (d.Data), which
+	// on Windows is %APPDATA%\Claude while deploymentMode goes to
+	// %LOCALAPPDATA%\Claude (d.Mode). Built from desktopDirs, app was the
+	// Mode folder's config.json, a file nothing reads there, so a language
+	// test wrote its fixture where desktopCarryLocale never looked.
+	p := desktopSets(runtime.GOOS, home, os.Getenv)[0]
 	return home, p
 }
 
