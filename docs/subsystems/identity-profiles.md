@@ -227,7 +227,7 @@ and reconcile in
 
 The GUI does the same four steps on the Providers page, under an **Identity
 profiles** fold below the provider list (`#identityHead`, `#identityPanel` in
-`index.html`; `renderIdentityProfiles` in `app.js`). It is not a top-level
+`index.html`; `renderIdentityProfiles` in `identity.js`). It is not a top-level
 page: a profile is a property of a provider, and the Providers page is where a
 provider is already managed. The fold starts folded and is remembered per
 viewer.
@@ -259,7 +259,7 @@ What the panel will not do:
   observed request. Removal asks first and says how many providers it unbinds.
 
 A provider's editor has an **Identity** field of its own (`identityField` in
-`app.js`), between Headers and Proxy: what this provider presents, an Unbind,
+`identity.js`), between Headers and Proxy: what this provider presents, an Unbind,
 and a way to the panel. It is a summary, not a second editor. The binding is
 not part of the provider's draft or its save: it is read from the identity
 state and changed through `/api/identity/{bind,unbind}` alone, so an unbind

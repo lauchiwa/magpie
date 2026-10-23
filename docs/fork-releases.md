@@ -122,7 +122,9 @@ through a PR. The fork keeps its logic in files upstream doesn't have
 (`internal/lifecycle/*`, `*_fork.go`, `internal/provider/lifecycle_*.go`,
 `internal/provider/identity.go`, `internal/identity/*`,
 `internal/gui/identity.go`, `internal/cli/identity_cli.go`,
-`internal/cli/lifecycle_cli.go`, `internal/gui/assets/lifecycle.js`).
+`internal/cli/lifecycle_cli.go`, `internal/gui/assets/lifecycle.js`,
+`internal/gui/assets/identity.js`, `internal/gui/assets/identity.css`,
+`internal/gui/core_budget_fork_test.go`).
 Upstream files carry only short hooks: field declarations, delegating calls,
 variadic options and single request-body fields, many marked `fork:`. After
 the merge, `git diff <previous upstream tag> HEAD` over the upstream files
@@ -162,17 +164,25 @@ The sync PR records each item below as checked, with what was run:
   `SaveChecked`, `renameSaved`, `addKeysTo`, `stepOn`, `savedFind`), its
   `DeleteChecked`, `providerJSON.Rev`; `gui/api.go`'s `fail()` still calls
   `lifecycleFail`.
-- **GUI, page.** `index.html` still loads `lifecycle.js` before `app.js`.
+- **GUI, page.** `index.html` still loads `lifecycle.js` and `identity.js`
+  before `app.js`, `identity.css` right after `app.css`, and keeps the
+  `#identityHead`/`#identityPanel` nodes. In `app.js`, `loadProvidersNow`
+  still asks `identityRead()` beside the list and hands it to
+  `identityTake`, `renderProviders` calls `renderIdentityProfiles()`, and
+  `drawEditor` appends `identityField(p)`.
   In `app.js`: `api()` still calls `lifecycleError(err, data)`; `draftOf`
   still carries `rev`, and both editors' Save bodies, both Removes,
   `switchProvider` and the identity bind/unbind still send it;
   `duplicateProvider` still clears it; `providerAction`'s catch still
   closes on `committed`/`pending` and rereads on `stale`.
   `provider-lifecycle-rev.test.cjs` covers each of these.
-  `TestCoreScriptBudget` counts `lifecycle.js`.
-- **GUI strings.** `tests/strings.cjs` still reads `lifecycle.js` as a
-  file with its own words, and `tests/i18n-keys.test.cjs` still lets it own
-  only itself.
+  `TestCoreScriptBudget` skips the fork's scripts (`forkScript`), so its
+  budgets and comments are upstream's as they come; `TestForkScriptBudget`
+  weighs `forkScripts` instead.
+- **GUI strings.** `tests/strings.cjs` still reads each `FORK` file as one
+  with its own words, and `tests/i18n-keys.test.cjs` still skips them in
+  "a plugin's words are its own" (they are always loaded, never off like a
+  plugin). `TestForkScriptBudget` fails when `FORK` and `forkScripts` differ.
 
 What R1 doesn't guarantee stays listed in
 [providers and accounts](subsystems/providers-accounts.md#coordinated-provider-writes):
