@@ -178,7 +178,9 @@ The sync PR records each item below as checked, with what was run:
   `provider-lifecycle-rev.test.cjs` covers each of these.
   `TestCoreScriptBudget` skips the fork's scripts (`forkScript`), so its
   budgets and comments are upstream's as they come; `TestForkScriptBudget`
-  weighs `forkScripts` instead.
+  weighs `forkScripts` instead. The hooks inside `app.js` are weighed on
+  top of upstream's two budgets as `forkHookBudget`, so a sync never raises
+  upstream's numbers; a hook that needs more raises that one.
 - **GUI strings.** `tests/strings.cjs` still reads each `FORK` file as one
   with its own words, and `tests/i18n-keys.test.cjs` still skips them in
   "a plugin's words are its own" (they are always loaded, never off like a

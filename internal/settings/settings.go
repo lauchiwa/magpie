@@ -71,7 +71,13 @@ type Settings struct {
 	// environment and then the system, "direct" uses none, anything else
 	// is the proxy (http://, https:// or socks5://; host:port means http).
 	Proxy string `json:"proxy,omitempty"`
-	OTel  OTel   `json:"otel,omitempty"`
+	// ProxyCustom is the last proxy of the user's own Proxy held, kept
+	// while Proxy is "" or "direct" so that choosing Custom again in
+	// Settings brings back the address and login typed (Zane on Discord).
+	// Save sets it from Proxy, and it is stored as Proxy is. This
+	// computer's own (KeepOwn), as Proxy is.
+	ProxyCustom string `json:"proxyCustom,omitempty"`
+	OTel        OTel   `json:"otel,omitempty"`
 	// GitHubToken is a GitHub token the library's requests to GitHub's
 	// API carry, raising its rate limit from 60 requests an hour to 5,000.
 	// It is a secret: the Settings page is told only a masked one, and a
@@ -96,7 +102,10 @@ type Settings struct {
 	RedactPersonal bool            `json:"redactPersonal,omitempty"`
 	RedactKinds    map[string]bool `json:"redactKinds,omitempty"`
 	RedactWords    []string        `json:"redactWords,omitempty"`
-	RedactRules    []redact.Rule   `json:"redactRules,omitempty"`
+	// RedactWordsAnyCase matches RedactWords in any case (ZoeCats on
+	// Discord); off, the default, a word is matched as written.
+	RedactWordsAnyCase bool          `json:"redactWordsAnyCase,omitempty"`
+	RedactRules        []redact.Rule `json:"redactRules,omitempty"`
 	// RedactActions is what is done with a value of a kind (redact.Hit's
 	// Kind: API_KEY, EMAIL, a rule's own…) other than masking it, where
 	// the user chose: redact.Warn sends it as written and records it,
@@ -331,6 +340,11 @@ type Settings struct {
 	// than 5): from 1 to ImageTimeoutMost, 0 for ImageTimeoutDefault.
 	// ImageWait reads it.
 	ImageTimeout int `json:"imageTimeout,omitempty"`
+	// ClassifyTimeout is how long, in seconds, a routing group's classifier
+	// is given to say which intent a turn is (#2934: a Kiro subscription's
+	// haiku needed more than 8): from 1 to ClassifyTimeoutMost, 0 for
+	// ClassifyTimeoutDefault. ClassifyWait reads it.
+	ClassifyTimeout int `json:"classifyTimeout,omitempty"`
 	// Searcher is the provider that searches the web for a model that
 	// can't: "<provider>" with the small model magpie picks of it,
 	// "<provider>/<model>", or empty for the one magpie picks
@@ -867,6 +881,27 @@ func (s Settings) ImageWait() time.Duration {
 	return time.Duration(min(m, ImageTimeoutMost)) * time.Minute
 }
 
+// ClassifyTimeoutDefault is the seconds a classifier is given when
+// ClassifyTimeout is 0, and ClassifyTimeoutMost the most it can be set to:
+// the turn waits on it before it goes anywhere, with nothing sent to its
+// agent meanwhile.
+const (
+	ClassifyTimeoutDefault = 8
+	ClassifyTimeoutMost    = 60
+)
+
+// ClassifyWait is how long a classifier is given to answer:
+// ClassifyTimeout's seconds, ClassifyTimeoutDefault's when it is 0 (or
+// below), and no more than ClassifyTimeoutMost's when settings.json was
+// written by hand past it.
+func (s Settings) ClassifyWait() time.Duration {
+	n := s.ClassifyTimeout
+	if n < 1 {
+		n = ClassifyTimeoutDefault
+	}
+	return time.Duration(min(n, ClassifyTimeoutMost)) * time.Second
+}
+
 // Themes and Langs are the accepted values, in the order the UI offers them.
 var (
 	Themes     = []string{"system", "light", "dark"}
@@ -1020,6 +1055,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.GatewayConversations = cur.GatewayConversations
 	s.UIFont, s.CodeFont = cur.UIFont, cur.CodeFont
 	s.Window, s.Proxy, s.Port, s.Dock, s.DockWindow, s.Lightweight = cur.Window, cur.Proxy, cur.Port, cur.Dock, cur.DockWindow, cur.Lightweight
+	s.ProxyCustom = cur.ProxyCustom
 	s.WindowMaximised, s.KeepAwake, s.KeepAwakeDisplay = cur.WindowMaximised, cur.KeepAwake, cur.KeepAwakeDisplay
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird, s.TrayPace, s.TrayNoCost = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird, cur.TrayPace, cur.TrayNoCost
 	s.GatewayMode = cur.GatewayMode
@@ -1382,6 +1418,9 @@ func save(s Settings, recording bool) error {
 	if s.ImageTimeout < 0 || s.ImageTimeout > ImageTimeoutMost {
 		return fmt.Errorf("image generation is given from 1 to %d minutes, or 0 for %d, not %d", ImageTimeoutMost, ImageTimeoutDefault, s.ImageTimeout)
 	}
+	if s.ClassifyTimeout < 0 || s.ClassifyTimeout > ClassifyTimeoutMost {
+		return fmt.Errorf("a routing group's classifier is given from 1 to %d seconds, or 0 for %d, not %d", ClassifyTimeoutMost, ClassifyTimeoutDefault, s.ClassifyTimeout)
+	}
 	if s.UsageAlert < 0 || s.UsageAlert > 100 {
 		return fmt.Errorf("a usage alert is at a percentage from 1 to 100, or 0 for off, not %d", s.UsageAlert)
 	}
@@ -1410,6 +1449,9 @@ func save(s Settings, recording bool) error {
 	s.Proxy = strings.TrimSpace(s.Proxy)
 	if err := CheckProxy(s.Proxy); err != nil {
 		return err
+	}
+	if s.Proxy != "" && s.Proxy != "direct" {
+		s.ProxyCustom = s.Proxy
 	}
 	s.Vision = strings.TrimSpace(s.Vision)
 	if s.Vision != "" && s.Vision != "off" && !strings.Contains(s.Vision, "/") {
