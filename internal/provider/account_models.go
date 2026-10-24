@@ -113,16 +113,26 @@ func (p Provider) AccountID() string {
 }
 
 // AccountNames maps every account and key a gateway key may name (#905),
-// "<provider>/<id>", to how it is shown, "<provider>/<user>"; what no
-// provider has now maps to itself.
+// "<provider>/<id>", to how it is shown, "<provider>/<user>", an account
+// by the name the user gave it (AccountShown); what no provider has now
+// maps to itself.
 func AccountNames() map[string]string {
 	out := map[string]string{}
 	for _, p := range All() {
 		for _, a := range p.AccountIDs() {
-			out[p.ID+"/"+a.ID] = p.ID + "/" + a.User
+			out[p.ID+"/"+a.ID] = p.ID + "/" + a.Shown(p)
 		}
 	}
 	return out
+}
+
+// Shown is how the account or key a is shown on p: an account by the
+// name the user gave it, a key by its own name.
+func (a AccountRef) Shown(p Provider) string {
+	if a.Key {
+		return a.User
+	}
+	return p.AccountShown(a.User)
 }
 
 // accountRef is the account or key of p that ref names: a signed-in
@@ -146,7 +156,8 @@ func (p Provider) accountRef(ref string) (string, bool) {
 
 // SetAccountModels gives the account or key ref of the provider id the
 // models it alone serves; none gives it every model the provider has again.
-func SetAccountModels(id, ref string, models []string) error {
+// fork: opts check its write (AsRead, lifecycle_api.go).
+func SetAccountModels(id, ref string, models []string, opts ...WriteOption) error {
 	p, err := Find(id)
 	if err != nil {
 		return err
@@ -172,7 +183,7 @@ func SetAccountModels(id, ref string, models []string) error {
 		am[accountKey(r)] = ms
 	}
 	p.AccountModels = am
-	return Save(*p)
+	return Save(*p, opts...)
 }
 
 // AccountModelsOf is the models the account or key ref of the provider id

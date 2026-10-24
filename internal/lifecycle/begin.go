@@ -111,8 +111,9 @@ func (m Mark) Meta() *Meta {
 // Err is the *MetaError for corrupt, unsupported or unreadable metadata.
 func (m Mark) Err() error { return m.err }
 
-// beginWait bounds Begin's wait for a pending journal, including Lock.
-const beginWait = 2 * time.Second
+// beginWait bounds Begin's wait for a pending journal, including Lock; a
+// var so a test that waits out a whole writer gives it room under load.
+var beginWait = 2 * time.Second
 
 // Begin opens a collection window: no journal pending, then lifecycle.json's
 // complete bytes, classified. A pending journal is waited out; Writable may

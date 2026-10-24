@@ -91,6 +91,7 @@ type writeOpts struct {
 	create bool      // Add's: the id must not be there yet
 	snap   *Provider // a Checked write's committed value
 	base   fileBase  // OnBase's: checked instead of the write's own read
+	read   *string   // AsRead's: the page's marker, checked instead of the write's own read's
 }
 
 func writeOptsOf(opts []WriteOption) writeOpts {
@@ -117,6 +118,16 @@ func Expect(p Provider) WriteOption {
 	}
 }
 
+// AsRead checks a Save of one field, made on a value the write finds by id
+// itself (SetAccountModels), as the page's read rev had the provider: its
+// row as that read had it, in the same commit, as FromToken's would be. A
+// rev older than a change made since is refused (StaleError) and writes
+// nothing; one that doesn't decode is stale. An account's picks are by id
+// still. With no rev, pass no option: by id, as before.
+func AsRead(rev string) WriteOption {
+	return func(o *writeOpts) { o.read = &rev }
+}
+
 // storeWith is store with opts' checks. A refused write is an error and
 // writes nothing.
 func storeWith(f file, opts ...WriteOption) error {
@@ -136,9 +147,10 @@ func errIDChanged(l life, id string) error {
 }
 
 // saveCommit is Save's write of p into f, by its marker l: as the provider
-// it was read as, or by id (a zero or transient l). account is p saved as
-// a signed-in account's picks: by id, whatever l is. unchanged is p as
-// providers.json holds it already: checked the same, written not (#1962).
+// it was read as, or by id (a zero or transient l); AsRead's marker stands
+// in for l. account is p saved as a signed-in account's picks: by id,
+// whatever l is. unchanged is p as providers.json holds it already:
+// checked the same, written not (#1962).
 func saveCommit(f file, p Provider, l life, account, unchanged bool, opts []WriteOption) error {
 	o := writeOptsOf(opts)
 	if o.refuse != nil {
@@ -146,6 +158,9 @@ func saveCommit(f file, p Provider, l life, account, unchanged bool, opts []Writ
 	}
 	in := o.in
 	in.unchanged = unchanged
+	if o.read != nil {
+		l = lifeOfToken(p.ID, *o.read)
+	}
 	if account {
 		l = life{}
 	}

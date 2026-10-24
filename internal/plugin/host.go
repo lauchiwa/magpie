@@ -1696,10 +1696,18 @@ func (c *call) headRead(ctx context.Context) (head message, answer *message, err
 		if m, ok := c.pop(); ok {
 			return m, nil, nil
 		}
+		if afterHeadMiss != nil { // fork: host_fork.go
+			afterHeadMiss(c)
+		}
 		if err := c.givenUp(); err != nil {
 			return message{}, nil, err
 		}
 		if m := c.result(); m != nil {
+			// fork: the head is pushed before the answer is kept, so one
+			// pushed since the pop above is in the queue now
+			if hm, ok := c.pop(); ok {
+				return hm, m, nil
+			}
 			if m.Error != nil {
 				return message{}, m, errors.New(m.Error.Message)
 			}

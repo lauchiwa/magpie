@@ -19,6 +19,14 @@ const forkScriptBudget = 44_700 // 43,962 with lifecycle.js (R1) and identity.js
 
 func forkScript(name string) bool { return slices.Contains(forkScripts, name) }
 
+// fork: the bytes our hooks add inside app.js (lifecycleError, identityRead,
+// renderIdentityProfiles, identityField, the rev the save bodies carry, the
+// stale and committed catches). TestCoreScriptBudget weighs app.js and the
+// core against upstream's budgets plus this, so those budgets stay
+// upstream's text as they come; a hook that needs more raises this and
+// says why in its commit.
+const forkHookBudget = 2_200 // 1,678 on upstream v0.1.1353, plus room for the accountmodels rev
+
 func TestForkScriptBudget(t *testing.T) {
 	page, err := os.ReadFile("assets/index.html")
 	if err != nil {

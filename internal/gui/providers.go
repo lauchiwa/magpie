@@ -1271,8 +1271,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// NoModels, for save: the editor's Select none, kept with no
 			// model picked (#1818); a save that leaves it out keeps it
 			NoModels *bool `json:"noModels"`
-			// fork: Rev, for save, delete, off and on: the provider's
-			// marker as the page read it (lifecycle_fork.go)
+			// fork: Rev, for save, delete, off, on and accountmodels: the
+			// provider's marker as the page read it (lifecycle_fork.go)
 			Rev string `json:"rev"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1758,7 +1758,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			}
 			agent.SyncCatalog()
 		case "accountmodels":
-			if err := provider.SetAccountModels(in.ID, req.Account, req.Allow); err != nil {
+			if err := provider.SetAccountModels(in.ID, req.Account, req.Allow, accountModelsAsRead(req.Rev)...); err != nil { // fork: lifecycle_fork.go
 				fail(rw, err)
 				return
 			}
@@ -2091,6 +2091,22 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		writeJSON(rw, providersState())
+	})
+	// The Codex desktop app left on the model list before a change (the
+	// Agents row's Restart): quit it and open it again.
+	mux.HandleFunc("POST /api/codex/app/reopen", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Bundle string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+		defer cancel()
+		if err := agent.ReopenCodexApp(ctx, in.Bundle); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]bool{"ok": true})
 	})
 	// A provider's several keys: add one, put one in use, name or remove it.
 	mux.HandleFunc("POST /api/keys/{action}", func(rw http.ResponseWriter, r *http.Request) {
