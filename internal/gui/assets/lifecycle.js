@@ -90,6 +90,24 @@ const LIFECYCLE_STEPS = {
 // delete's), and a second Save wouldn't reach them.
 const LIFECYCLE_REDONE = new Set(["rename", "keys", "model-prefs", "outputs", "compacts"]);
 
+// accountModelsAsRead: an editor Save's picks (#2862) go with the rev it
+// read, so a change made elsewhere refuses them; they write the provider,
+// so keepRev gives the Save (and its draft) the rev their answer lists.
+// No rev: the body as it is, by id.
+function accountModelsAsRead(body, save) {
+  const read = save?.rev;
+  if (!read) return { body, keepRev() {} };
+  return {
+    body: { ...body, rev: read },
+    keepRev(list, draft) {
+      const rev = list?.providers?.find((q) => q.id === body.id)?.rev;
+      if (!rev) return;
+      save.rev = rev;
+      if (draft?.rev === read) draft.rev = rev; // still the editor that read it
+    },
+  };
+}
+
 // lifecycleError is api()'s: err takes the answer's code, step and
 // committed, and its message is said in the reader's language. An answer
 // without one of these codes is left as it is.

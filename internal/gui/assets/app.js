@@ -9370,7 +9370,7 @@ function drawEditor(p, presetID) {
       if (picked === false) return editorError(t("Pick at least one model for the account, or choose All models"), "warn");
       const body = { id: p.id, rev: draft.rev, models: chosenIds(), noModels: noneChosen(), unlisted: draft.unlisted, fallback: draft.fallback, contexts: cx.map, outputs: ox.map, compacts: cpx.map, proxy, accountProxies: own.map, maxConcurrency, ...queue, priceRate, modelPrefs: modelPrefsOfDraft(), pinUpstream: !!draft.pinUpstream, ...(p.carriesCompaction ? { nativeCompaction: !!draft.nativeCompaction } : {}), ...routingOfDraft(p) };
       saving(saveBtn, t("Saving…"));
-      saveAccountModelsDraft(picked).then(() => savePluginOptions(subOf(a.agent))).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
+      saveAccountModelsDraft(picked, body).then(() => savePluginOptions(subOf(a.agent))).then(() => providerAction("save", body, t("{name} saved", { name: p.name })), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); }); };
     bar.append(cancel, saveBtn);
     ed.append(bar);
     return ed;
@@ -10047,7 +10047,7 @@ function drawEditor(p, presetID) {
     if (picked === false) return editorError(t("Pick at least one model for the account, or choose All models"), "warn");
     saving(saveBtn, t(isNew ? "Adding…" : "Saving…"));
     const okMsg = t(isNew ? "{name} added" : "{name} saved", { name: draft.name || draft.id });
-    saveAccountModelsDraft(picked).then(() => providerAction("save", body, okMsg), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); });
+    saveAccountModelsDraft(picked, body).then(() => providerAction("save", body, okMsg), (e) => { doneSaving(saveBtn); editorError(e.message || String(e)); });
   };
   saveBtn.onclick = save;
   bar.append(cancel, saveBtn);
@@ -14186,9 +14186,10 @@ function accountModelsDraft(p) {
   if (own.length === a.chosen.length && a.chosen.every((id) => own.includes(id))) return null;
   return a.chosen.length ? { id: p.id, account: a.ref, allow: [...a.chosen] } : false;
 }
-async function saveAccountModelsDraft(body) {
+async function saveAccountModelsDraft(body, save) {
   if (!body) return;
-  await api("provider/accountmodels", body);
+  const as = accountModelsAsRead(body, save); // fork: the rev it was read with, and the one it left (lifecycle.js)
+  as.keepRev(await api("provider/accountmodels", as.body), draft);
   acctModels = null;
 }
 // It gives the pill, and the open picker the row ends with, or null.

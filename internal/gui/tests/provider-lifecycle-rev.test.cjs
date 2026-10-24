@@ -2,7 +2,8 @@
 // fork: a provider write carries the rev the page read it at (lifecycle.js,
 // lifecycle_fork.go). Save (an account's too), Remove, the on/off switch,
 // Bind and Unbind (the panel's and the editor's) send it; a Duplicate is new
-// and sends none. A stale answer keeps the editor and
+// and sends none. A picker's picks left for the Save go first with that rev,
+// and the Save carries the one their answer gave. A stale answer keeps the editor and
 // the draft as typed, sends nothing again and rereads the list; a write that
 // was saved but for a step (follow_up, committed) or is finished by the
 // journal (pending) closes the editor and says so as a warning, with the
@@ -50,6 +51,7 @@ function serve(lang, world) {
       const action = url.pathname.slice("/api/".length);
       world.posts.push({ action, body: route.request().postDataJSON() });
       if (world.refuse[action]) return json(world.refuse[action], 400);
+      world.wrote?.[action]?.(); // what the write changed, before the list it answers
       return json(action.startsWith("identity/") ? world.identity : list());
     }
     if (url.pathname === "/api/plugins") return json({ plugins: [] });
@@ -273,6 +275,39 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await fits(page);
       assert.deepEqual(errors, []);
     });
+  }
+
+  // an editor's Save with a picker's picks unsaved (#2862): the picks go
+  // first, with the rev the editor read (r1), and write the provider, whose
+  // rev their answer gives (r2); the Save after them carries r2, so its own
+  // picks don't make it stale. A key's picker and an account's alike.
+  const keyed = { ...relay, keyList: [{ id: "aaaaaaaaaa", name: "Team", masked: "sk-…1234", on: true, active: true }, { id: "bbbbbbbbbb", name: "", masked: "sk-…5678", on: true }] };
+  const subs = { ...sub, account: { ...sub.account, logins: [...sub.account.logins, { user: "two@example.test", plan: "Pro", on: true }] } };
+  for (const [lang, width] of [["en", 980], ["zh", 420]]) {
+    for (const [p, ref, model] of [[keyed, "bbbbbbbbbb", "M1"], [subs, "two@example.test", "GLM-5"]]) {
+      test(`${engine} ${lang} ${width}: ${p.id}'s Save after its own picks sends the rev they left`, async (t) => {
+        const others = p.id === relay.id ? [] : [relay];
+        const { page, errors, world } = await launch(t, engine, lang, width, (world) => {
+          world.providers = [...others, p];
+          world.wrote = { "provider/accountmodels": () => { world.providers = [...others, { ...p, rev: p.rev + "+", accountModels: { [ref]: [p.models[0].id] } }]; } };
+        });
+        await page.locator(`#providers .row.provider[data-id="${p.id}"]`).click();
+        const acc = page.locator(`.editor .accts .acc[data-account-id="${ref}"]`);
+        await acc.hover();
+        await acc.locator(".amodels").click();
+        await acc.locator(".acct-models .mchip", { hasText: model }).click();
+        const n = world.posts.length;
+        await page.locator(".editor > .bar button.primary").click();
+        await page.locator(".editor").waitFor({ state: "detached" });
+        const [picks, save] = world.posts.slice(n);
+        assert.deepEqual(picks, { action: "provider/accountmodels", body: { id: p.id, account: ref, allow: [p.models[0].id], rev: p.rev } });
+        assert.equal(save.action, "provider/save");
+        assert.equal(save.body.rev, p.rev + "+", "the Save carried the rev the editor read, not the one its picks left");
+        assert.equal(world.posts.length, n + 2);
+        await fits(page);
+        assert.deepEqual(errors, []);
+      });
+    }
   }
 
   // the other languages say each answer in their own words, at 420 wide

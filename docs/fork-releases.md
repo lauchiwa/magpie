@@ -139,8 +139,8 @@ The sync PR records each item below as checked, with what was run:
   `store(file{…})`.
 - **Provider writes** (`internal/provider`): `store` is still
   `commit(f, intent{})` in `provider.go`. `Save`, `AddCopy`, `Delete`,
-  `Rename` (`rename.go`), `Mirror` (`backup.go`) and `AddKeys` (`keys.go`)
-  still take `opts ...WriteOption`, and `AddChecked`/`AddCopyChecked`
+  `Rename` (`rename.go`), `Mirror` (`backup.go`), `AddKeys` (`keys.go`) and
+  `SetAccountModels` (`account_models.go`) still take `opts ...WriteOption`, and `AddChecked`/`AddCopyChecked`
   (`lifecycle_token.go`) still reach `add`/`AddCopy`. The learners (`LearnAuthHeader`, `LearnZhipuCoding`,
   `fixV1`'s write in `models.go`, `dropGonePicks`) still pass `Expect(p)`. A new write path upstream adds goes through `store` or
   `storeWith`, never around it. A change to `Rename`, `Was` or `Delete`
@@ -162,7 +162,8 @@ The sync PR records each item below as checked, with what was run:
   `confirmProv` and saves line edits with `Expect`.
 - **GUI, Go side.** `gui/providers.go`'s save chain (`AddChecked` or
   `SaveChecked`, `renameSaved`, `addKeysTo`, `stepOn`, `savedFind`), its
-  `DeleteChecked`, `providerJSON.Rev`; `gui/api.go`'s `fail()` still calls
+  `DeleteChecked`, `providerJSON.Rev`, its `accountmodels` passing
+  `accountModelsAsRead(req.Rev)`; `gui/api.go`'s `fail()` still calls
   `lifecycleFail`.
 - **GUI, page.** `index.html` still loads `lifecycle.js` and `identity.js`
   before `app.js`, `identity.css` right after `app.css`, and keeps the
@@ -175,6 +176,9 @@ The sync PR records each item below as checked, with what was run:
   `switchProvider` and the identity bind/unbind still send it;
   `duplicateProvider` still clears it; `providerAction`'s catch still
   closes on `committed`/`pending` and rereads on `stale`.
+  `saveAccountModelsDraft(picked, body)` still sends the picks through
+  `accountModelsAsRead`, with the Save body's `rev`, and the Save then
+  carries the `rev` their answer gave.
   `provider-lifecycle-rev.test.cjs` covers each of these.
   `TestCoreScriptBudget` skips the fork's scripts (`forkScript`), so its
   budgets and comments are upstream's as they come; `TestForkScriptBudget`

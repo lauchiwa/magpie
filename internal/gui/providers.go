@@ -1271,8 +1271,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// NoModels, for save: the editor's Select none, kept with no
 			// model picked (#1818); a save that leaves it out keeps it
 			NoModels *bool `json:"noModels"`
-			// fork: Rev, for save, delete, off and on: the provider's
-			// marker as the page read it (lifecycle_fork.go)
+			// fork: Rev, for save, delete, off, on and accountmodels: the
+			// provider's marker as the page read it (lifecycle_fork.go)
 			Rev string `json:"rev"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1758,7 +1758,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			}
 			agent.SyncCatalog()
 		case "accountmodels":
-			if err := provider.SetAccountModels(in.ID, req.Account, req.Allow); err != nil {
+			if err := provider.SetAccountModels(in.ID, req.Account, req.Allow, accountModelsAsRead(req.Rev)...); err != nil { // fork: lifecycle_fork.go
 				fail(rw, err)
 				return
 			}

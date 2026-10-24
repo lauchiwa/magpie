@@ -82,6 +82,18 @@ func addKeysTo(snap provider.Provider, keys []string, proto provider.Protocol) (
 	return added, had, afterSave(stepKeys, err)
 }
 
+// accountModelsAsRead checks an editor Save's account-model picks (#2862)
+// as the page read the provider: written by its rev, so a change made
+// elsewhere since refuses them, and the reply's new rev is what the save
+// after them sends, so they don't refuse it. No rev (a pill's own save, an
+// older page) is by id, as before.
+func accountModelsAsRead(rev string) []provider.WriteOption {
+	if rev == "" {
+		return nil
+	}
+	return []provider.WriteOption{provider.AsRead(rev)}
+}
+
 // savedFind is the provider at snap's id now, refused (stale) when it is
 // not the one snap is.
 func savedFind(snap provider.Provider) (*provider.Provider, error) {

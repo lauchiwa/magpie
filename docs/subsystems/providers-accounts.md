@@ -227,6 +227,17 @@ The GUI carries the marker through the page
   learner, an id-keyed setter, another window) makes its Save `stale`: the
   page says so and keeps the draft, and the provider opened again carries
   the new `rev`.
+- The editor's own account-model picks, left unsaved in a picker, go before
+  its Save (#2862) and write the same row. They are sent with the draft's
+  `rev` and written as read (`SetAccountModels` with `AsRead`): checked in
+  the same commit, refused as `stale` with nothing written when the row
+  changed elsewhere since. The Save after them carries the `rev` their
+  answer lists the provider with (`accountModelsAsRead` in `lifecycle.js`),
+  so the picks don't make it stale, while a change made elsewhere before
+  them still does. A signed-in account's picks are by id, as its Save is,
+  and picks sent with no `rev` (a picker's own Save, an older page) go by
+  id (`TestASaveAfterItsOwnAccountModelsStands`,
+  `TestAccountModelsFromAnOlderReadAreRefused`).
 - A rename's settings and agents step that fails is done again once, as on
   the CLI.
 - `fail()` adds a `code` that the page can tell apart, still as a 400:

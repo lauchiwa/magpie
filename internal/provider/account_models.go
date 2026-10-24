@@ -156,7 +156,8 @@ func (p Provider) accountRef(ref string) (string, bool) {
 
 // SetAccountModels gives the account or key ref of the provider id the
 // models it alone serves; none gives it every model the provider has again.
-func SetAccountModels(id, ref string, models []string) error {
+// fork: opts check its write (AsRead, lifecycle_api.go).
+func SetAccountModels(id, ref string, models []string, opts ...WriteOption) error {
 	p, err := Find(id)
 	if err != nil {
 		return err
@@ -182,7 +183,7 @@ func SetAccountModels(id, ref string, models []string) error {
 		am[accountKey(r)] = ms
 	}
 	p.AccountModels = am
-	return Save(*p)
+	return Save(*p, opts...)
 }
 
 // AccountModelsOf is the models the account or key ref of the provider id
