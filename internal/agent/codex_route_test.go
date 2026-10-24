@@ -9,11 +9,15 @@ import (
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/sessions"
 )
 
 func codexHome(t *testing.T, auth, config string) (home string, read func() string) {
 	t.Helper()
 	home = t.TempDir()
+	// fork: a moved Codex thread saves the session index behind the test;
+	// it is on disk before the TempDir goes (Cleanup runs last-in first)
+	t.Cleanup(sessions.Saved)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
