@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -143,6 +144,12 @@ func TestCheckWindowsServerHere(t *testing.T) {
 // A server both this machine's agents and a distro's have is checked in
 // each place, and a failure says which one failed.
 func TestCheckMixedServerEachSide(t *testing.T) {
+	// fork: on Windows its here side is this test binary, C:\…\x.exe, a
+	// Windows program checked here alone, and its fake in WSL starts
+	// through /usr/bin/env
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake server is a Linux or macOS program")
+	}
 	w := fakeWSLCheck(t, "Ubuntu")
 	s := fakeStdio(t, "ok", nil)
 	s.Agents = []string{"claude", "codex@wsl:Ubuntu"}
