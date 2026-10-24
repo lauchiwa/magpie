@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -65,6 +66,9 @@ func macApp(t *testing.T, dir, name, id, exe string) string {
 // Restart quits it as ⌘Q does, waits for it to end, and opens it again.
 // One that doesn't end is said and not opened a second time.
 func TestWorkBuddyRestartOnMac(t *testing.T) {
+	if runtime.GOOS == "windows" { // fork: the bundle's path is joined with \, the Mac pattern asks for /
+		t.Skip("a Mac bundle's path, on Windows")
+	}
 	home := restartSandbox(t)
 	apps := filepath.Join(home, "Applications")
 	bundle := macApp(t, apps, "WorkBuddy.app", "com.tencent.workbuddy.mac", "Electron")

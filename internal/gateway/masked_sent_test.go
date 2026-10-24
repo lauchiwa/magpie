@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -49,7 +50,8 @@ func TestMaskedRecordKeepsSentAndBack(t *testing.T) {
 		t.Fatal("nothing recorded")
 	}
 	r, ok := maskrec.Get(rs[0].Key)
-	if !ok || r.Back[p] != 2 || r.Took <= 0 {
+	// fork: Windows' monotonic clock can read a masking under its tick as 0µs
+	if !ok || r.Back[p] != 2 || r.Took < 0 || r.Took == 0 && runtime.GOOS != "windows" {
 		t.Fatalf("record: %+v", r)
 	}
 	sent, ok := maskrec.SentOf(r.Key)

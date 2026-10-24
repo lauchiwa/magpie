@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -45,6 +46,9 @@ func listening(t *testing.T, s *Server) (stop context.CancelFunc, done <-chan er
 // old one's end waits for it, rather than 2s — while new requests are
 // answered by the new one, and none is refused on the way.
 func TestHandedOverGatewayFinishesItsStream(t *testing.T) {
+	if runtime.GOOS == "windows" { // fork: a TCP listener has no File there; gui hands over on darwin and linux only
+		t.Skip("no socket handover on Windows")
+	}
 	fresh(t)
 	release := make(chan struct{})
 	var upstreamCalls atomic.Int32
