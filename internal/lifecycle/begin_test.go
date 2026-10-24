@@ -269,6 +269,9 @@ func TestBeginWaitsForLiveWriterAndRecoversDeadWriter(t *testing.T) {
 }
 
 func TestBeginWaitsForWriterToComplete(t *testing.T) {
+	old := beginWait
+	beginWait = lockWait // the whole commit, however slow the machine: the test is that Begin waits, not how long
+	t.Cleanup(func() { beginWait = old })
 	home(t)
 	savePlan(t, fixture(t))
 	c, in := heldChild(t, "hold", "providers.json:write")
