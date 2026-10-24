@@ -185,6 +185,10 @@ The sync PR records each item below as checked, with what was run:
   weighs `forkScripts` instead. The hooks inside `app.js` are weighed on
   top of upstream's two budgets as `forkHookBudget`, so a sync never raises
   upstream's numbers; a hook that needs more raises that one.
+- **Plugin host.** `plugin/host.go`'s `headRead` still calls
+  `afterHeadMiss` (`host_fork.go`) after a pop that found no head, and
+  pops again when it finds the answer, before calling the reply "no
+  response"; `TestHeadPushedBeforeTheAnswerIsRead` fails without it.
 - **GUI strings.** `tests/strings.cjs` still reads each `FORK` file as one
   with its own words, and `tests/i18n-keys.test.cjs` still skips them in
   "a plugin's words are its own" (they are always loaded, never off like a
