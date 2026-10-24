@@ -490,6 +490,9 @@ type providersJSON struct {
 	// after Codex was switched to another, until it is quit and opened
 	// again (provider.CodexAppStale)
 	CodexApp string `json:"codexApp,omitempty"`
+	// CodexAppOut is a Codex app left unable to send on its used-up
+	// ChatGPT account until it is opened again (codexAppOutState)
+	CodexAppOut *codexAppOutJSON `json:"codexAppOut,omitempty"`
 	// Plugins are the providers the plugins sign in to, for the add sheet
 	Plugins []pluginSubJSON `json:"plugins"`
 	// OnPlugins are the built-in subscriptions moved onto their plugins,
@@ -959,6 +962,7 @@ func providersState() providersJSON {
 	s.Gateway.Archive = archiveState()
 	s.CodexDaemon = provider.CodexDaemonStale()
 	s.CodexApp = provider.CodexAppStale()
+	s.CodexAppOut = codexAppOutState()
 	s.Plugins = pluginSubs()
 	s.Fetching = provider.FetchingNew()
 	return s
@@ -1756,7 +1760,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
-			agent.SyncCatalog()
+			agent.SyncCatalogSoon()
 		case "accountmodels":
 			if err := provider.SetAccountModels(in.ID, req.Account, req.Allow, accountModelsAsRead(req.Rev)...); err != nil { // fork: lifecycle_fork.go
 				fail(rw, err)
@@ -1815,7 +1819,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
-			agent.SyncCatalog()
+			agent.SyncCatalogSoon()
 		case "switchonly":
 			// magpie only switches Codex's own sign-in, its requests going
 			// straight to OpenAI, or routes them for failover again
@@ -1824,7 +1828,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 				fail(rw, err)
 				return
 			}
-			agent.SyncCatalog()
+			agent.SyncCatalogSoon()
 		case "affinity":
 			if err := provider.SetAffinity(in.ID, in.Affinity); err != nil {
 				fail(rw, err)
@@ -2063,7 +2067,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		// an agent on its own models goes through magpie while more of
 		// its accounts are on, and straight to its vendor again once not
-		agent.SyncCatalog()
+		agent.SyncCatalogSoon()
 		st := providersState()
 		st.Moved = moved
 		writeJSON(rw, st)
@@ -2248,7 +2252,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		agent.SyncCatalog()
+		agent.SyncCatalogSoon()
 		writeJSON(rw, struct {
 			Results   []provider.ImportedAccount `json:"results"`
 			Providers providersJSON              `json:"providers"`

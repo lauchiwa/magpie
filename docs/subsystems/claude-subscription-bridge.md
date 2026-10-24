@@ -554,6 +554,19 @@ hook's output, or nothing (the run's Claude Code doesn't show a bare
 without marking it `[user message]`. A reminder with other words in it is
 still the user's, as #872's was.
 
+A background sub-agent's `<task-notification>` (with its "[SYSTEM
+NOTIFICATION - NOT USER INPUT]" head) is not the user's either, but the
+run's model must hear it. Claude Code 2.1.310 sends one that finishes while
+its main agent is mid-turn as a `{role: "system"}` message after the
+results (several that finish together share one text block), or as text
+after them in their message. `withTaskNotices` appends each to the last
+result, inside `<system-reminder>`, as Claude Code itself does for a
+notification that lands in a tool's result, and `saidWithResults` strips
+them before judging what is left. Before, `agentNotice` dropped them
+whole, the run never heard the sub-agent finished, and the main agent
+waited for it (stones_2026 on Discord). A notification after a reply is a
+turn of its own and is told as it is.
+
 Where the result ends is said by the message's parts alone. A tool whose
 output says "Do not use tools." has it told as its output, inside the
 result. The words of a message that holds images (pi-ai's "Attached
@@ -615,6 +628,19 @@ claude-hud shows. One that signs in to magpie with magpie's key
 headers only for a claude.ai subscriber. A reply another provider answered
 carries none.
 
+## A restart to update
+
+A run is a Claude Code process of this magpie's, so a restart to update
+that hands the gateway to the new version ([GUI shell](gui-shell.md#a-restart-to-update-hands-the-gateway-over))
+waits for the bridge's turns, and for none of the gateway's other requests
+(`restartBusy` in [`handover.go`](../../internal/gui/handover.go): `Busy.Bridge`,
+`Tools`, `BridgeLast`). A run's tool calls go to the gateway's port, which
+the new one serves once it has the socket; a `claude-mcp` token the new one
+doesn't know is forwarded to the old one's callback socket
+(`ForwardCallbacks`, `forwardCallback`), which serves it until it quits
+(`ServeCallbacks`). A run idle between turns ends with the old process,
+and the next turn starts a run in the new one, as after any restart.
+
 ## Verification
 
 ```sh
@@ -629,6 +655,7 @@ go test -tags nogui ./internal/gateway/ -run 'TestClaudeRunsHeldToTheRoom|TestCl
 go test -tags nogui ./internal/cli/ -run '^TestClaudeCodeRunsSetsTheUsersOwn$' -count=1
 go test -tags nogui ./internal/settings/ -run '^TestClaudeRunsMostIsMachineLocal$' -count=1
 go test -tags nogui ./internal/gateway/ -run 'ClaudeSubscriptionRunsTheDownloaded|ClaudeSubscriptionWithoutClaudeCode|ClaudeRewritten|LostMedia|ImagesTakenOut|RunLetGoWhenTheClientRewrote|ClaudeSessionTempFiles|ClaudeLetGo|ClaudeSessionFiles|ClaudeOldSessions|ClaudeSubscriptionReplySaysTheAllowance|ClaudeAllowanceHeaders|ClaudeForksAnsweringTheLeadsCalls|ClaudeTurnGivenUpOn|ClaudeToolResultsGivenUpOn|ClaudePromptMarksEarlierTurns|ClaudeHistoryCachedAcrossNewRuns|ClaudeUnloadableSession|ClaudeEndedRunSaysWhy|ClaudeIdle|ClaudeSideQuestion|ClaudeNoRunSaysWhy|ClaudeToolResultsNoRunSaysWhy|ClaudePromptToldUserText|ClaudePromptKeepsInstructions|ClaudeToolResultsGoOnWithTheUsersWords|ClaudeToolResultsKeepInstructions|ToolResultKeepsUserTextSentMidTurn|ClaudeTextToolCalls|ClaudeTextCallsHoldsOnlyTheLine|ClaudePromptSaysPastCallsAreARecord' -count=1
+go test -tags nogui ./internal/gateway/ -run 'TestClaudeTaskNotification|TestWithTaskNotices|TestClaudeTurnToldTheTaskNotification' -count=1
 ```
 
 `claude_rewritten_test.go` has a case for each relaxation and one for each

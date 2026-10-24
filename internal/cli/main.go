@@ -128,6 +128,7 @@ const usage = `magpie — one place to pick every agent's model
   magpie healthcheck              exit 0 when the gateway answers (a container's HEALTHCHECK)
   magpie heap [<file>]            a Go heap profile of the running magpie, with its memory numbers, for a report of it using too much memory
   magpie cpu [<file>] [--seconds N]   a Go CPU profile of the running magpie over 30s (5..120) while you use it, for a report of it using too much CPU
+  magpie goroutines [<file>]      every goroutine of the running magpie, its stack and how long it waited, for a report of it stuck at something
   magpie gateway-key list|add <name>|rotate <id>|remove <id>   manage the keys clients use to call a shared gateway
   magpie gateway-key limit <id> [list|off|reset [n]|remove <n>|[add] day|week|month|<N>d|<N>h --tokens N --cost USD --cache-reads]   a key's own limits, and what it used
   magpie gateway-key models <id> [all|<provider>/<model>|<provider>/* ...]   the models a key may use, every one unless it names some
@@ -227,7 +228,22 @@ func runTUI() error {
 // tuiRun is tui.Run; a var so tests can stand in for it.
 var tuiRun = tui.Run
 
+// syncAgentsOnChange sets what a catalog change (a provider or group
+// saved, a vendor's list fetched anew) does: the model lists agents keep
+// in files of their own are brought up to date behind the save, which
+// answers without waiting for every agent's files to be written (on
+// Windows, half a second for each one another program holds open).
+func syncAgentsOnChange() { catalog.Changed = agent.SyncCatalogSoon }
+
 func run(args []string) error {
+	// a command that saved a provider or a group ends with the agents'
+	// files written, which its save no longer waits for; and a test's run
+	// leaves catalog.Changed as it found it
+	was := catalog.Changed
+	defer func() {
+		agent.SyncCatalogSettled()
+		catalog.Changed = was
+	}()
 	// before anything is read, moved or started: --help on any command
 	// prints its usage and does nothing else
 	if helpAsked(args) {
@@ -244,6 +260,10 @@ func run(args []string) error {
 	if len(args) > 0 && args[0] == "cpu" {
 		// the running magpie's CPU profile: asks it, and moves nothing here
 		return cpuCmd(args[1:])
+	}
+	if len(args) > 0 && args[0] == "goroutines" {
+		// the running magpie's goroutines: asks it, and moves nothing here
+		return goroutinesCmd(args[1:])
 	}
 	if len(args) == 2 && args[0] == agent.DryRunArg {
 		// an agent disconnected on a copy of its files under a temporary
@@ -276,11 +296,15 @@ func run(args []string) error {
 	agent.MoveOffAccountIDs()
 	release()
 	// a provider added, edited or removed, or a list fetched anew, reaches
-	// the model lists agents keep in files of their own
-	catalog.Changed = agent.SyncCatalog
+	// the model lists agents keep in files of their own, behind the save
+	// that changed it (agent.SyncCatalogSoon)
+	syncAgentsOnChange()
 	// a model Claude Code names that magpie doesn't serve goes to the one
 	// it is set to use for that tier
 	gateway.StandIn = agent.StandIn
+	// and its auto mode classifier, on a sonnet tier that follows a main
+	// model /model has moved, to the model it moved to
+	gateway.ClassifierStandIn = agent.ClassifierStandIn
 	// a Codex that reaches magpie for account failover alone is handed
 	// only its own models (#1385)
 	gateway.CodexOwnOnly = agent.CodexOwnOnly
