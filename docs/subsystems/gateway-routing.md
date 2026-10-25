@@ -204,7 +204,24 @@ recorded as a prediction failure (`noPrediction`).
   new process's `ListenAndServe` a socket to serve when the address is the
   same (`sameAddr`), and calls back once it serves; `HandOff` has the old
   one's shutdown wait up to `handedOffDrain` (15 minutes) for its requests
-  in flight instead of `shortDrain` (2s). Requests per minute, concurrency
+  in flight instead of `shortDrain` (2s). In this fork `HandOff` also
+  stops the old one accepting on the socket at once (`stopAccepting` in
+  [`handover_fork.go`](../../internal/gateway/handover_fork.go)); its
+  replies from then on say `Connection: close` (`closeWhenHandedOff`), and
+  its end goes on answering for `handedOffLinger` (2s) before its
+  Shutdown (`lingerHandedOff`), so a client's keep-alive connection isn't
+  closed under a POST it is sending (EOF, which net/http doesn't retry).
+  `handoff.Conn.Give` reads the socket's descriptor through `SyscallConn`,
+  not `os.File.Fd` (`rightsOf` in
+  [`handoff_fork_unix.go`](../../internal/handoff/handoff_fork_unix.go)):
+  `Fd` puts the socket both copies share in blocking mode, and the old
+  one's Accept then blocked in accept(2), past any deadline, until a
+  client connected. `TestHandedOffGatewayAcceptsNoMore`,
+  `TestHandedOffGatewayEndsEachConnection` in
+  [`handover_fork_test.go`](../../internal/gateway/handover_fork_test.go),
+  `TestGiveLeavesTheListenerNonBlocking` in
+  [`handoff_fork_test.go`](../../internal/handoff/handoff_fork_test.go).
+  Requests per minute, concurrency
   and sticky routing's in-memory state are each process's own: sticky
   routing is flushed to disk before the socket goes (`FlushSticks`), but
   while the old one drains, a provider's limits can be passed by what each

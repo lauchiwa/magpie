@@ -581,7 +581,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	freshCtx, stopFresh := context.WithCancel(ctx)
 	defer stopFresh()
 	go pluginrt.KeepFresh(freshCtx, 2*time.Second, settings.Path(), provider.Path(), plugin.ListPath(), plugin.ToolsPath(), access.Path())
-	srv := &http.Server{Handler: lanGuard(s.Handler()), ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 5 * time.Minute}
+	srv := &http.Server{Handler: s.closeWhenHandedOff(lanGuard(s.Handler())), ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 5 * time.Minute} // fork: closeWhenHandedOff, handover_fork.go
 	// the magpie serving the gateway, and only it, keeps the saved accounts
 	// signed in, so two never refresh one sign-in at once
 	go provider.KeepLoginsAlive(ctx)
@@ -633,6 +633,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	go func() {
 		defer close(drained)
 		<-ctx.Done()
+		s.lingerHandedOff() // fork: handover_fork.go
 		c, cancel := context.WithTimeout(context.Background(), s.drainFor())
 		defer cancel()
 		srv.Shutdown(c)

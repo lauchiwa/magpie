@@ -212,9 +212,9 @@ func TestRestartHandsTheGatewayOver(t *testing.T) {
 	eventually2(t, 30*time.Second, "the new magpie never served the gateway", func() bool {
 		return child != nil && child.Process != nil && servedByPid(addr) == child.Process.Pid
 	})
-	if !handedOver.Load() {
-		t.Fatal("the new one serves, and this one doesn't know it handed over")
-	}
+	// fork: the new one serves once it has acked, a moment before this
+	// one's AwaitAck returns and records the handover
+	eventually2(t, 10*time.Second, "the new one serves, and this one doesn't know it handed over", handedOver.Load)
 	// the old one keeps its stream past the 2s an ordinary end gives
 	// requests (gateway.shortDrain), and so doesn't quit yet
 	select {

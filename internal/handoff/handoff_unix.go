@@ -158,7 +158,11 @@ func (o *Offer) Accept(ctx context.Context) (*Conn, error) {
 func (c *Conn) Give(f *os.File, m Meta) error {
 	b, _ := json.Marshal(m)
 	b = append(b, '\n')
-	n, oobn, err := c.c.WriteMsgUnix(b, unix.UnixRights(int(f.Fd())), nil)
+	oob, err := rightsOf(f) // fork: handoff_fork_unix.go
+	if err != nil {
+		return err
+	}
+	n, oobn, err := c.c.WriteMsgUnix(b, oob, nil)
 	if err != nil {
 		return err
 	}
