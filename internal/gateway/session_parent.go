@@ -15,6 +15,12 @@ func isDescriptionKind(kind string) bool {
 	return kind == "thread_description"
 }
 
+// isSummaryKind: the Codex app's one-line summary of a thread's latest
+// message, shown under its title (thread_summary)
+func isSummaryKind(kind string) bool {
+	return kind == "thread_summary"
+}
+
 // isPredictionKind: the Codex app's guess at the user's next message,
 // shown in its composer (composer_predictions, #1970)
 func isPredictionKind(kind string) bool {

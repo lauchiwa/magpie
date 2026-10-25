@@ -192,7 +192,7 @@ Changes to `internal/provider/{backup,lifecycle_sync}.go` (Mirror, Restore, `Fil
 - `provider.Restore(ps)`
 - `backup.Bundle.Base()`: an unexported field. It is never sealed, so an opened bundle's base is zero.
 - davsync `bring(b, part, opts ...provider.WriteOption)`, `onCollected(local)` and `changedHere(err)`, all in `lifecycle_fork.go`.
-- `readyAtStart(args)`: one line in `run()`, after `settings.Migrate()` and before `provider.Hold()`.
+- `readyAtStart(startArgs)`: one line in `startUp`, after `settings.Migrate()` and before `provider.Hold()`. `run` sets `startArgs = args` just before calling `startUp()`.
 
 ### 3. Contracts
 - A sync decides from what was collected. Mirror with `OnBase(collect's base)` is refused with `*ConflictError` when providers.json's bytes changed since the collect. It is also refused when lifecycle.json's presence, epoch or gen changed. That catches a delete followed by a recreate with the same bytes. An unreadable meta at collect is a conflict, never permission. A zero `FileBase` checks nothing, so upstream calls are unchanged.

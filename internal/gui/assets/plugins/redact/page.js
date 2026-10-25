@@ -50,7 +50,9 @@ function maskLoad(force) {
   return p;
 }
 const maskSettings = () => prefs || state?.settings || {};
-const maskOn = () => { const s = maskSettings(); return !!(s.redact || s.redactPersonal); };
+// on as the masker is (masking.Wanted): your own words mask with neither
+// switch on
+const maskOn = () => { const s = maskSettings(); return !!(s.redact || s.redactPersonal || s.redactWords?.length); };
 
 function maskPageOpen() {
   if (!providers && !maskProvAsked) {
@@ -145,7 +147,7 @@ function drawMaskCard() {
   maskStrip(days, sum.days, move);
   if (move && sum.n) maskCountUp(num, sum.n);
   if (sum.agents.length && sum.providers.length) band.append(maskFlow(sum, move));
-  else band.append(el("div", "msk-flow-none", t("A request that carries a key, a password or personal data shows here as it goes")));
+  else band.append(maskNone());
   if (move) for (const [i, n] of [...band.children].entries()) n.animate([{ opacity: 0, transform: "translateY(6px)", filter: "blur(6px)" }, {}], { duration: 900, delay: i * 120, easing: "cubic-bezier(.2, .7, .1, 1)", fill: "backwards" });
 }
 
@@ -163,8 +165,25 @@ function maskOffCard(box) {
   link.onclick = (e) => openSettingsAt(e, "privacy");
   also.append(el("span", "", t("You can also change it in")), link);
   box.append(s, el("h2", "", t("Requests go to vendors as they are")),
-    el("p", "", t("Turned on, keys, passwords, computer names and emails become placeholders before they leave this computer, and are put back in each answer. What each request had masked shows here.")),
+    el("p", "", t("Turned on, keys, passwords and tokens become placeholders before they leave this computer, and are put back in each answer. Emails and phone numbers too once Mask personal data is on. What each request had masked shows here.")),
     b, also);
+}
+// maskNone: what the card says while nothing was masked. With secrets
+// alone on, an agent's everyday requests carry nothing to mask (an email
+// or a name isn't a secret), so it says that, and where personal data is
+// turned on, rather than a 0 that reads as masking not working
+function maskNone() {
+  const s = maskSettings(), box = el("div", "msk-flow-none");
+  if (s.redactPersonal || !s.redact) {
+    box.textContent = t("A request that carries a key, a password or personal data shows here as it goes");
+    return box;
+  }
+  box.append(el("span", "", t("Only keys, passwords and tokens are masked now, and a request that carries one shows here as it goes. Emails and phone numbers are masked once Mask personal data is on, in")));
+  const link = el("button", "text", t("Settings › Privacy"));
+  link.type = "button";
+  link.onclick = (e) => openSettingsAt(e, "privacy");
+  box.append(" ", link);
+  return box;
 }
 function maskTurnOn(e) {
   const b = e.currentTarget;

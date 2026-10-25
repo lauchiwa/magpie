@@ -372,7 +372,15 @@ func codexIn(at place) *Agent {
 		if settings.AccountDiscoveryOff() {
 			return joined() || beside()
 		}
-		return codexChatGPT(dir)
+		// a read that says nothing (auth.json caught while Codex rewrites
+		// it) leaves Codex as magpie last wired it: beside its sign-in, or
+		// magpie its provider while the Codex app holds the account
+		// (codex.out), which Sync puts back once it has room
+		signedIn, known := codexChatGPTKnown(dir)
+		if !known {
+			return joined() || beside() || stashLoad()[at.key("codex.out")] == "1"
+		}
+		return signedIn
 	}
 	// magpie is in Codex's config: on one of magpie's models, or joined;
 	// or, routed, on the model of the group magpie set it to as Codex
@@ -1261,6 +1269,12 @@ func codexIn(at place) *Agent {
 			return errors.Join(dropMirrorFailover(), dropBase())
 		},
 		OwnVia: codexOwnViaMagpie,
+		SideModel: func() string {
+			if m := get("model"); viaBase() && !asProvider() && isMagpie(m) {
+				return m
+			}
+			return ""
+		},
 		Sync: func() error {
 			// after the sync, which may have put Codex back beside its
 			// sign-in, and whatever it failed at
@@ -2005,25 +2019,52 @@ func CodexOwnOnly() bool {
 	return true
 }
 
+// CodexSideModel is the model this machine's Codex is set to when it is
+// one of magpie's, picked beside its ChatGPT sign-in (SideModel), for the
+// gateway to answer the Codex app's side turns on (gateway.CodexSideModel).
+func CodexSideModel() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return codex(home).SideModel()
+}
+
 // codexChatGPT reports whether Codex is signed in to a ChatGPT account:
 // its built-in provider then runs and asks for the model list at
 // openai_base_url. Signed in with an API key alone, it asks for none.
 func codexChatGPT(dir string) bool {
+	signedIn, _ := codexChatGPTKnown(dir)
+	return signedIn
+}
+
+// codexChatGPTKnown is codexChatGPT with whether the read said anything:
+// known is false for an auth.json caught while Codex rewrites it in place
+// (empty, cut off) or a keychain read that failed, which is no answer
+// (provider.CodexSignInKnown). Wiring goes by known alone: taking such a
+// read for "no ChatGPT sign-in" made magpie Codex's provider, and the
+// Codex app showed "magpie" for its account and magpie's catalog for its
+// models, on and off (lucy on Discord, v0.1.1394).
+func codexChatGPTKnown(dir string) (signedIn, known bool) {
 	if settings.AccountDiscoveryOff() {
-		return false
+		return false, true
 	}
 	var a struct {
-		Tokens struct {
+		Tokens *struct {
 			Access string `json:"access_token"`
 		} `json:"tokens"`
 	}
 	// auth.json, or the macOS keychain item when Codex's config.toml
 	// keeps the sign-in there (#2367)
-	b, ok := provider.CodexSignIn(dir)
-	if !ok || json.Unmarshal(b, &a) != nil {
-		return false
+	b, ok, known := provider.CodexSignInKnown(dir)
+	if !ok {
+		return false, known
 	}
-	return a.Tokens.Access != ""
+	if json.Unmarshal(b, &a) != nil {
+		// valid JSON that isn't an object: not a sign-in Codex wrote
+		return false, false
+	}
+	return a.Tokens != nil && a.Tokens.Access != "", true
 }
 
 // codexReached reads Codex's newest model request since a time — the

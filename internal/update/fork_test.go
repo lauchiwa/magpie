@@ -193,6 +193,61 @@ func TestNotesBetweenReadsTheForksReleases(t *testing.T) {
 	}
 }
 
+// Settings' What's new can also list this version and the releases before
+// it (NotesBack). Those notes come from this fork's own releases too, not
+// from upstream's site, whose versions and notes are upstream's.
+func TestNotesBackReadsTheForksReleases(t *testing.T) {
+	f := newFakeGitHub(t, "fork/magpie",
+		rel("v0.1.1497-rc.1", "### Changes\n\n- newer"),
+		rel("v0.1.1497-rc.0", "### Changes\n\n- synced 1497\n\n## Install\n\nDownload it."),
+		rel("v0.1.1428-rc.0", "### Changes\n\n- synced 1428"),
+		rel("v0.1.1353-rc.0", "### Changes\n\n- synced 1353"),
+		rel("nightly", "not a version"),
+	)
+	// only the fake GitHub is reached: anything else (upstream's site) is
+	// refused here and named, never asked of the network
+	var elsewhere []string
+	was := client
+	t.Cleanup(func() { client = was })
+	client = &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		if "http://"+r.URL.Host != f.URL {
+			elsewhere = append(elsewhere, r.URL.String())
+			return nil, fmt.Errorf("asked %s", r.URL.Host)
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	})}
+	got, err := NotesBack(context.Background(), "0.1.1497-rc.0", 1, "")
+	if len(elsewhere) > 0 {
+		t.Fatalf("asked %v, want only the fork's releases", elsewhere)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var versions []string
+	for _, n := range got {
+		versions = append(versions, n.Version)
+	}
+	// upto and the one before it, newest first; rc.1 is newer than upto
+	if strings.Join(versions, ",") != "0.1.1497-rc.0,0.1.1428-rc.0" {
+		t.Fatalf("versions %v", versions)
+	}
+	if got[0].Notes != "### Changes\n\n- synced 1497" {
+		t.Errorf("notes %q, want the Install section out", got[0].Notes)
+	}
+	for _, p := range f.asked {
+		if p != "/repos/fork/magpie/releases" {
+			t.Errorf("asked %s, want only the fork's release list", p)
+		}
+	}
+	if len(f.asked) == 0 {
+		t.Error("the fork's releases were not asked")
+	}
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 // A release's page is this fork's own, so "what changed" doesn't send
 // someone to a version upstream published.
 func TestReleasePageIsThisForksRepository(t *testing.T) {

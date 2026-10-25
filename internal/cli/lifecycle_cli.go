@@ -30,6 +30,10 @@ var readyInSandbox = false
 // fail.
 var readyLifecycle = provider.ReadyLifecycle
 
+// startArgs are the arguments run was given, for readyAtStart in
+// startUp, which takes none.
+var startArgs []string
+
 // readyAtStart readies lifecycle.json for run with args. `magpie identity
 // reconcile` is left out: its preview writes nothing, and its --yes
 // settles lifecycle.json itself, under the lock.

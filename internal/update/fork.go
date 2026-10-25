@@ -221,6 +221,25 @@ func readLimited(r io.Reader) (string, error) {
 // forkNotes is the notes of every release of Repo() after after up to and
 // including upto, newest first, in lang.
 func forkNotes(ctx context.Context, after, upto, lang string) ([]Note, error) {
+	notes, err := forkNoteList(ctx, lang)
+	if err != nil {
+		return nil, err
+	}
+	return Between(notes, after, upto), nil
+}
+
+// forkNotesBack is NotesBack from Repo()'s releases: upto and the n before
+// it, newest first, in lang.
+func forkNotesBack(ctx context.Context, upto string, n int, lang string) ([]Note, error) {
+	notes, err := forkNoteList(ctx, lang)
+	if err != nil {
+		return nil, err
+	}
+	return Back(notes, upto, n), nil
+}
+
+// forkNoteList is every release of Repo() as a note, newest first, in lang.
+func forkNoteList(ctx context.Context, lang string) ([]Note, error) {
 	rels, err := forkReleases(ctx)
 	if err != nil {
 		return nil, err
@@ -233,5 +252,5 @@ func forkNotes(ctx context.Context, after, upto, lang string) ([]Note, error) {
 			URL:     r.HTMLURL,
 		})
 	}
-	return Between(notes, after, upto), nil
+	return notes, nil
 }

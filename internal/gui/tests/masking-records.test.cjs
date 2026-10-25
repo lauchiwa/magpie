@@ -66,7 +66,7 @@ const records = [
 ];
 
 function serve(lang, sum, asked, opts = {}) {
-  const settings = { theme: "light", lang, tray: "panel", currency: "usd", redact: !opts.off, redactPersonal: !opts.off, redactActions: { PRIVATE_KEY: "block" } };
+  const settings = { theme: "light", lang, tray: "panel", currency: "usd", redact: !opts.off, redactPersonal: !opts.off, redactActions: { PRIVATE_KEY: "block" }, ...opts.settings };
   return async (route) => {
     const req = route.request(), url = new URL(req.url());
     const json = (data) => route.fulfill({ json: data });
@@ -303,6 +303,41 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await until(() => asked.some((x) => x.startsWith("settings")));
       assert.equal(JSON.parse(asked.find((x) => x.startsWith("settings")).slice(9)).redact, true);
       await page.locator("#maskCard:not(.off) .msk-head").waitFor();
+      assert.deepEqual(errors, []);
+    });
+    // what the off card promises is what its button turns on: secrets,
+    // not emails or computer names. Then, with secrets alone on and
+    // nothing masked, the card says so and where personal data is turned
+    // on, not a bare 0 (Lesnolie on X: "一直是 0"); your own words alone
+    // mask, and the card says masking is on
+    test(`${engine} ${lang}: secrets alone and nothing masked, the card says what is masked and where personal data is`, async (t) => {
+      const empty = (d) => ({ ...summary(d), requests: 0, n: 0, distinct: 0, blocked: 0, kinds: [], agents: [], providers: [], values: [], by: {} });
+      const { browser, page, errors } = await open(engine, lang, 640, empty, null, { off: true, none: true });
+      t.after(() => browser.close());
+      await page.locator("#maskCard.off").waitFor();
+      if (lang === "en") {
+        const off = await page.locator("#maskCard").innerText();
+        assert(!/computer names|emails become/.test(off), `the off card promises what Turn on masking doesn't turn on: ${off}`);
+      }
+      await page.locator("#maskCard .primary").click();
+      const none = page.locator("#maskCard .msk-flow-none");
+      await none.locator("button").waitFor();
+      if (lang === "en") assert.match(await none.innerText(), /^Only keys, passwords and tokens are masked now.*Mask personal data is on, in Settings › Privacy$/s);
+      else for (const w of ["Only keys", "Emails and phone", "A request that carries"]) assert(!(await none.innerText()).includes(w), `${w} left in English`);
+      assert.deepEqual(await wide(page), { page: false, over: [] });
+      await shot(page, `${engine}-${lang}-secrets-only`);
+      await none.locator("button").click();
+      await page.locator("#view-settings").waitFor({ state: "visible" });
+      assert.deepEqual(errors, []);
+    });
+    test(`${engine} ${lang}: your own words alone are masking on`, async (t) => {
+      const empty = (d) => ({ ...summary(d), requests: 0, n: 0, distinct: 0, blocked: 0, kinds: [], agents: [], providers: [], values: [], by: {} });
+      const { browser, page, errors } = await open(engine, lang, 640, empty, null, { off: true, none: true, settings: { redactWords: ["Nightjar"] } });
+      t.after(() => browser.close());
+      await page.locator("#maskCard .msk-head").waitFor();
+      assert.equal(await page.locator("#maskCard.off").count(), 0, "words alone mask, the card says off");
+      assert.equal(await page.locator("#maskCard .msk-head button").count(), 0, "no Turn on masking while words mask");
+      assert(!(await page.locator("#maskCard .msk-flow-none").innerText()).includes("Only keys"), "words alone: not the secrets-only line");
       assert.deepEqual(errors, []);
     });
   }
