@@ -124,13 +124,18 @@ and reconcile in
   from its `.bak`. Ordinary reads and writes never create metadata, so a home
   without it is legacy and matches bindings by current id.
 
-  `run` in `internal/cli/main.go` calls it once, through `readyAtStart`
-  ([`lifecycle_cli.go`](../../internal/cli/lifecycle_cli.go)): after
-  `settings.Migrate`, before the providers are held. Every entry point (GUI,
-  tray, gateway, TUI, subcommands) goes through `run`, so each start waits at
-  most `readyLockWait` (3s) for a lock another magpie holds, then runs legacy
-  for that run. `--help`, `healthcheck`, `heap`, `cpu`, the Agents page's dry
-  run and accounts discovery return before the call. `magpie identity reconcile` skips it, so its preview writes
+  `startUp` in `internal/cli/main.go` calls it once, through
+  `readyAtStart(startArgs)`
+  ([`lifecycle_cli.go`](../../internal/cli/lifecycle_cli.go)), after
+  `settings.Migrate` and before the providers are held. `run` sets
+  `startArgs` just before calling `startUp()`. Every entry point (GUI, tray,
+  gateway, TUI, subcommands) goes through `run`, so each start waits at most
+  `readyLockWait` (3s) for a lock another magpie holds, then runs legacy for
+  that run. Several commands return before the call: `--help`,
+  `healthcheck`, `heap`, `cpu`, `goroutines`, the Agents page's dry run,
+  accounts discovery, and what an agent starts for each session (`mcp`,
+  `claude-mcp-helper`, `statusline`, #3318), which only talks to the running
+  gateway. `magpie identity reconcile` skips it, so its preview writes
   nothing. A test binary skips it too (`MAGPIE_TEST_SANDBOX` is set, as it is in
   the dry run's child), so a test's home stays legacy unless the test calls
   `ReadyLifecycle` itself. An error is printed as `magpie: lifecycle: …` on
