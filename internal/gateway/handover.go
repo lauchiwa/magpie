@@ -155,7 +155,10 @@ func (s *Server) ListenerFile() (*os.File, error) {
 // HandOff has the gateway, once its ctx ends, wait for every request in
 // flight to finish (handedOffDrain at most) rather than 2s: another
 // magpie serves the port meanwhile.
-func (s *Server) HandOff() { s.handedOff.Store(true) }
+func (s *Server) HandOff() {
+	s.handedOff.Store(true)
+	s.stopAccepting() // fork: handover_fork.go
+}
 
 // drainFor is how long the gateway's end waits for the requests in flight.
 func (s *Server) drainFor() time.Duration {
