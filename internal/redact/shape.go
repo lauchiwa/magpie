@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -17,12 +18,17 @@ import (
 // as the same made-up one every turn and a vendor's cache still matches,
 // and it comes back as it was wherever the vendor writes it.
 //
-// Only a secret's kind, of minShape characters or more, and only letters,
-// digits, '-', '_' and '.': a made-up key that long is in no other text by
-// chance, and it needs no escaping in JSON. Anything else goes as a
-// placeholder still.
+// Only a secret's kind, of minShape characters or more with minRandom of
+// them made up (not its prefix or separators), and only letters, digits,
+// '-', '_' and '.': a made-up key like that is in no other text by chance,
+// and it needs no escaping in JSON. Anything else goes as a placeholder
+// still. 16 left a short key such as sk_abcdefg a placeholder, which read
+// as the setting not working.
 
-const minShape = 16
+const (
+	minShape  = 8
+	minRandom = 6
+)
 
 var (
 	// shapes are the made-up keys in values, with their kinds; guarded by
@@ -57,6 +63,19 @@ func keyHead(v string) string {
 		}
 	}
 	return ""
+}
+
+// namedValue is a name before = or : and the value after it.
+var namedValue = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]*[ \t]*[=:][ \t]*()`)
+
+// splitName parts a value found with its name, as 密钥
+// OPENAI_API_KEY=sk_… is, into the name, which stays as written, and the
+// key after it, which alone is made up and put back.
+func splitName(v string) (name, key string) {
+	if m := namedValue.FindStringSubmatchIndex(v); m != nil {
+		return v[:m[2]], v[m[2]:]
+	}
+	return "", v
 }
 
 func shapeByte(c byte) bool {
@@ -112,7 +131,7 @@ func shapeOf(kind, v string) (string, bool) {
 		lower = "abcdefghijklmnopqrstuvwxyz"
 		digit = "0123456789"
 	)
-	out := []byte(head)
+	out, made := []byte(head), 0
 	for i := 0; i < len(rest); i++ {
 		c := rest[i]
 		set := ""
@@ -133,7 +152,11 @@ func shapeOf(kind, v string) (string, bool) {
 			out = append(out, c)
 			continue
 		}
+		made++
 		out = append(out, set[next(len(set))])
+	}
+	if made < minRandom {
+		return "", false
 	}
 	f := string(out)
 	return f, f != v
@@ -142,7 +165,8 @@ func shapeOf(kind, v string) (string, bool) {
 // shaped is put for Options.Shape: v as a made-up key of its form where it
 // may go as one, else as its placeholder.
 func shaped(kind, v string) string {
-	f, ok := shapeOf(kind, v)
+	name, k := splitName(v)
+	f, ok := shapeOf(kind, k)
 	if !ok {
 		return placeholder(kind, v)
 	}
@@ -150,17 +174,17 @@ func shaped(kind, v string) string {
 	have, taken := values[f]
 	if !taken {
 		makeRoom()
-		values[f] = v
+		values[f] = k
 		kinds[kind] = true
 		shapes[f] = kind
-		addKnown(f, v)
+		addKnown(f, k)
 	}
 	mu.Unlock()
-	if taken && have != v {
+	if taken && have != k {
 		// another value's made-up key, which nothing ever is by chance
 		return placeholder(kind, v)
 	}
-	return f
+	return name + f
 }
 
 // restoreShapes puts back each made-up key in s, counting it in put

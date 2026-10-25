@@ -2431,8 +2431,9 @@ func state() stateJSON {
 		if a.Import != nil {
 			aj.Import = a.Import()
 			if a.Added != nil {
-				added := a.Added()
-				aj.Added = &added
+				if added, known := a.Added(); known {
+					aj.Added = &added
+				}
 			}
 		}
 		if a.Launch != nil {
