@@ -265,6 +265,13 @@ release's `SHA256SUMS` ([`internal/update/fork.go`](../internal/update/fork.go))
 Everything after that is upstream's code unchanged, so a file that doesn't
 match its checksum is still never installed.
 
+The notes of past releases come from the same list. Settings' What's new
+shows the notes since the last update (`NotesBetween`) and this version
+with the 10, 20, 50 or 100 releases before it (`NotesBack`). Both read
+this repository's releases (`forkNotes`, `forkNotesBack`), not upstream's
+`usemagpie.ai/api/notes`, whose versions and notes are upstream's. The
+only exception is when `MAGPIE_NOTES_FEED` names a feed.
+
 Two details of this fork's releases shape that code:
 
 - Every version is `vX.Y.Z-rc.N`, which GitHub counts as a pre-release.

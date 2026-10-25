@@ -78,6 +78,9 @@ var BackCounts = []int{10, 20, 50, 100}
 // it, newest first, in lang. The site is asked for those alone (limit); one
 // from before it took a limit sends them all, and Back keeps n+1.
 func NotesBack(ctx context.Context, upto string, n int, lang string) ([]Note, error) {
+	if os.Getenv("MAGPIE_NOTES_FEED") == "" { // fork: this fork's own releases (fork.go)
+		return forkNotesBack(ctx, upto, n, lang)
+	}
 	notes, err := askNotes(ctx, url.Values{"upto": {upto}, "limit": {strconv.Itoa(n + 1)}}, lang)
 	if err != nil {
 		return nil, err
