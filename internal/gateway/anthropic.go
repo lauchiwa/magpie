@@ -372,7 +372,7 @@ func withThinkingOnToolTurns(body []byte) []byte {
 		return body
 	}
 	q["messages"], _ = json.Marshal(msgs)
-	nb, err := json.Marshal(q)
+	nb, err := marshalJSON(q)
 	if err != nil {
 		return body
 	}
@@ -427,7 +427,7 @@ func withoutThinkingOff(body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	delete(q, "thinking")
-	out, err := json.Marshal(q)
+	out, err := marshalJSON(q)
 	return out, err == nil
 }
 

@@ -150,9 +150,13 @@ The sync PR records each item below as checked, with what was run:
   held reads), is checked for its lifecycle marker. `notUnderCommit` stays
   in `provider.go`'s `load`, `read` and `All`, `account.go`'s `Accounts`
   and `hold.go`'s `heldEntries`.
-- **Start-up.** `cli/main.go`'s `run` still calls `readyAtStart(args)`
-  right after `settings.Migrate()`, and a new early return before it is
-  something that writes no provider.
+- **Start-up.** `cli/main.go`'s `startUp` still calls
+  `readyAtStart(startArgs)` right after `settings.Migrate()`, and `run`
+  sets `startArgs = args` just before it calls `startUp()`. `startUp`
+  takes no arguments because upstream's `TestSessionCommandsSkipStartUp`
+  swaps it out. A new early return before it (such as `mcp`,
+  `claude-mcp-helper` or `statusline`) must be something that writes no
+  provider.
 - **Sync and backup.** `backup.Collect` still keeps `StoredBase`'s base
   (`backup/backup.go`); `davsync.go`'s `bring` still passes
   `onCollected(local)` at each of its calls, and `syncNow` still retries on
