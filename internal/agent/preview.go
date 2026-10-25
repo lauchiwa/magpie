@@ -47,6 +47,7 @@ var disconnectDryRun bool
 // the copy under its temporary home.
 func DryRun(id string) error {
 	disconnectDryRun = true
+	NoWSL() // fork: a WSL agent has no preview; probing each distro took it past 20s
 	if p := os.Getenv(dryProvidersVar); p != "" {
 		b, err := os.ReadFile(p)
 		if err != nil {

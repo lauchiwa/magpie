@@ -3316,15 +3316,22 @@ func saidWithResults(msgs []Message) string {
 	for _, m := range msgs[i:] {
 		captions := withImages(m)
 		for _, p := range m.Parts {
+			// a background task's notification goes with the results
+			// (withTaskNotices), not as the user's
+			text := p.Text
+			if p.Kind == Text && results && !captions {
+				text = taskNotice.ReplaceAllString(text, "")
+			}
 			switch {
 			case p.Kind == ToolResult:
 				results = true
 			case p.Kind != Text || !results || captions:
-			case midTurnHead.MatchString(p.Text):
-				said = append(said, midTurnSaid(p.Text)...)
+			case midTurnHead.MatchString(text):
+				said = append(said, midTurnSaid(text)...)
 			case m.Role == "system" || m.Role == "developer":
-			case !agentNotice(p.Text):
-				said = append(said, p.Text)
+			case text != p.Text && agentNotice(text):
+			case !agentNotice(text):
+				said = append(said, text)
 			}
 		}
 	}
@@ -3332,6 +3339,56 @@ func saidWithResults(msgs []Message) string {
 		return ""
 	}
 	return strings.Join(said, "\n\n")
+}
+
+// taskNotice is Claude Code's notification that a background task (a
+// sub-agent, a background command) ended, with the header it puts before
+// it: "[SYSTEM NOTIFICATION - NOT USER INPUT]" … <task-notification>…
+// </task-notification>.
+var taskNotice = regexp.MustCompile(`(?s)(?:\[SYSTEM NOTIFICATION - NOT USER INPUT\][^<]*)?<task-notification>.*?</task-notification>`)
+
+// withTaskNotices hands the run the notifications of background tasks
+// that came after the results (taskNotice), in a reminder at the end of the
+// last result, where Claude Code itself puts one for some models (inside
+// the tool_result's text). Claude Code 2.1.310 on Opus sends one that
+// arrives mid-turn as a {role: "system"} message after the results, and
+// before as a text block of the results' message; both were left out of
+// what the run was handed (#2060's rule for hooks' notices), so the run's
+// model never heard that a sub-agent it started in the background had
+// finished, nor its result, and waited for it (stones_2026 on Discord).
+func withTaskNotices(results []Part, msgs []Message) []Part {
+	if len(results) == 0 {
+		return results
+	}
+	i := len(msgs)
+	for i > 0 && msgs[i-1].Role != "assistant" {
+		i--
+	}
+	var notices []string
+	seen := false
+	for _, m := range msgs[i:] {
+		if withImages(m) {
+			continue
+		}
+		for _, p := range m.Parts {
+			switch {
+			case p.Kind == ToolResult:
+				seen = true
+			case p.Kind == Text && seen:
+				notices = append(notices, taskNotice.FindAllString(p.Text, -1)...)
+			}
+		}
+	}
+	if len(notices) == 0 {
+		return results
+	}
+	out := slices.Clone(results)
+	last := &out[len(out)-1]
+	if last.Text != "" {
+		last.Text += "\n\n"
+	}
+	last.Text += "<system-reminder>\n" + strings.Join(notices, "\n\n") + "\n</system-reminder>"
+	return out
 }
 
 var (
@@ -3543,6 +3600,11 @@ func (b *subscriptionBridge) mcpCall(w http.ResponseWriter, r *http.Request) {
 	run := b.runs[token]
 	b.mu.Unlock()
 	if run == nil {
+		// a run of the magpie this one took the gateway over from, its
+		// turn under way when the gateway changed hands (handover.go)
+		if forwardCallback(w, r) {
+			return
+		}
 		http.Error(w, "unknown or expired Claude run", http.StatusNotFound)
 		return
 	}
@@ -4108,6 +4170,7 @@ func (b *subscriptionBridge) whyCallsLost(req *Request) string {
 }
 
 func (s *Server) serveClaudeSubscription(w http.ResponseWriter, r *http.Request, from provider.Protocol, p provider.Provider, model string, body []byte, usage *Usage) (int, string) {
+	defer s.bridgeTurn()()
 	owner := p.ID
 	if p.Account != nil {
 		owner += "\x00" + p.Account.User
@@ -4296,7 +4359,7 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, from 
 			run.mu.Unlock()
 		}
 		if err == nil {
-			events, err = run.continueWith(results, saidWithResults(req.Messages), more)
+			events, err = run.continueWith(withTaskNotices(results, req.Messages), saidWithResults(req.Messages), more)
 		}
 		if err != nil {
 			run.abort()

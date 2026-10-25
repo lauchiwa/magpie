@@ -487,12 +487,21 @@ func runAfterExit(pid int, command string) error {
 	return cmd.Start()
 }
 
-// relaunchOpen is the open command Relaunch runs for bundle.
+// relaunchOpen is the open command Relaunch runs for bundle. -n asks
+// LaunchServices for a new instance: without it, open looks the app up
+// among those running first, and just after magpie exits LaunchServices
+// can still have the gone process registered as magpie. open then sends
+// it a reopen Apple event (aevt/rapp) rather than launching the bundle,
+// and fails with -600, procNotFound ("Specified target process … does
+// not exist", "LAUNCH: Launch failed in CSUI"; Linka's log on Discord,
+// macOS 27.0.1, v0.1.1308), as often as it is tried. A magpie that is in
+// fact up still has the one instance: the new process finds the instance
+// lock held and hands over to it (runningAlready in internal/gui).
 func relaunchOpen(bundle string, window bool) string {
 	if window {
-		return fmt.Sprintf("open %q", bundle)
+		return fmt.Sprintf("open -n %q", bundle)
 	}
-	return fmt.Sprintf("open %q --args tray", bundle)
+	return fmt.Sprintf("open -n %q --args tray", bundle)
 }
 
 // ReplaceBinary puts the release's build for this binary where the
@@ -963,3 +972,31 @@ func (c *counter) Read(p []byte) (int, error) {
 
 // Alive reports whether the process pid is still running.
 func Alive(pid int) bool { return alive(pid) }
+
+// OpenBeside opens bundle now, a new instance beside this one (open -n),
+// tried again while open fails: a restart that hands the gateway over
+// (internal/handoff) starts the new version before this one quits. With
+// window, its window; else its menu bar icon only, as Relaunch.
+func OpenBeside(bundle string, window bool) error {
+	cmd := proc.Command("/bin/sh", "-c", retried(openBeside(bundle, window), openWaits))
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
+	detach(cmd)
+	return cmd.Start()
+}
+
+// openBeside is the open command OpenBeside runs for bundle.
+func openBeside(bundle string, window bool) string {
+	if window {
+		return fmt.Sprintf("open -n %q", bundle)
+	}
+	return fmt.Sprintf("open -n %q --args tray", bundle)
+}
+
+// StartBeside starts exe now, beside this process, as RelaunchBinary's
+// args say: the new version of a restart that hands the gateway over. It
+// isn't told to wait for this one (MAGPIE_REPLACES): it takes the gateway
+// from it while it runs.
+func StartBeside(exe string, window bool, view string) error {
+	_, _, err := launch(exe, RelaunchArgs(window, view), os.Environ())
+	return err
+}
