@@ -31,6 +31,7 @@ func TestClientPathCoversHandler(t *testing.T) {
 		"ToolsMCPPath": ToolsMCPPath, "provider.RemoteCardsPath": provider.RemoteCardsPath,
 		"provider.RemoteRefreshPath": provider.RemoteRefreshPath,
 	}
+	forkHandlerConsts(consts) // fork: identity capture routes (oneport_fork_test.go)
 	re := regexp.MustCompile(`mux\.HandleFunc\(((?:"[^"]*"|[A-Za-z.]+)(?:\s*\+\s*(?:"[^"]*"|[A-Za-z.]+))*),`)
 	n := 0
 	for _, m := range re.FindAllStringSubmatch(body, -1) {
