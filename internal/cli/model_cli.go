@@ -27,8 +27,10 @@ const modelUsage = `usage:
   magpie model price <provider/model> <in>,<out>,<cache read>,<cache write>
                                                  say what it costs, in USD per million tokens, all four parts as
                                                  0.12,1.20,0.01,0.15; 0 is a model served for nothing, which is
-                                                 a price, not the absence of one; a fifth part is a 1-hour cache
-                                                 write's (not given: a Claude model's is 2× input, any other's the 4th)
+                                                 a price, not the absence of one, and puts it first under
+                                                 routing=free ('<provider>/*' at 0: all its models); a fifth
+                                                 part is a 1-hour cache write's (not given: a Claude model's is
+                                                 2× input, any other's the 4th)
   magpie model price <provider/model> <in>,<out>,<cache read>,<cache write> --tier 272k <in>,<out>,<cr>,<cw>
                                                  and what a request whose input, cached tokens included, is over
                                                  272K costs, the whole request; --tier may be given again
@@ -36,7 +38,9 @@ const modelUsage = `usage:
   magpie model price <model> <in>,<out>,<cache read>,<cache write>
                                                  what the model costs from any provider you have not priced it
                                                  for, kept as '*/<model>': for usage whose provider is gone, or
-                                                 a model models.dev doesn't price, e.g. gemini-3-pro-preview
+                                                 a model models.dev doesn't price, e.g. gemini-3-pro-preview;
+                                                 at 0 it is not free under routing=free, which goes by the
+                                                 provider's own price
   magpie model prices                            the models you priced
   magpie model context <provider/model>          how long a request it takes, and what you said it takes
   magpie model context <provider/model> <n>      say how long, as 200000 or 1m; '<provider>/*' is every model

@@ -144,6 +144,16 @@ bubble and writes outside it is still fatal, so a fork test doesn't wait
 on `Written` in a bubble. When upstream changes `Forget` or `Written`,
 keep its change and make the channel on demand again.
 
+`Provider.FreeModel` (`internal/provider/models.go`) asks `userFree`
+(`freemodel_fork.go`) first, so a model the user priced at nothing with
+`magpie model price` is free to routing `free` as it already was to the
+usage ledger: a relay lists no model free, and its model ids carry their
+maker's price. `TestFreeModelReadsTheUsersOwnPrice` and
+`TestFreeFirstSpendsWhatTheUserPricedAtNothing` and
+`TestFreeFirstFallsToThePaidOneWhenTheFreeOneIsSpent` fail without the hook.
+When upstream changes `FreeModel`, keep its body and put the one line
+back at its top.
+
 The sync PR records each item below as checked, with what was run:
 
 - **The whole suite.** `go test -tags nogui ./...` and the GUI suite in
@@ -206,6 +216,8 @@ The sync PR records each item below as checked, with what was run:
   `afterHeadMiss` (`host_fork.go`) after a pop that found no head, and
   pops again when it finds the answer, before calling the reply "no
   response"; `TestHeadPushedBeforeTheAnswerIsRead` fails without it.
+- **Free first.** `Provider.FreeModel` in `provider/models.go` still asks
+  `userFree(heldSettings(), p.ID, model)` before the vendor's word.
 - **GUI strings.** `tests/strings.cjs` still reads each `FORK` file as one
   with its own words, and `tests/i18n-keys.test.cjs` still skips them in
   "a plugin's words are its own" (they are always loaded, never off like a

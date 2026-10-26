@@ -1663,6 +1663,9 @@ func (p Provider) PaidBesideFree(model string) bool {
 // nothing, and the routes that go by this put it with the paid ones, so a
 // pool without free models behaves as In order.
 func (p Provider) FreeModel(model string) bool {
+	if free, said := userFree(heldSettings(), p.ID, model); said { // fork: the user's own price first, freemodel_fork.go
+		return free
+	}
 	for _, m := range p.Available() {
 		if strings.EqualFold(m.ID, model) {
 			if m.Free {
