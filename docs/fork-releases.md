@@ -131,6 +131,19 @@ the merge, `git diff <previous upstream tag> HEAD` over the upstream files
 lists them, and `git grep -n "fork:"` finds the marked ones. A conflict there
 is resolved by keeping upstream's change and putting the hook back.
 
+One hook changes how upstream's code works, though nothing a caller can
+see: `filememo.Forget` closes `written` only when `Written` has made one,
+and `Written` makes it on demand. The fork's provider lifecycle tests
+commit inside a `testing/synctest` bubble, and a channel made there and
+closed by the next write outside it stops the whole test binary ("close
+of synctest channel from outside bubble").
+`TestForgetInsideABubbleLeavesNoBubbleChannel`
+(`internal/filememo/filememo_fork_test.go`) fails without it. It covers a
+write inside a bubble, not a wait: a test that calls `Written` inside a
+bubble and writes outside it is still fatal, so a fork test doesn't wait
+on `Written` in a bubble. When upstream changes `Forget` or `Written`,
+keep its change and make the channel on demand again.
+
 The sync PR records each item below as checked, with what was run:
 
 - **The whole suite.** `go test -tags nogui ./...` and the GUI suite in

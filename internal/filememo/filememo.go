@@ -88,8 +88,36 @@ func Forget() {
 	mu.Lock()
 	gen++
 	gens.Store(gen)
+	// fork: made on demand by Written, so a write inside a synctest bubble
+	// (the provider lifecycle tests) leaves no bubble channel for the next
+	// write outside it to close (filememo_fork_test.go)
+	if written != nil {
+		close(written)
+		written = nil
+	}
 	mu.Unlock()
 }
+
+// written is closed by every Forget, and made by the next Written.
+var written chan struct{}
+
+// Written is closed by the next write magpie makes (Forget): a loop that
+// follows magpie's files waits on it, and looks at them only every so
+// often for what another process wrote, rather than polling each second
+// for its own writes too (#3185: those polls woke an idle magpie ~12
+// times a second).
+func Written() <-chan struct{} {
+	mu.Lock()
+	defer mu.Unlock()
+	if written == nil {
+		written = make(chan struct{})
+	}
+	return written
+}
+
+// OthersEvery is how often such a loop looks for what another process
+// (the CLI, a second magpie) wrote.
+const OthersEvery = 5 * time.Second
 
 // gens is gen, read without mu.
 var gens atomic.Uint64

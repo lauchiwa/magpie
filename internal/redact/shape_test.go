@@ -79,6 +79,8 @@ func TestShapeOnlyForKeys(t *testing.T) {
 		{"EMAIL", "rina.kowalczyk@kowalczyk.pl"},
 		{"PHONE", "13800138000123456"},
 		{"PASSWORD", "short1"},
+		{"SECRET", "sk-ab-cd"},  // 8, but 4 made up
+		{"SECRET", "ghp_abcde"}, // 9, but 5 made up
 		{"PASSWORD", "has space in it 12345"},
 		{"PASSWORD", `quote"inside1234567`},
 	} {
@@ -182,5 +184,50 @@ func TestShapeStream(t *testing.T) {
 	}
 	if strings.Count(rec.Body.String(), "\n\n") != len(events) {
 		t.Fatalf("events changed:\n%s", rec.Body.String())
+	}
+}
+
+// A short key keeps its form too, and the settings' Try it shows what a
+// request would send: the made-up key, not a placeholder (the owner's
+// sk_abcdefg showed {{SECRET_…}} with the setting on).
+func TestShapeShortAndPreview(t *testing.T) {
+	f, ok := shapeOf("SECRET", "sk_abcdefg")
+	if !ok || len(f) != len("sk_abcdefg") || !strings.HasPrefix(f, "sk_") || f == "sk_abcdefg" {
+		t.Fatalf("sk_abcdefg as %q %v", f, ok)
+	}
+	const key = "sk_prevw9ZqX1mT3vB7nK2pLr4"
+	o := Options{Secrets: true, Shape: true}
+	text := "OPENAI_API_KEY=" + key
+	got := Preview(text, o)
+	want, _ := shapeOf("SECRET", key)
+	mu.RLock()
+	_, kept := values[want]
+	mu.RUnlock()
+	if kept {
+		t.Fatal("preview kept the made-up key for Restore")
+	}
+	if !strings.Contains(got, want) || strings.Contains(got, "{{") || strings.Contains(got, key) {
+		t.Fatalf("preview with Shape: %q, want %q in it", got, want)
+	}
+	if got := Preview(text, Options{Secrets: true}); !strings.Contains(got, "{{") {
+		t.Fatalf("preview without Shape: %q", got)
+	}
+}
+
+// 密钥 OPENAI_API_KEY=sk_… is found with its name: the name stays, the
+// key after it is made up, and the key alone is put back, as a reply that
+// names only the key has it.
+func TestShapeKeepsAName(t *testing.T) {
+	const key = "sk_nmdv8QpX2rT6yW4uZ1oKs"
+	got := shaped("SECRET", "OPENAI_API_KEY="+key)
+	f := strings.TrimPrefix(got, "OPENAI_API_KEY=")
+	if f == got || !strings.HasPrefix(f, "sk_") || len(f) != len(key) || f == key {
+		t.Fatalf("%q", got)
+	}
+	if back := Restore("the key is "+f, false); back != "the key is "+key {
+		t.Fatalf("%q", back)
+	}
+	if got := shaped("SECRET", "OPENAI_API_KEY=a b c d e f"); !strings.HasPrefix(got, "{{") {
+		t.Fatalf("a value with spaces made up: %q", got)
 	}
 }
