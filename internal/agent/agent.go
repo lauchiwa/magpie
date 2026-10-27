@@ -34,6 +34,9 @@ type Option struct {
 	GroupIcon string `json:"groupIcon,omitempty"`
 	Ref       string `json:"ref,omitempty"`  // the catalog model, the same in every agent
 	Free      bool   `json:"free,omitempty"` // costs its subscription nothing
+
+	Priced string `json:"priced,omitempty"` // fork: which of the user's prices made Free (provider.FreeBy)
+
 	// Rate and RateWas are the credits a request costs its subscription,
 	// as a multiple, and before a discount running now (Qoder's 0.5×,
 	// WorkBuddy's x0.03), when its vendor lists them

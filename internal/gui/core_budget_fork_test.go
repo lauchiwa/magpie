@@ -13,15 +13,15 @@ import (
 // its budgets and their history stay upstream's own and a sync meets no
 // conflict there; they are weighed here instead, on the same terms: a
 // change that needs more raises this and says why in its commit.
-var forkScripts = []string{"lifecycle.js", "identity.js"}
+var forkScripts = []string{"lifecycle.js", "identity.js", "freeprice.js"}
 
-const forkScriptBudget = 44_700 // 43,962 with lifecycle.js (R1) and identity.js (the identity GUI moved out of app.js), plus 1.5%
+const forkScriptBudget = 47_060 // 43,962 with lifecycle.js (R1) and identity.js (the identity GUI moved out of app.js), plus 1.5%; 46,363 with freeprice.js (the free badge's words when the user's own price made a model free, kept out of app.js and i18n.js), plus 1.5%
 
 func forkScript(name string) bool { return slices.Contains(forkScripts, name) }
 
 // fork: the bytes our hooks add inside app.js (lifecycleError, identityRead,
 // renderIdentityProfiles, identityField, the rev the save bodies carry, the
-// stale and committed catches). TestCoreScriptBudget weighs app.js and the
+// stale and committed catches, the free badge's priced). TestCoreScriptBudget weighs app.js and the
 // core against upstream's budgets plus this, so those budgets stay
 // upstream's text as they come; a hook that needs more raises this and
 // says why in its commit.

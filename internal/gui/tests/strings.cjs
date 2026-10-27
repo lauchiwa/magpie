@@ -7,7 +7,7 @@ const path = require("node:path");
 
 const assets = path.resolve(__dirname, "../assets");
 // fork: the core files of ours that say their words through magpie.strings
-const FORK = ["lifecycle.js", "identity.js"];
+const FORK = ["lifecycle.js", "identity.js", "freeprice.js"];
 
 function strings() {
   const src = fs.readFileSync(path.join(assets, "i18n.js"), "utf8");

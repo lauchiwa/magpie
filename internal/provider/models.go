@@ -2369,6 +2369,9 @@ type Entry struct {
 	Family string `json:"family,omitempty"`
 	// Free is set on a model its subscription serves at no cost to it.
 	Free bool `json:"free,omitempty"`
+
+	Priced string `json:"priced,omitempty"` // fork: which of the user's prices made Free (FreeBy), freemodel_fork.go
+
 	// Rate and RateWas are the credits a request costs its subscription,
 	// as a multiple, and before a discount running now (catalog.Model's).
 	Rate    float64 `json:"rate,omitempty"`
@@ -2524,6 +2527,7 @@ func entryFor(p Provider, m catalog.Model, s settings.Settings) Entry {
 	e := Entry{ID: p.ID + "/" + m.ID, Model: m.ID, Family: p.Family, Name: name, Efforts: effortsOf(m), Provider: p,
 		Images: images, ImageInput: imageInput, Context: ctx, WindowSet: p.ContextOf(m.ID) > 0, Output: output, OutputSet: outputOf(s, p.ID, m.ID) > 0, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Tiers: m.Tiers, Released: m.Released,
 		Inputs: m.InputModalities, Outputs: m.OutputModalities}
+	e.Free, e.Priced = FreeBy(s, p.ID, m) // fork: the badge's word, the user's own price first, freemodel_fork.go
 	if n, ok := modelNameIn(s.ModelNames, p.ID, m.ID); ok {
 		e.Name, e.Default = n, name
 	} else {

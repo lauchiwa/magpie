@@ -47,6 +47,7 @@ type modelJSON struct {
 	Listed     int      `json:"listed,omitempty"`    // its window before the user's: its vendor's list's, else models.dev's
 	Max        int      `json:"max,omitempty"`       // the most its context may be set to, above Listed
 	Free       bool     `json:"free,omitempty"`      // costs the subscription nothing
+	Priced     string   `json:"priced,omitempty"`    // fork: which of the user's prices made Free (provider.FreeBy)
 	Rate       float64  `json:"rate,omitempty"`      // the credits a request costs the subscription, as a multiple
 	RateWas    float64  `json:"rateWas,omitempty"`   // the rate before a discount running now
 	API        string   `json:"api,omitempty"`       // the one API the user said it is asked on
@@ -746,6 +747,7 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 		}
 		window := p.WindowOf(m)
 		j := modelJSON{ID: m.ID, Name: m.Name, Efforts: provider.EffortsOf(m), On: on, Context: window, Output: provider.OutputWithin(window, p.ReplyLimitIn(m, set)), Listed: provider.ListedWindow(m), Max: m.MaxContext, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Images: images, ImageSet: imageSet, Own: own}
+		j.Free, j.Priced = provider.FreeBy(set, p.ID, m) // fork: the badge's word, the user's own price first, freemodel_fork.go
 		if i := slices.IndexFunc(most, func(c catalog.Model) bool { return c.ID == m.ID }); j.Max == 0 && i >= 0 {
 			j.Max = most[i].MaxContext
 		}
