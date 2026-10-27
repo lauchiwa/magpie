@@ -154,6 +154,16 @@ maker's price. `TestFreeModelReadsTheUsersOwnPrice` and
 When upstream changes `FreeModel`, keep its body and put the one line
 back at its top.
 
+`Provider.PaidBesideFree` (`internal/provider/models.go`) sets each
+listed model's `Free` from `freeBy` (`freemodel_fork.go`) as the first
+line of its loop: the user's price through `userFree`, else the vendor's
+word, never a $0 list price. So a relay key out of balance or quota rests
+a refused paid model alone, and the models the user priced at nothing
+keep the key. `TestPaidBesideFreeReadsTheUsersOwnPrice` and
+`TestOutOfBalanceRestsThePaidModelBesideOneTheUserPricedFree` fail without
+the hook. When upstream changes `PaidBesideFree`, keep its body and put
+the line back as the first in the loop.
+
 The sync PR records each item below as checked, with what was run:
 
 - **The whole suite.** `go test -tags nogui ./...` and the GUI suite in
@@ -218,6 +228,8 @@ The sync PR records each item below as checked, with what was run:
   response"; `TestHeadPushedBeforeTheAnswerIsRead` fails without it.
 - **Free first.** `Provider.FreeModel` in `provider/models.go` still asks
   `userFree(heldSettings(), p.ID, model)` before the vendor's word.
+- **Paid beside free.** `Provider.PaidBesideFree` in `provider/models.go`
+  still sets `m.Free = freeBy(heldSettings(), p.ID, m)` first in its loop.
 - **GUI strings.** `tests/strings.cjs` still reads each `FORK` file as one
   with its own words, and `tests/i18n-keys.test.cjs` still skips them in
   "a plugin's words are its own" (they are always loaded, never off like a

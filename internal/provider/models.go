@@ -1643,6 +1643,7 @@ func (p Provider) Thinks(model string) bool {
 func (p Provider) PaidBesideFree(model string) bool {
 	listed, paid, free := false, false, false
 	for _, m := range p.Available() {
+		m.Free = freeBy(heldSettings(), p.ID, m) // fork: the user's own price first, freemodel_fork.go
 		if strings.EqualFold(m.ID, model) {
 			listed, paid = true, !m.Free
 		}

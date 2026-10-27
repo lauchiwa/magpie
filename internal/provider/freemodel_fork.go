@@ -44,6 +44,24 @@ func userFree(s settings.Settings, id, model string) (free, said bool) {
 	return false, false
 }
 
+// freeBy is whether m counts as free on provider id for PaidBesideFree,
+// which says whether a key out of balance or quota rests for one paid
+// model alone: the user's own price when it says (userFree), else the
+// vendor's word (catalog.Model.Free). A relay marks no model free, so a
+// key the user priced some models of at nothing rested whole, those
+// models with it, when a paid one was refused.
+//
+// Unlike FreeModel, a list price of $0 is not read here (the user's call
+// on 10-27): only a price the user set changes which models rest, so a
+// provider nobody priced rests as before. m is matched by its listed id,
+// the spelling `magpie model price` stores it under.
+func freeBy(s settings.Settings, id string, m catalog.Model) bool {
+	if free, said := userFree(s, id, m.ID); said {
+		return free
+	}
+	return m.Free
+}
+
 // costsNothing: every part of the price is 0, the 1-hour cache write and
 // each tier's too, so no request to the model is charged anything.
 func costsNothing(pr catalog.Price) bool {
