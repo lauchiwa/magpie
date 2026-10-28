@@ -327,3 +327,59 @@ func TestCatalogFreeReadsTheUsersOwnPrice(t *testing.T) {
 		})
 	}
 }
+
+// The whole-provider toggle reads `<id>/*` as the badge does: $0 in every
+// part is free, any other price is shown for what it is, and one that
+// doesn't read names the part; none is nil. Another provider's `<id>/*`
+// and a price from any provider (*/model) are no word on this one.
+func TestWholeOfSaysTheProvidersOwnPrice(t *testing.T) {
+	zero, paid := stated(0, 0, 0, 0), stated(1, 2, 0.1, 1.25)
+	tiered := zero
+	tiered.Tiers = []catalog.Tier{{Above: 272000, Input: 1}}
+	broken := zero
+	broken.Output = nil
+	s := settings.Settings{ModelPrices: map[string]settings.ModelPrice{
+		"free/*": zero, "paid/*": paid, "tiered/*": tiered, "broken/*": broken,
+		"other/m": zero, "*/m": zero,
+	}}
+	pp, _ := paid.Price()
+	tp, _ := tiered.Price()
+	for id, want := range map[string]*Whole{
+		"free":   {Free: true},
+		"paid":   {Price: &pp},
+		"tiered": {Price: &tp},
+		"broken": {Bad: "output"},
+		"other":  nil,
+		"none":   nil,
+	} {
+		got := WholeOf(s, id)
+		if (got == nil) != (want == nil) || got != nil && (got.Free != want.Free || got.Bad != want.Bad ||
+			(got.Price == nil) != (want.Price == nil) || got.Price != nil && got.Price.Input != want.Price.Input) {
+			t.Errorf("WholeOf(%s) = %+v, want %+v", id, got, want)
+		}
+	}
+}
+
+// The editor's toggle saves through the model prefs it already sends: "*"
+// with a price of nothing writes `<id>/*`, and with OwnPrice takes it off,
+// though no model is called "*" (SetModelPrice asks no provider whether
+// it serves "*").
+func TestModelPrefsStarSetsAndDropsTheWholePrice(t *testing.T) {
+	prefsHome(t)
+	nothing := catalog.Price{}
+	if err := SetModelPrefs("a", map[string]ModelPref{"*": {Price: &nothing}}); err != nil {
+		t.Fatal(err)
+	}
+	if w := WholeOf(settings.Load(), "a"); w == nil || !w.Free {
+		t.Fatalf("after the toggle's save, a/* = %+v, want free", w)
+	}
+	if _, ok := settings.Load().ModelPrices["a/sol"]; ok {
+		t.Fatal("the toggle priced a model of its own")
+	}
+	if err := SetModelPrefs("a", map[string]ModelPref{"*": {OwnPrice: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if w := WholeOf(settings.Load(), "a"); w != nil {
+		t.Fatalf("after the toggle's save off, a/* = %+v, want none", w)
+	}
+}

@@ -115,3 +115,31 @@ func costsNothing(pr catalog.Price) bool {
 	}
 	return true
 }
+
+// Whole is what the user's saved price for every model of a provider
+// (`<id>/*`) says, for the provider editor's whole-provider toggle:
+// free when it is $0 in every part (the reading userPriced makes, so the
+// toggle and the badge agree), else the price, else the part that
+// doesn't read. The toggle only turns a price of nothing on or off: one
+// set otherwise, by `magpie model price <id>/*`, is shown and left alone.
+type Whole struct {
+	Free  bool           `json:"free,omitempty"`
+	Price *catalog.Price `json:"price,omitempty"`
+	Bad   string         `json:"bad,omitempty"`
+}
+
+// WholeOf is the saved `<id>/*` of provider id, nil when there is none.
+func WholeOf(s settings.Settings, id string) *Whole {
+	m, ok := s.ModelPrices[id+"/*"]
+	if !ok {
+		return nil
+	}
+	pr, bad := m.Price()
+	switch {
+	case bad != "":
+		return &Whole{Bad: bad}
+	case costsNothing(pr):
+		return &Whole{Free: true}
+	}
+	return &Whole{Price: &pr}
+}

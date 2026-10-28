@@ -9631,6 +9631,7 @@ function drawEditor(p, presetID) {
   advIn.append(...field(t("Proxy"), proxies));
   advIn.append(...concurrencyField(p));
   advIn.append(...priceRateField());
+  advIn.append(...wholeFreeField(p)); // fork: freeprice.js
 
   if (p?.cline || (isNew && pr?.id === "clinepass")) advIn.append(...upstreamField());
 

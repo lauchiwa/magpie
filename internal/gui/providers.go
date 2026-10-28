@@ -266,6 +266,8 @@ type providerJSON struct {
 	// fork: Rev is its lifecycle marker (provider.Token), which a save,
 	// delete or off/on sends back; "" for none (lifecycle_fork.go)
 	Rev string `json:"rev,omitempty"`
+
+	Whole *provider.Whole `json:"whole,omitempty"` // fork: the saved <id>/*, for the whole-provider toggle (freeprice.js)
 }
 
 type moveJSON struct {
@@ -724,6 +726,7 @@ func providerInfoWith(p provider.Provider, agents []agentUse, desktop map[string
 	seen := map[string]bool{}
 	names, kept := p.ModelNames(), p.ModelEfforts()
 	held := settings.Load()
+	out.Whole = provider.WholeOf(held, p.ID) // fork: the whole-provider toggle's word, freemodel_fork.go
 	sames := held.ModelSameAs
 	// a list fetched before magpie kept each model's most: the one Codex
 	// CLI keeps says it

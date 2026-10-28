@@ -88,3 +88,63 @@ func TestEditorFreeReadsTheUsersOwnPrice(t *testing.T) {
 	}
 	check("settings.json unreadable", vendor)
 }
+
+// fork: the editor's whole-provider toggle is drawn from whole, the saved
+// `<id>/*` (provider.WholeOf): none, free at $0 in every part, a price
+// set otherwise, or one that doesn't read. A settings.json that can't be
+// read, with no last good generation, holds no price, so none is sent.
+func TestEditorSaysTheWholeProviderPrice(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", os.Getenv("HOME"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	ids := []string{"none", "free", "paid", "broken"}
+	for _, id := range ids {
+		if err := provider.Save(provider.Provider{ID: id, Name: id, Key: "sk-" + id, Chat: "http://127.0.0.1:9/v1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paid := settings.StatedPrice(catalog.Price{Input: 0.5, Output: 2})
+	broken := settings.StatedPrice(catalog.Price{})
+	broken.CacheRead = nil
+	s := settings.Load()
+	s.ModelPrices = map[string]settings.ModelPrice{
+		"free/*": settings.StatedPrice(catalog.Price{}), "paid/*": paid, "broken/*": broken,
+		"none/m": settings.StatedPrice(catalog.Price{}),
+	}
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	whole := func(id string) *provider.Whole {
+		t.Helper()
+		p, err := provider.Find(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return providerInfo(*p, nil).Whole
+	}
+	if w := whole("none"); w != nil {
+		t.Errorf("none's whole = %+v, want none (a model's own price is no whole one)", w)
+	}
+	if w := whole("free"); w == nil || !w.Free || w.Price != nil || w.Bad != "" {
+		t.Errorf("free's whole = %+v, want free", w)
+	}
+	if w := whole("paid"); w == nil || w.Free || w.Price == nil || w.Price.Input != 0.5 || w.Price.Output != 2 {
+		t.Errorf("paid's whole = %+v, want its price 0.5,2", w)
+	}
+	if w := whole("broken"); w == nil || w.Free || w.Price != nil || w.Bad != "cache read" {
+		t.Errorf("broken's whole = %+v, want bad cache read", w)
+	}
+
+	for _, f := range []string{settings.Path(), settings.Path() + ".bak"} {
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(settings.Path(), []byte(`{"modelPrices":{"free/*":{"input":0,`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if w := whole("free"); w != nil {
+		t.Errorf("settings.json unreadable: free's whole = %+v, want none", w)
+	}
+}

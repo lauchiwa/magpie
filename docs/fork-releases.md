@@ -179,6 +179,15 @@ model priced `paid`. `TestCatalogFreeReadsTheUsersOwnPrice`,
 `TestPickerFreeReadsTheUsersOwnPrice`, `TestEditorFreeReadsTheUsersOwnPrice`
 and `free-badge-user-price.test.cjs` fail without them.
 
+The whole-provider free toggle reads `provider.WholeOf` (`freemodel_fork.go`)
+through `providerJSON.Whole` (`gui/providers.go`, its own block), set by
+`out.Whole = provider.WholeOf(held, p.ID)` after `providerInfoWith`'s
+`held := settings.Load()`. In `app.js`, the key provider editor appends
+`wholeFreeField(p)` (`freeprice.js`) after its `priceRateField()`. It saves
+through the model prefs Save already sends, so the save path has no hook.
+`TestEditorSaysTheWholeProviderPrice` and `whole-provider-free.test.cjs`
+fail without them.
+
 The sync PR records each item below as checked, with what was run:
 
 - **The whole suite.** `go test -tags nogui ./...` and the GUI suite in
@@ -250,6 +259,13 @@ The sync PR records each item below as checked, with what was run:
   three `Priced` fields are still there (a `priced` of upstream's own would
   clash). In `app.js`, `freeBadge`, `renderList`, `renderModels`' chips and
   `isFree` still read `priced`; `free-badge-user-price.test.cjs` covers them.
+- **Whole provider free.** `providerInfoWith` still sets `out.Whole` after
+  `held := settings.Load()`, the key provider editor still appends
+  `wholeFreeField(p)` after `priceRateField()`, and `SetModelPrefs` still
+  writes a `"*"` entry's price as `<id>/*` (`SetModelPrice` asks no
+  provider whether it serves `*`).
+  `TestModelPrefsStarSetsAndDropsTheWholePrice` and
+  `whole-provider-free.test.cjs` cover them.
 - **GUI strings.** `tests/strings.cjs` still reads each `FORK` file as one
   with its own words, and `tests/i18n-keys.test.cjs` still skips them in
   "a plugin's words are its own" (they are always loaded, never off like a
