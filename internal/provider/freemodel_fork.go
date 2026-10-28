@@ -31,17 +31,75 @@ import (
 //     priceOf skips it. settings.json is read as settings.Load reads it:
 //     one that doesn't parse is its last good generation, else holds none.
 func userFree(s settings.Settings, id, model string) (free, said bool) {
+	switch userPriced(s, id, model) {
+	case PricedModel, PricedProvider:
+		return true, true
+	case PricedPaid:
+		return false, true
+	}
+	return false, false
+}
+
+// Which of the user's own prices speaks for a model (userPriced): its own
+// at nothing, its provider's at nothing, or its own at a price. ""
+// is none of them, and the vendor's word stands.
+const (
+	PricedModel    = "model"
+	PricedProvider = "provider"
+	PricedPaid     = "paid"
+)
+
+// userPriced is userFree's reading, kept apart so the GUI can say which
+// price made a model free: "<id>/<model>" first, then "<id>/*" when it
+// is nothing.
+func userPriced(s settings.Settings, id, model string) string {
 	if m, ok := s.ModelPrices[id+"/"+model]; ok {
 		if pr, bad := m.Price(); bad == "" {
-			return costsNothing(pr), true
+			if costsNothing(pr) {
+				return PricedModel
+			}
+			return PricedPaid
 		}
 	}
 	if m, ok := s.ModelPrices[id+"/*"]; ok {
 		if pr, bad := m.Price(); bad == "" && costsNothing(pr) {
-			return true, true
+			return PricedProvider
 		}
 	}
-	return false, false
+	return ""
+}
+
+// FreeBy is whether m counts as free on provider id by the rule
+// PaidBesideFree goes by, and which of the user's prices said so
+// (userPriced; "" when none did, and free is the vendor's word). The
+// GUI's free badge reads it, so the editor and the model picker say what
+// routing and resting do: a model the user priced at nothing is free, one
+// they gave a price is not, even when its vendor or its name says free.
+// A list price of $0 is not read, as in freeBy.
+func FreeBy(s settings.Settings, id string, m catalog.Model) (free bool, priced string) {
+	switch priced = userPriced(s, id, m.ID); priced {
+	case PricedModel, PricedProvider:
+		return true, priced
+	case PricedPaid:
+		return false, priced
+	}
+	return m.Free, ""
+}
+
+// freeBy is whether m counts as free on provider id for PaidBesideFree,
+// which says whether a key out of balance or quota rests for one paid
+// model alone: the user's own price when it says (userFree), else the
+// vendor's word (catalog.Model.Free). A relay marks no model free, so a
+// key the user priced some models of at nothing rested whole, those
+// models with it, when a paid one was refused.
+//
+// Unlike FreeModel, a list price of $0 is not read here (the user's call
+// on 10-27): only a price the user set changes which models rest, so a
+// provider nobody priced rests as before. m is matched by its listed id,
+// the spelling `magpie model price` stores it under.
+func freeBy(s settings.Settings, id string, m catalog.Model) bool {
+	free, _ := FreeBy(s, id, m)
+	return free
 }
 
 // costsNothing: every part of the price is 0, the 1-hour cache write and
@@ -56,4 +114,32 @@ func costsNothing(pr catalog.Price) bool {
 		}
 	}
 	return true
+}
+
+// Whole is what the user's saved price for every model of a provider
+// (`<id>/*`) says, for the provider editor's whole-provider toggle:
+// free when it is $0 in every part (the reading userPriced makes, so the
+// toggle and the badge agree), else the price, else the part that
+// doesn't read. The toggle only turns a price of nothing on or off: one
+// set otherwise, by `magpie model price <id>/*`, is shown and left alone.
+type Whole struct {
+	Free  bool           `json:"free,omitempty"`
+	Price *catalog.Price `json:"price,omitempty"`
+	Bad   string         `json:"bad,omitempty"`
+}
+
+// WholeOf is the saved `<id>/*` of provider id, nil when there is none.
+func WholeOf(s settings.Settings, id string) *Whole {
+	m, ok := s.ModelPrices[id+"/*"]
+	if !ok {
+		return nil
+	}
+	pr, bad := m.Price()
+	switch {
+	case bad != "":
+		return &Whole{Bad: bad}
+	case costsNothing(pr):
+		return &Whole{Free: true}
+	}
+	return &Whole{Price: &pr}
 }

@@ -1244,6 +1244,14 @@ price came from it.
 `--reset` removes the first, and says so when a `<provider id>/*` price is
 still in force; reset that one by name to take it away too.
 
+In the app, a provider of your own's editor has **Whole provider free**
+under Advanced, after Price rate: On saves `<provider id>/*` at 0 in every
+part, Off takes it away, both with Save. A `<provider id>/*` priced
+otherwise, or one that doesn't read, is shown there and can't be changed
+from it; `magpie model price '<provider id>/*' --reset` takes it away first.
+A model's own price still comes first, and its price boxes still show the
+list price greyed in.
+
 A price is **one provider's tariff for one model**, not the model's own: the
 same model through two providers is two prices, and each keeps its own.
 Nothing an agent can see changes. The model list, the agents' own settings

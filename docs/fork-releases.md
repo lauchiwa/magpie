@@ -124,7 +124,7 @@ through a PR. The fork keeps its logic in files upstream doesn't have
 `internal/gui/identity.go`, `internal/cli/identity_cli.go`,
 `internal/cli/lifecycle_cli.go`, `internal/gui/assets/lifecycle.js`,
 `internal/gui/assets/identity.js`, `internal/gui/assets/identity.css`,
-`internal/gui/core_budget_fork_test.go`).
+`internal/gui/assets/freeprice.js`, `internal/gui/core_budget_fork_test.go`).
 Upstream files carry only short hooks: field declarations, delegating calls,
 variadic options and single request-body fields, many marked `fork:`. After
 the merge, `git diff <previous upstream tag> HEAD` over the upstream files
@@ -153,6 +153,40 @@ maker's price. `TestFreeModelReadsTheUsersOwnPrice` and
 `TestFreeFirstFallsToThePaidOneWhenTheFreeOneIsSpent` fail without the hook.
 When upstream changes `FreeModel`, keep its body and put the one line
 back at its top.
+
+`Provider.PaidBesideFree` (`internal/provider/models.go`) sets each
+listed model's `Free` from `freeBy` (`freemodel_fork.go`) as the first
+line of its loop: the user's price through `userFree`, else the vendor's
+word, never a $0 list price. So a relay key out of balance or quota rests
+a refused paid model alone, and the models the user priced at nothing
+keep the key. `TestPaidBesideFreeReadsTheUsersOwnPrice` and
+`TestOutOfBalanceRestsThePaidModelBesideOneTheUserPricedFree` fail without
+the hook. When upstream changes `PaidBesideFree`, keep its body and put
+the line back as the first in the loop.
+
+The free badge goes by `provider.FreeBy` (`freemodel_fork.go`), the rule
+above with which of the user's prices spoke (`priced`). Three fields carry
+it, each its own block so gofmt aligns no upstream line: `Entry.Priced`
+(`provider/models.go`), `Option.Priced` (`agent/agent.go`) and
+`modelJSON.Priced` (`gui/providers.go`). Three lines set them after
+upstream's literals: `e.Free, e.Priced = FreeBy(s, p.ID, m)` in
+`entryFor`, `o.Priced = e.Priced` in `agent/route.go`'s `viaMagpie`, and
+`j.Free, j.Priced = provider.FreeBy(set, p.ID, m)` in `providerInfoWith`'s
+`named`. In `app.js`, `freeBadge` takes `priced` and its title asks
+`pricedSays` (`freeprice.js`) first, and `renderList`'s badge, the model
+chips in `renderModels` (badge and title) and Free only's `isFree` skip a
+model priced `paid`. `TestCatalogFreeReadsTheUsersOwnPrice`,
+`TestPickerFreeReadsTheUsersOwnPrice`, `TestEditorFreeReadsTheUsersOwnPrice`
+and `free-badge-user-price.test.cjs` fail without them.
+
+The whole-provider free toggle reads `provider.WholeOf` (`freemodel_fork.go`)
+through `providerJSON.Whole` (`gui/providers.go`, its own block), set by
+`out.Whole = provider.WholeOf(held, p.ID)` after `providerInfoWith`'s
+`held := settings.Load()`. In `app.js`, the key provider editor appends
+`wholeFreeField(p)` (`freeprice.js`) after its `priceRateField()`. It saves
+through the model prefs Save already sends, so the save path has no hook.
+`TestEditorSaysTheWholeProviderPrice` and `whole-provider-free.test.cjs`
+fail without them.
 
 The sync PR records each item below as checked, with what was run:
 
@@ -192,8 +226,8 @@ The sync PR records each item below as checked, with what was run:
   `DeleteChecked`, `providerJSON.Rev`, its `accountmodels` passing
   `accountModelsAsRead(req.Rev)`; `gui/api.go`'s `fail()` still calls
   `lifecycleFail`.
-- **GUI, page.** `index.html` still loads `lifecycle.js` and `identity.js`
-  before `app.js`, `identity.css` right after `app.css`, and keeps the
+- **GUI, page.** `index.html` still loads `lifecycle.js`, `identity.js` and
+  `freeprice.js` before `app.js`, `identity.css` right after `app.css`, and keeps the
   `#identityHead`/`#identityPanel` nodes. In `app.js`, `loadProvidersNow`
   still asks `identityRead()` beside the list and hands it to
   `identityTake`, `renderProviders` calls `renderIdentityProfiles()`, and
@@ -218,6 +252,20 @@ The sync PR records each item below as checked, with what was run:
   response"; `TestHeadPushedBeforeTheAnswerIsRead` fails without it.
 - **Free first.** `Provider.FreeModel` in `provider/models.go` still asks
   `userFree(heldSettings(), p.ID, model)` before the vendor's word.
+- **Paid beside free.** `Provider.PaidBesideFree` in `provider/models.go`
+  still sets `m.Free = freeBy(heldSettings(), p.ID, m)` first in its loop.
+- **Free badge.** `entryFor`, `viaMagpie` and `providerInfoWith`'s `named`
+  still set `Free` and `Priced` from `FreeBy` after their literals, and the
+  three `Priced` fields are still there (a `priced` of upstream's own would
+  clash). In `app.js`, `freeBadge`, `renderList`, `renderModels`' chips and
+  `isFree` still read `priced`; `free-badge-user-price.test.cjs` covers them.
+- **Whole provider free.** `providerInfoWith` still sets `out.Whole` after
+  `held := settings.Load()`, the key provider editor still appends
+  `wholeFreeField(p)` after `priceRateField()`, and `SetModelPrefs` still
+  writes a `"*"` entry's price as `<id>/*` (`SetModelPrice` asks no
+  provider whether it serves `*`).
+  `TestModelPrefsStarSetsAndDropsTheWholePrice` and
+  `whole-provider-free.test.cjs` cover them.
 - **GUI strings.** `tests/strings.cjs` still reads each `FORK` file as one
   with its own words, and `tests/i18n-keys.test.cjs` still skips them in
   "a plugin's words are its own" (they are always loaded, never off like a

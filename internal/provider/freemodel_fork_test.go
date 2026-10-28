@@ -140,3 +140,246 @@ func TestFreeModelWithBrokenSettingsReadsItsLastGoodGeneration(t *testing.T) {
 		t.Fatal("FreeModel should read the kept $0 as the ledger does")
 	}
 }
+
+// PaidBesideFree, which decides whether a key out of balance or quota
+// rests for one paid model alone, reads the user's price before the
+// vendor's word too: a relay key the user priced some models of at
+// nothing keeps serving them when a paid one is refused. A list price of
+// $0 with no vendor mark is no word here (the user's call on 10-27), so
+// a provider nobody priced behaves as before.
+func TestPaidBesideFreeReadsTheUsersOwnPrice(t *testing.T) {
+	zero := stated(0, 0, 0, 0)
+	paid := stated(1, 2, 0.1, 1.25)
+	broken := zero
+	broken.Output = nil
+	cases := []struct {
+		name   string
+		prices map[string]settings.ModelPrice
+		want   map[string]bool
+	}{
+		{"no price: upstream's word, the vendor's free one beside", nil,
+			map[string]bool{"plain": true, "other": true, "vfree": false, "zero": true}},
+		{"a model priced at nothing: the paid ones beside it", map[string]settings.ModelPrice{"rv/other": zero},
+			map[string]bool{"plain": true, "other": false, "vfree": false, "zero": true}},
+		{"every model at nothing: none is paid", map[string]settings.ModelPrice{"rv/*": zero},
+			map[string]bool{"plain": false, "other": false, "vfree": false, "zero": false}},
+		{"every model at nothing, one priced: it alone is paid", map[string]settings.ModelPrice{"rv/*": zero, "rv/plain": paid},
+			map[string]bool{"plain": true, "other": false, "vfree": false, "zero": false}},
+		{"the vendor's free one priced by the user is paid", map[string]settings.ModelPrice{"rv/vfree": paid},
+			map[string]bool{"plain": false, "other": false, "vfree": false, "zero": false}},
+		{"every model priced: the vendor's word stands", map[string]settings.ModelPrice{"rv/*": paid},
+			map[string]bool{"plain": true, "other": true, "vfree": false, "zero": true}},
+		{"from any provider at nothing is no word here", map[string]settings.ModelPrice{"*/other": zero},
+			map[string]bool{"plain": true, "other": true, "vfree": false, "zero": true}},
+		{"a broken price is no price", map[string]settings.ModelPrice{"rv/vfree": broken},
+			map[string]bool{"plain": true, "other": true, "vfree": false, "zero": true}},
+		{"a model not listed is not paid beside free", map[string]settings.ModelPrice{"rv/other": zero},
+			map[string]bool{"gone": false}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			prefsHome(t)
+			if err := Save(Provider{ID: "rv", Name: "RV", Key: "sk-rv", Chat: "http://127.0.0.1:9/v1"}); err != nil {
+				t.Fatal(err)
+			}
+			liveFree(t, "rv", `{"models":[{"id":"plain","cost":{"input":3,"output":15}},{"id":"other","cost":{"input":1,"output":2}},{"id":"vfree","free":true},{"id":"zero","cost":{"input":0,"output":0}}]}`)
+			pricesSaved(t, c.prices)
+			p, err := Find("rv")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for model, want := range c.want {
+				if got := p.PaidBesideFree(model); got != want {
+					t.Errorf("PaidBesideFree(%q) = %v, want %v (prices %v)", model, got, want, c.prices)
+				}
+			}
+		})
+	}
+}
+
+// A model listed at $0 with no vendor mark is no free model beside a
+// paid one (unlike FreeModel, which reads the list price): with nothing
+// the user priced, a key with such a model rests whole as before.
+func TestPaidBesideFreeTakesNoListPriceForFree(t *testing.T) {
+	prefsHome(t)
+	zero := catalog.Model{ID: "zero", Price: &catalog.Price{}}
+	if freeBy(settings.Settings{}, "rv", zero) {
+		t.Fatal("a $0 list price with no vendor mark and no user price should not count as free")
+	}
+	if !freeBy(settings.Settings{}, "rv", catalog.Model{ID: "vfree", Free: true}) {
+		t.Fatal("the vendor's free mark should count as free")
+	}
+	if !freeBy(settings.Settings{ModelPrices: map[string]settings.ModelPrice{"rv/zero": stated(0, 0, 0, 0)}}, "rv", zero) {
+		t.Fatal("a model the user priced at nothing should count as free")
+	}
+}
+
+// A settings.json that can't be read, with no last good generation, holds
+// no price: PaidBesideFree answers as with none, never as with the zero
+// price it may have held.
+func TestPaidBesideFreeWithUnreadableSettingsIsTheVendorsWord(t *testing.T) {
+	prefsHome(t)
+	if err := Save(Provider{ID: "rv", Name: "RV", Key: "sk-rv", Chat: "http://127.0.0.1:9/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	liveFree(t, "rv", `{"models":[{"id":"plain","cost":{"input":3,"output":15}},{"id":"other","cost":{"input":1,"output":2}}]}`)
+	p, err := Find("rv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.PaidBesideFree("plain") || p.PaidBesideFree("other") {
+		t.Fatal("with no price nothing is paid beside free")
+	}
+	if err := os.MkdirAll(filepath.Dir(settings.Path()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings.Path(), []byte(`{"modelPrices":{"rv/other":{"input":0,`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if p.PaidBesideFree("plain") {
+		t.Fatal("an unreadable settings.json should hold no price")
+	}
+}
+
+// The GUI's free badge goes by FreeBy and says which of the user's prices
+// made a model free, so a model priced at nothing is told apart from one
+// free because its vendor or its name says so, and one the user gave a
+// price shows no badge at all.
+func TestFreeBySaysWhichPriceSpoke(t *testing.T) {
+	zero := stated(0, 0, 0, 0)
+	paid := stated(1, 2, 0.1, 1.25)
+	broken := zero
+	broken.Output = nil
+	plain := catalog.Model{ID: "plain"}
+	vfree := catalog.Model{ID: "vfree", Free: true}
+	listedZero := catalog.Model{ID: "zero", Price: &catalog.Price{}}
+	cases := []struct {
+		name   string
+		prices map[string]settings.ModelPrice
+		m      catalog.Model
+		free   bool
+		priced string
+	}{
+		{"no price", nil, plain, false, ""},
+		{"no price: the vendor's free one", nil, vfree, true, ""},
+		{"no price: a $0 list price is not free", nil, listedZero, false, ""},
+		{"the model at nothing", map[string]settings.ModelPrice{"rv/plain": zero}, plain, true, PricedModel},
+		{"every model at nothing", map[string]settings.ModelPrice{"rv/*": zero}, plain, true, PricedProvider},
+		{"its own price over every model's", map[string]settings.ModelPrice{"rv/*": zero, "rv/plain": paid}, plain, false, PricedPaid},
+		{"its own at nothing over every model's price", map[string]settings.ModelPrice{"rv/*": paid, "rv/plain": zero}, plain, true, PricedModel},
+		{"the vendor's free one given a price", map[string]settings.ModelPrice{"rv/vfree": paid}, vfree, false, PricedPaid},
+		{"every model priced: the vendor's word", map[string]settings.ModelPrice{"rv/*": paid}, vfree, true, ""},
+		{"from any provider is no word here", map[string]settings.ModelPrice{"*/plain": zero}, plain, false, ""},
+		{"its own broken, every model at nothing", map[string]settings.ModelPrice{"rv/plain": broken, "rv/*": zero}, plain, true, PricedProvider},
+		{"its own broken: the vendor's word", map[string]settings.ModelPrice{"rv/vfree": broken}, vfree, true, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			free, priced := FreeBy(settings.Settings{ModelPrices: c.prices}, "rv", c.m)
+			if free != c.free || priced != c.priced {
+				t.Fatalf("FreeBy(%s) = %v, %q; want %v, %q (prices %v)", c.m.ID, free, priced, c.free, c.priced, c.prices)
+			}
+		})
+	}
+}
+
+// The catalog the Agents page's model picker is drawn from carries the
+// badge's word too: a relay's model the user priced at nothing is free
+// there, a vendor's free one the user gave a price is not, and with no
+// price each entry is as its vendor lists it.
+func TestCatalogFreeReadsTheUsersOwnPrice(t *testing.T) {
+	zero := stated(0, 0, 0, 0)
+	paid := stated(1, 2, 0.1, 1.25)
+	type word struct {
+		free   bool
+		priced string
+	}
+	cases := []struct {
+		name   string
+		prices map[string]settings.ModelPrice
+		want   map[string]word
+	}{
+		{"no price", nil, map[string]word{"plain": {}, "other": {}, "vfree": {true, ""}}},
+		{"one at nothing, the vendor's free one priced", map[string]settings.ModelPrice{"rv/other": zero, "rv/vfree": paid},
+			map[string]word{"plain": {}, "other": {true, PricedModel}, "vfree": {false, PricedPaid}}},
+		{"every model at nothing", map[string]settings.ModelPrice{"rv/*": zero},
+			map[string]word{"plain": {true, PricedProvider}, "other": {true, PricedProvider}, "vfree": {true, PricedProvider}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			prefsHome(t)
+			if err := Save(Provider{ID: "rv", Name: "RV", Key: "sk-rv", Chat: "http://127.0.0.1:9/v1"}); err != nil {
+				t.Fatal(err)
+			}
+			liveFree(t, "rv", `{"models":[{"id":"plain","cost":{"input":3,"output":15}},{"id":"other","cost":{"input":1,"output":2}},{"id":"vfree","free":true}]}`)
+			pricesSaved(t, c.prices)
+			got := map[string]word{}
+			for _, e := range Catalog() {
+				if e.Provider.ID == "rv" {
+					got[e.Model] = word{e.Free, e.Priced}
+				}
+			}
+			for model, want := range c.want {
+				if g, ok := got[model]; !ok || g != want {
+					t.Errorf("Catalog's rv/%s = %+v (listed %v), want %+v", model, g, ok, want)
+				}
+			}
+		})
+	}
+}
+
+// The whole-provider toggle reads `<id>/*` as the badge does: $0 in every
+// part is free, any other price is shown for what it is, and one that
+// doesn't read names the part; none is nil. Another provider's `<id>/*`
+// and a price from any provider (*/model) are no word on this one.
+func TestWholeOfSaysTheProvidersOwnPrice(t *testing.T) {
+	zero, paid := stated(0, 0, 0, 0), stated(1, 2, 0.1, 1.25)
+	tiered := zero
+	tiered.Tiers = []catalog.Tier{{Above: 272000, Input: 1}}
+	broken := zero
+	broken.Output = nil
+	s := settings.Settings{ModelPrices: map[string]settings.ModelPrice{
+		"free/*": zero, "paid/*": paid, "tiered/*": tiered, "broken/*": broken,
+		"other/m": zero, "*/m": zero,
+	}}
+	pp, _ := paid.Price()
+	tp, _ := tiered.Price()
+	for id, want := range map[string]*Whole{
+		"free":   {Free: true},
+		"paid":   {Price: &pp},
+		"tiered": {Price: &tp},
+		"broken": {Bad: "output"},
+		"other":  nil,
+		"none":   nil,
+	} {
+		got := WholeOf(s, id)
+		if (got == nil) != (want == nil) || got != nil && (got.Free != want.Free || got.Bad != want.Bad ||
+			(got.Price == nil) != (want.Price == nil) || got.Price != nil && got.Price.Input != want.Price.Input) {
+			t.Errorf("WholeOf(%s) = %+v, want %+v", id, got, want)
+		}
+	}
+}
+
+// The editor's toggle saves through the model prefs it already sends: "*"
+// with a price of nothing writes `<id>/*`, and with OwnPrice takes it off,
+// though no model is called "*" (SetModelPrice asks no provider whether
+// it serves "*").
+func TestModelPrefsStarSetsAndDropsTheWholePrice(t *testing.T) {
+	prefsHome(t)
+	nothing := catalog.Price{}
+	if err := SetModelPrefs("a", map[string]ModelPref{"*": {Price: &nothing}}); err != nil {
+		t.Fatal(err)
+	}
+	if w := WholeOf(settings.Load(), "a"); w == nil || !w.Free {
+		t.Fatalf("after the toggle's save, a/* = %+v, want free", w)
+	}
+	if _, ok := settings.Load().ModelPrices["a/sol"]; ok {
+		t.Fatal("the toggle priced a model of its own")
+	}
+	if err := SetModelPrefs("a", map[string]ModelPref{"*": {OwnPrice: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if w := WholeOf(settings.Load(), "a"); w != nil {
+		t.Fatalf("after the toggle's save off, a/* = %+v, want none", w)
+	}
+}

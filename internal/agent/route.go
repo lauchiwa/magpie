@@ -85,6 +85,7 @@ func viaMagpie(agent, prefix string) []Option {
 		o := Option{Value: prefix + e.ID, Label: e.Name, Note: note,
 			Icon: e.Provider.Icon, Group: e.Provider.Name, Ref: e.ID, Free: e.Free, Rate: e.Rate, RateWas: e.RateWas, Context: e.Context, own: own[e.Provider.ID],
 			sub: e.Provider.Account != nil && (e.Provider.Account.Agent != "claude" || agent == "claude")}
+		o.Priced = e.Priced // fork: which of the user's prices made it free, for the badge's word (provider.FreeBy)
 		// a model with a fast mode is switched fast in the picker (#954)
 		if provider.CanFast(e.Provider, e.Model) {
 			o.FastFor, o.Fast = agent, slices.Contains(fast, e.ID)
