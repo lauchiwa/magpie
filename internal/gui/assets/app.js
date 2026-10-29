@@ -5943,6 +5943,7 @@ async function loadProvidersNow() {
   // when it is in — the one read in the background after the start, else
   // the one kept from the last read (this run's or the run before's). The
   // read in the background still on its way is waited for, not asked again.
+  const asking = identityRead(); // fork: the identity panel's, asked with the list (identity.js)
   let fresh = null, kept = null;
   if (!providers) {
     const early = providersEarly;
@@ -5975,7 +5976,6 @@ async function loadProvidersNow() {
   // at once (#123)
   else if (providersPage(view)) magpie.call(view, "draft");
   const was = providers;
-  const asking = identityRead(); // fork: the identity panel's, beside the list (identity.js)
   const next = await fresh;
   identityTake(await asking);
   // a change saved meanwhile drew the list it was answered with, newer
