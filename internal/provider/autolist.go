@@ -18,8 +18,8 @@ package provider
 //
 // Both are the user's own settings, kept by every save that doesn't set
 // them (the window's editor among them), and only a provider of the user's
-// own has them: an account's list is fetched for it (FetchNew), and a
-// plugin's by the plugin (KeepPluginsListed).
+// own has them: an account's list is fetched for it (FetchNew, then
+// KeepAccountsListed), and a plugin's by the plugin (KeepPluginsListed).
 
 import (
 	"context"
@@ -32,6 +32,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/beat"
 )
 
 // MinRefreshEvery is the shortest RefreshEvery: a vendor's list changes
@@ -268,14 +270,16 @@ var listsEvery = time.Minute
 func KeepListsFresh(ctx context.Context) {
 	t := time.NewTimer(30 * time.Second)
 	defer t.Stop()
+	var wait <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-wait:
 		}
 		refreshDueLists(ctx, time.Now())
-		t.Reset(listsEvery)
+		wait = beat.Next(listsEvery)
 	}
 }
 
@@ -283,7 +287,14 @@ func KeepListsFresh(ctx context.Context) {
 // answers the ids it asked.
 func refreshDueLists(ctx context.Context, now time.Time) []string {
 	var asked []string
-	for _, p := range All() {
+	// the user's own providers alone, as All lists them: only those keep a
+	// list on a schedule (ownList), and All asks every agent for its
+	// sign-in, the Claude keychain's `security` among them, each minute
+	// of an idle magpie (#3185)
+	f, is := lifeLoad() // fork: marked as All's are, for the learners' Expect(p)
+	own, _ := ownOf(f)
+	for _, p := range ordered(own, f.Order) {
+		p.life = is.of(p.ID)
 		every := p.RefreshInterval()
 		// one that lists nothing (Preset.NoList) has no list to keep fresh
 		if every == 0 || p.Off || !p.lists() {

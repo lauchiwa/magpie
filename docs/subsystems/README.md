@@ -16,6 +16,7 @@ These pages describe current responsibilities, runtime paths, state, and contrac
 | Providers, keys, subscription accounts, refresh and allowance | [Providers and accounts](providers-accounts.md) |
 | Outbound client identity profiles | [Outbound identity profiles](identity-profiles.md) |
 | Instructions, MCP servers, skills and RTK written into agents | [Library](library.md) |
+| One MCP server, magpie, given to every agent in place of the Library's servers | [MCP hub](mcp-hub.md) |
 | Tray, panel, window, `magpie web` and the page's JSON API | [GUI app shell](gui-shell.md) |
 | Encrypted backups and setup synchronization over WebDAV, S3 or GitHub | [Sync and backup](sync-backup.md) |
 

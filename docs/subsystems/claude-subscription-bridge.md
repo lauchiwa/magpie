@@ -358,6 +358,27 @@ is either refused or kept and then taken out by `removeRun`.
   copies it, with the tool names the run's agent had, to the
   `savedSession`.
 
+### Claude Code's own sign-in before it has a name
+
+The owner in every key is the provider, the account's name and, for Claude
+Code's own sign-in, `own` (`ownHome`). `claude auth status` gives no email
+until Claude Code puts the account's profile (`oauthAccount`) in its
+config, which its first run does. Until then the account is named from its
+plan ("Claude Max", `Account.Unnamed`), and its owner ends in `unnamed`
+(`unnamedOwner`).
+
+The first run on such an account then names it, mid-turn. Its tool
+results came under the email, the owner no longer matched, and the run
+was let go ("tool results account changed"). A new run was told the whole
+conversation again, about 8k more cache writes. Now a run whose owner is
+unnamed takes the named owner of the same provider's own sign-in
+(`takeNamedOwner`), and goes on: a run in Claude Code's own home runs as
+whatever that home is signed in to. A turn that ends without a tool call
+takes the name before its keys are made (`nameOwner`, from
+`provider.ClaudeOwnName`), so the next turn finds the idle run. Every
+other change of owner still lets the run go. The owner is an atomic
+pointer (`owned`), read by the run's reader without a lock.
+
 ### A conversation the client rewrote (#912)
 
 Some clients send a turn's conversation back changed. Alma takes the
@@ -473,6 +494,30 @@ for the same room), and the request isn't tried again after a moment. A
 member of the group at another provider answers it. Alone, the client gets
 the 503.
 
+### Which ones run (`ClaudeRunsPath`)
+
+Each run is two processes: Claude Code, and the MCP helper it starts for
+the caller's tools (`magpie claude-mcp-helper`, `internal/claudebridge`).
+Claude Code's parallel subagents are conversations of their own, so a
+session that starts eight has eight pairs running while they work and
+`idleMost` (6) pairs kept for an hour after. Those still waiting on tool
+calls stay for `runTimeout` (30 minutes) once their caller stops. A task
+manager names Claude Code by its version (its binary is
+`versions/2.1.311`), so on macOS Activity Monitor shows these as "2.1.311" and
+"magpie", with nothing to say what they are (@Candydidi3 on X).
+
+`GET /v1/magpie/claude-runs` (`claude_runs.go`, loopback only, as the
+heap profile) lists each run with its pid, model, account, `state`
+(`answering`, `idle` for its next turn, `tools` waiting on the caller's
+tools) and `since`. It also gives `ends`, when its timer lets it go
+(`endIn` records it at each reset), and Claude Code's RSS. `live` is
+`claudeRoom`'s count, one-off asks included. `magpie claude-code runs`
+prints the list under the bound and says what the processes are.
+On 10-27, a sandbox `magpie serve` with a made-up Claude sign-in and real
+Claude Code 2.1.311 against a mock API got 8 concurrent subagent-like
+requests. It kept 6 Claude Code and 6 helpers, and the list named the same
+6 pids that `ps` showed. Quitting magpie ended all 12 within a second.
+
 ## How large one Claude Code process may grow (`claudeRunBudget`, #3256)
 
 `claudeRoom` bounds how many Claude Code processes run, not how large each
@@ -502,19 +547,72 @@ run time, how it ended and its peak RSS (`proc.PeakRSS`, rusage
 `ru_maxrss`; not on Windows) when it ends: an OOM report's pid can be found
 in magpie's log.
 
+## The run's working folder (`clientWorkDir`)
+
+Claude Code tells its model the folder it runs in as the "Primary working
+directory". A run has no tools of its own: the client's run in the
+client's folder. Run in magpie's shared work folder (`claudeWorkDir`,
+`<tmp>/magpie-claude-work-<uid>`), the model was told that folder. It then
+wrote the client's files there, through the client's own tools, while the
+client's own prompt named another folder. Under a real Claude Code client,
+`pelican.html` landed in magpie's folder.
+
+A run therefore starts in the folder the caller names. `clientWorkDir`
+reads the system prompt and every message that is not the model's, and
+takes the last folder named. It knows four ways of naming it:
+
+- Claude Code: "Primary working directory: X";
+- Codex: `<cwd>X</cwd>`;
+- OpenCode: "Working directory: X";
+- pi: "Current working directory: X".
+
+The folder is taken only when it is an absolute path to a folder on this
+computer. Otherwise, as for a caller elsewhere, a Windows path on a Mac,
+or no folder named, the run starts in the shared folder as before. A
+Claude Code in WSL always takes the shared folder.
+
+A run in the shared folder for a caller that names a folder
+(`Request.envElsewhere`) has Claude Code's prompt give this computer's
+platform, OS and the shared folder, and the caller's give another's. A
+model told both spent tool calls finding out which is real (vv_nil on X:
+a Mac client of a Linux gateway). Since every tool is the caller's,
+`renderClaudePrompt` ends the caller's instructions with
+`envElsewhereNote`: the environment they describe is where every tool
+runs, and goes before one given earlier. It names no app or vendor, since
+it goes upstream. A lean run (`claudeLeanPrompt`) and a caller that names
+no folder are not told it. Not measured: how many tool calls it saves on
+a real run.
+
+Nothing else of the folder reaches the run. `--setting-sources ""` loads
+no CLAUDE.md, settings or skills from it. Auto memory is off, and
+`CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1` keeps the repository's status out
+of the prompt, which would change it, and Anthropic's cache with it,
+whenever a file changes. The system prompt magpie sends is unchanged; only
+the folder Claude Code runs in is.
+
+A run's sessions are saved in that folder's project
+(`<config>/projects/<the caller's folder>`), beside the user's own Claude
+Code sessions there when the run is on the user's own sign-in. Claude
+Code's `--resume` picker lists them while they last. That project is never
+swept: only magpie's own folder is (`sweepSessions`). A run's session is
+removed there by its id, when it ends or is discarded (`removeSession`).
+A session that a stopped gateway left there, and its temp files, stay
+there as the user's own sessions do; a sweep can't tell them apart.
+
 ## Files a run leaves
 
 - Its session: `<config>/projects/<work project>/<session>.jsonl`, for
   `--resume` (`claudeSessions`). It is removed when the run ends unless
   shelved, and when a saved session is discarded (`removeSession`).
-  `sweepSessions` removes those a stopped gateway left, once older than
-  `idleLongest`.
+  `sweepSessions` removes those a stopped gateway left in magpie's own
+  work folder's project, once older than `idleLongest`; a caller's folder
+  is never swept (`clientWorkDir`).
 - Claude Code's temp files for the session, the images it was given:
   `<CLAUDE_CODE_TMPDIR or /tmp>/claude-<uid>/<work project>/<session>`
   (`claudeTempDir`, not on Windows). They are removed with the session
   (`removeSession`). The sweep removes those whose session file is gone and
   in which nothing changed for `tempLongest` (a day). The folder is
-  the work folder's for every account, and another account's session files
+  the run's work folder's for every account, and another account's session files
   are in its own config folder.
 
 A run started anew still sends every image in the conversation. Replacing
@@ -681,7 +779,8 @@ go test -tags nogui ./internal/provider/ -run '^TestClaudeSignInBridgesASOCKSPro
 go test -tags nogui ./internal/netproxy/ -run '^TestEnvForBunWith' -count=1
 go test -tags nogui ./internal/gateway/ -run '^TestClaudeToolNamesComeBackAsDeclared$' -count=1
 go test -tags nogui ./internal/gateway/ -run 'TestClaudeRunsHeldToTheRoom|TestClaudeRoom|TestClaudeOneOffsTakeRoom|TestClaudeMemRuns|TestClaudeRunsMost|TestClaudeNoRoom' -count=1
-go test -tags nogui ./internal/cli/ -run '^TestClaudeCodeRunsSetsTheUsersOwn$' -count=1
+go test -tags nogui ./internal/cli/ -run '^TestClaudeCodeRuns' -count=1
+go test -tags nogui ./internal/gateway/ -run '^TestClaudeRunsNamesEachProcess$' -count=1
 go test -tags nogui ./internal/settings/ -run '^TestClaudeRunsMostIsMachineLocal$' -count=1
 go test -tags nogui ./internal/gateway/ -run 'ClaudeSubscriptionRunsTheDownloaded|ClaudeSubscriptionWithoutClaudeCode|ClaudeRewritten|LostMedia|ImagesTakenOut|RunLetGoWhenTheClientRewrote|ClaudeSessionTempFiles|ClaudeLetGo|ClaudeSessionFiles|ClaudeOldSessions|ClaudeSubscriptionReplySaysTheAllowance|ClaudeAllowanceHeaders|ClaudeForksAnsweringTheLeadsCalls|ClaudeTurnGivenUpOn|ClaudeToolResultsGivenUpOn|ClaudePromptMarksEarlierTurns|ClaudeHistoryCachedAcrossNewRuns|ClaudeUnloadableSession|ClaudeEndedRunSaysWhy|ClaudeIdle|ClaudeSideQuestion|ClaudeNoRunSaysWhy|ClaudeToolResultsNoRunSaysWhy|ClaudePromptToldUserText|ClaudePromptKeepsInstructions|ClaudeToolResultsGoOnWithTheUsersWords|ClaudeToolResultsKeepInstructions|ToolResultKeepsUserTextSentMidTurn|ClaudeTextToolCalls|ClaudeTextCallsHoldsOnlyTheLine|ClaudePromptSaysPastCallsAreARecord' -count=1
 go test -tags nogui ./internal/gateway/ -run 'TestClaudeTaskNotification|TestWithTaskNotices|TestClaudeTurnToldTheTaskNotification' -count=1

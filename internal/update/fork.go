@@ -39,7 +39,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/yetone/magpie/internal/source"
 )
@@ -77,7 +79,10 @@ type ghRelease struct {
 	HTMLURL    string `json:"html_url"`
 	Draft      bool   `json:"draft"`
 	Prerelease bool   `json:"prerelease"`
-	Assets     []struct {
+	// PublishedAt is when it was published, which Settings' Stable channel
+	// picks by (stableOf); zero for a draft
+	PublishedAt time.Time `json:"published_at"`
+	Assets      []struct {
 		Name string `json:"name"`
 		Size int64  `json:"size"`
 		URL  string `json:"browser_download_url"`
@@ -126,7 +131,8 @@ func forkReleases(ctx context.Context) ([]ghRelease, error) {
 	return out, nil
 }
 
-// forkLatest is the newest release of Repo(), its notes in lang.
+// forkLatest is the newest release of Repo(), its notes in lang. On
+// Settings' Stable channel it is Stable's release (stableOf).
 func forkLatest(ctx context.Context, lang string) (*Release, error) {
 	rels, err := forkReleases(ctx)
 	if err != nil {
@@ -135,7 +141,59 @@ func forkLatest(ctx context.Context, lang string) (*Release, error) {
 	if len(rels) == 0 {
 		return nil, fmt.Errorf("%s has no release yet", Repo())
 	}
+	if Stable() {
+		pick, ok := stableOf(rels, time.Now())
+		if !ok {
+			return nil, fmt.Errorf("%s has no release on the Stable channel yet: none was out three days before this week began, and none is urgent", Repo())
+		}
+		return release(ctx, pick, lang)
+	}
 	return release(ctx, rels[0], lang)
+}
+
+// stableSoak is how long a release is out before the week's turn for
+// Stable to take it.
+const stableSoak = 3 * 24 * time.Hour
+
+// urgentMark starts a line of an urgent release's notes ("**Urgent
+// release:** why"), as upstream's release notes mark one.
+var urgentMark = regexp.MustCompile(`(?im)^[ \t]*(?:>[ \t]*)?\*\*urgent release:\*\*`)
+
+// weekStart is the Monday 00:00 UTC on or before now.
+func weekStart(now time.Time) time.Time {
+	u := now.UTC()
+	day := time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
+	return day.AddDate(0, 0, -((int(day.Weekday()) + 6) % 7))
+}
+
+// stableOf is the Stable channel's release among rels at now, chosen as
+// upstream's feed chooses it (site/worker.js, "The Stable channel"): the
+// newer of the newest release out stableSoak before this week began
+// (Monday 00:00 UTC) and the newest urgent one. Upstream's feed does that
+// on its server; this fork has no feed, so it is done here over GitHub's
+// list. false when neither is there.
+func stableOf(rels []ghRelease, now time.Time) (ghRelease, bool) {
+	cut := weekStart(now).Add(-stableSoak)
+	var weekly, rush *ghRelease
+	for i := range rels {
+		r := &rels[i]
+		if r.PublishedAt.IsZero() || r.PublishedAt.After(now) {
+			continue
+		}
+		if !r.PublishedAt.After(cut) && (weekly == nil || Newer(r.TagName, weekly.TagName)) {
+			weekly = r
+		}
+		if urgentMark.MatchString(r.Body) && (rush == nil || Newer(r.TagName, rush.TagName)) {
+			rush = r
+		}
+	}
+	switch {
+	case weekly == nil && rush == nil:
+		return ghRelease{}, false
+	case weekly == nil || rush != nil && Newer(rush.TagName, weekly.TagName):
+		return *rush, true
+	}
+	return *weekly, true
 }
 
 // release turns one of GitHub's releases into the Release the updater

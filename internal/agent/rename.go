@@ -21,69 +21,25 @@ func RenameProvider(from, to string) ([]string, error) {
 	return applyRenameMoves(moves, from, to)
 }
 
-// renameMove is an agent's field set to the model by a provider's new id.
-type renameMove struct {
-	a        *Agent
-	key, val string
-}
-
 // renameMoves are the agents' fields on one of from's models, as they are
 // to be once it is renamed to. fork: split out of RenameProvider, so
 // RenameChecked (rename_fork.go) shares it.
 func renameMoves(from, to string) []renameMove {
-	type move = renameMove
-	// what the agents are on is read before: the picker's options name
-	// the provider by the id it has
-	var moves []move
-	if from != to {
-		for _, a := range Detected() {
-			vals := a.Values()
-			for _, f := range a.Fields {
-				v := vals[f.Key]
-				if v == "" {
-					continue
-				}
-				// the agent's suffix after the model (SplitSuffix) stays; a
-				// list of models is the user's own, its names moved by
-				// RenameRefs where the agent has one
-				model, suffix, one := a.split(v)
-				if !one {
-					continue
-				}
-				nv := ""
-				if f.Options != nil {
-					for _, o := range f.Options(vals) {
-						if o.Value == model && strings.HasPrefix(o.Ref, from+"/") {
-							now := to + "/" + strings.TrimPrefix(o.Ref, from+"/")
-							nv = strings.Replace(model, o.Ref, now, 1) + suffix
-							break
-						}
-					}
-				}
-				if nv == "" && strings.HasPrefix(v, magpieID+"/"+from+"/") {
-					nv = magpieID + "/" + to + "/" + strings.TrimPrefix(v, magpieID+"/"+from+"/")
-				}
-				if nv != "" && nv != v {
-					moves = append(moves, move{a, f.Key, nv})
-				}
-			}
+	return refMoves(func(ref string) (string, bool) {
+		if rest, ok := strings.CutPrefix(ref, from+"/"); ok && from != to {
+			return to + "/" + rest, true
 		}
-	}
-	return moves
+		return "", false
+	})
 }
 
 // applyRenameMoves writes moves, then what else in the agents' configs
 // names from (RenameRefs), and answers the agents it moved. fork: split
 // out of RenameProvider, so RenameChecked can redo it alone.
 func applyRenameMoves(moves []renameMove, from, to string) ([]string, error) {
-	var moved []string
-	for _, m := range moves {
-		if err := m.a.Apply(m.key, m.val); err != nil {
-			return moved, err
-		}
-		if len(moved) == 0 || moved[len(moved)-1] != m.a.Name {
-			moved = append(moved, m.a.Name)
-		}
+	moved, err := applyRefMoves(moves)
+	if err != nil {
+		return moved, err
 	}
 	if from != to {
 		for _, a := range Detected() {
@@ -100,6 +56,113 @@ func applyRenameMoves(moves []renameMove, from, to string) ([]string, error) {
 		}
 	}
 	SyncCatalog()
+	return moved, nil
+}
+
+// RenameGroup gives a routing group another id (provider.RenameGroup) and
+// moves the agents on it to group/<to>, as RenameProvider does a
+// provider's: left on group/<from>, each agent named a group magpie no
+// longer has, and the user had to pick the group again in every agent
+// (lucis0116 on X). It answers the agents it moved.
+func RenameGroup(from, to string) ([]string, error) {
+	from = strings.ToLower(strings.TrimSpace(from))
+	to = strings.ToLower(strings.TrimSpace(to))
+	old, now := provider.GroupPrefix+from, provider.GroupPrefix+to
+	moved, err := renameRefs(func(ref string) (string, bool) {
+		if ref == old && from != to {
+			return now, true
+		}
+		return "", false
+	}, func() error { return provider.RenameGroup(from, to) })
+	if err != nil {
+		return moved, err
+	}
+	SyncCatalog()
+	return moved, nil
+}
+
+// renameRefs runs rename and then moves every field of a detected agent
+// that was on a model whose ref renamed maps, to that model's new ref,
+// spelled as the agent spells it. What the agents are on is read before
+// rename: the pickers' options name the model by the ref it has then.
+func renameRefs(renamed func(ref string) (string, bool), rename func() error) ([]string, error) {
+	moves := refMoves(renamed)
+	if err := rename(); err != nil {
+		return nil, err
+	}
+	return applyRefMoves(moves)
+}
+
+// renameMove is an agent's field set to the model by its new ref.
+type renameMove struct {
+	a        *Agent
+	key, val string
+}
+
+// refMoves are the fields of the detected agents on a model whose ref
+// renamed maps, each set to that model's new ref. fork: split out of
+// renameRefs, so RenameChecked computes them before its rename too.
+func refMoves(renamed func(ref string) (string, bool)) []renameMove {
+	type move = renameMove
+	var moves []move
+	for _, a := range Detected() {
+		vals := a.Values()
+		for _, f := range a.Fields {
+			v := vals[f.Key]
+			if v == "" {
+				continue
+			}
+			// the agent's suffix after the model (SplitSuffix) stays; a
+			// list of models is the user's own, its names moved by
+			// RenameRefs where the agent has one
+			model, suffix, one := a.split(v)
+			if !one {
+				continue
+			}
+			nv := ""
+			if f.Options != nil {
+				for _, o := range f.Options(vals) {
+					if o.Value != model {
+						continue
+					}
+					if now, ok := renamed(o.Ref); ok {
+						nv = strings.Replace(model, o.Ref, now, 1) + suffix
+						break
+					}
+				}
+			}
+			if ref, ok := strings.CutPrefix(v, magpieID+"/"); nv == "" && ok {
+				// the agent's value names magpie's model outright
+				// (magpie/<ref>), with its suffix after it
+				for _, r := range []string{ref, strings.TrimPrefix(model, magpieID+"/")} {
+					if !strings.HasPrefix(ref, r) {
+						continue
+					}
+					if now, ok := renamed(r); ok {
+						nv = magpieID + "/" + now + strings.TrimPrefix(ref, r)
+						break
+					}
+				}
+			}
+			if nv != "" && nv != v {
+				moves = append(moves, move{a, f.Key, nv})
+			}
+		}
+	}
+	return moves
+}
+
+// applyRefMoves writes moves and answers the agents it moved.
+func applyRefMoves(moves []renameMove) ([]string, error) {
+	var moved []string
+	for _, m := range moves {
+		if err := m.a.Apply(m.key, m.val); err != nil {
+			return moved, err
+		}
+		if len(moved) == 0 || moved[len(moved)-1] != m.a.Name {
+			moved = append(moved, m.a.Name)
+		}
+	}
 	return moved, nil
 }
 

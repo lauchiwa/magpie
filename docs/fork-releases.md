@@ -131,18 +131,26 @@ the merge, `git diff <previous upstream tag> HEAD` over the upstream files
 lists them, and `git grep -n "fork:"` finds the marked ones. A conflict there
 is resolved by keeping upstream's change and putting the hook back.
 
-One hook changes how upstream's code works, though nothing a caller can
-see: `filememo.Forget` closes `written` only when `Written` has made one,
-and `Written` makes it on demand. The fork's provider lifecycle tests
-commit inside a `testing/synctest` bubble, and a channel made there and
-closed by the next write outside it stops the whole test binary ("close
-of synctest channel from outside bubble").
+`filememo.Forget` closes `written` only when `Written` has made one, and
+`Written` makes it on demand. The fork's provider lifecycle tests commit
+inside a `testing/synctest` bubble, and a channel made there and closed by
+the next write outside it stops the whole test binary ("close of synctest
+channel from outside bubble"). This was a fork hook until upstream made the
+same change (`endWaits`, #3632, in v0.1.1969); the fork's
 `TestForgetInsideABubbleLeavesNoBubbleChannel`
-(`internal/filememo/filememo_fork_test.go`) fails without it. It covers a
+(`internal/filememo/filememo_fork_test.go`) still checks it. It covers a
 write inside a bubble, not a wait: a test that calls `Written` inside a
 bubble and writes outside it is still fatal, so a fork test doesn't wait
-on `Written` in a bubble. When upstream changes `Forget` or `Written`,
-keep its change and make the channel on demand again.
+on `Written` in a bubble. If upstream ever makes the channel ahead of
+time again, make it on demand again.
+
+`refreshDueLists` (`internal/provider/autolist.go`) reads providers.json
+itself rather than through `All` (#3185), so its one hook reads it with
+`lifeLoad()` and marks each provider as `All` would: the picks
+`RefetchTaking` drops after the fetch go through `Expect(p)` to the
+provider it read, never to one deleted and added again under the same id
+meanwhile. `TestAScheduledFetchDropsPicksOnlyOfTheProviderItRead`
+(`autolist_fork_test.go`) fails without it.
 
 `Provider.FreeModel` (`internal/provider/models.go`) asks `userFree`
 (`freemodel_fork.go`) first, so a model the user priced at nothing with
@@ -291,6 +299,15 @@ app it can't replace) names this fork's Releases page (`update.Downloads`),
 not `usemagpie.ai`: a build from there is upstream's, which replaces this
 fork's and then updates from upstream.
 
+About keeps upstream's Website row (`usemagpie.ai`, "downloads, docs and
+what's new") and adds a Releases row under it that opens this fork's
+Releases page (`releasesRow` in
+[`releases.js`](../internal/gui/assets/releases.js), from
+`/api/settings`' `releases`, which is `update.Downloads`). Its words are in
+releases.js too, so app.js has one line of the fork for it and i18n.js none.
+`about-releases.test.cjs` checks the row in both engines, every language
+and a narrow window.
+
 A release's notes link upstream's release and compare pages for the upstream
 version it was synced from: that part of the build is upstream's.
 
@@ -344,6 +361,15 @@ with the 10, 20, 50 or 100 releases before it (`NotesBack`). Both read
 this repository's releases (`forkNotes`, `forkNotesBack`), not upstream's
 `usemagpie.ai/api/notes`, whose versions and notes are upstream's. The
 only exception is when `MAGPIE_NOTES_FEED` names a feed.
+
+Settings' update channel (`settings.UpdateStable`) is honoured on the same
+list. Upstream's worker picks Stable's release on the server (`stableOf` in
+`site/worker.js`); this fork picks it the same way in `stableOf`
+([`fork.go`](../internal/update/fork.go)): the newest release published at
+least three days before this week's Monday (00:00 UTC), unless a newer one's
+notes start a line with `**Urgent release:**`. With none old enough and none
+urgent, the check says so instead of offering the newest rc.
+`internal/update/fork_stable_test.go` holds it to the worker's cases.
 
 Two details of this fork's releases shape that code:
 

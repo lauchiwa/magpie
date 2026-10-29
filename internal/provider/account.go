@@ -66,6 +66,11 @@ type Account struct {
 	// Code's own while Claude Code is signed out (claude_dirs.go).
 	standIn bool
 
+	// unnamed is Claude Code's own sign-in while it is known by no name:
+	// User is a name made from its plan ("Claude Max") until Claude Code
+	// puts the account's profile in its config, as its first run does.
+	unnamed bool
+
 	// codeAssist is where a Gemini CLI or Antigravity account's requests
 	// go (google.go).
 	codeAssist string
@@ -153,6 +158,14 @@ func (p Provider) ListedAPIs(model string) []Protocol {
 		if apis := copilotSeenAPIs(model); len(apis) > 0 {
 			return apis
 		}
+	}
+	// Vertex AI serves Gemini on generateContent, and its partner models
+	// (publisher/model) on chat completions alone
+	if p.IsVertex() {
+		if VertexPartner(model) {
+			return []Protocol{Chat}
+		}
+		return []Protocol{Gemini}
 	}
 	// Factory serves each model on the one API droid sends it on
 	if p.ID == "factory" && p.Account != nil {
@@ -792,13 +805,29 @@ func claudeAccount() (Provider, bool) {
 		}
 		user = claudeSignInOwner(readLogins(), l).User
 	}
-	if user == "" {
+	unnamed := user == ""
+	if unnamed {
 		user = "Claude account"
 		if plan != "" {
 			user = "Claude " + strings.ToUpper(plan[:1]) + plan[1:]
 		}
 	}
-	return claudeProvider(&Account{Agent: "claude", User: user, Plan: plan}), true
+	return claudeProvider(&Account{Agent: "claude", User: user, Plan: plan, unnamed: unnamed}), true
+}
+
+// Unnamed says the account is Claude Code's own sign-in known by no name
+// yet: its User is made from its plan, and it is named by its email once
+// Claude Code's first run has put its profile in Claude Code's config.
+func (a *Account) Unnamed() bool { return a != nil && a.unnamed }
+
+// ClaudeOwnName is the name Claude Code's own sign-in is served by now,
+// and false while it has none (Unnamed) or Claude Code is signed out.
+func ClaudeOwnName() (string, bool) {
+	p, ok := claudeAccount()
+	if !ok || p.Account == nil || !p.Account.AgentsOwn() || p.Account.standIn || p.Account.unnamed {
+		return "", false
+	}
+	return p.Account.User, true
 }
 
 // StandIn says the account is a saved one served in the place of the
@@ -811,12 +840,13 @@ func claudeProvider(acct *Account) Provider {
 	// account runs Claude Code itself (the gateway's bridge, a test), so
 	// one that would go straight to the API with its sign-in is refused
 	acct.sign = func(context.Context, *http.Request, []byte) error { return errClaudeViaCLI }
-	acct.models = func() []catalog.Model { return catalog.Provider("anthropic") }
+	acct.models = claudeModels
 	acct.magpieList = true
-	// Claude's models are the ones magpie knows: listing them would ask
+	// Claude's models are the ones magpie knows and the ones Claude Code
+	// was told an account has (claude_models.go): listing them would ask
 	// Anthropic with the account's sign-in, which magpie never does
 	acct.fetch = func(context.Context) ([]catalog.Model, error) {
-		ms := catalog.Provider("anthropic")
+		ms := claudeModels()
 		return ms, catalog.SaveLive("claude", claudeBase, ms)
 	}
 	return Provider{ID: "claude", Name: "Claude Code", Icon: "claudecode-color", Anthropic: claudeBase,
