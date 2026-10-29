@@ -353,6 +353,15 @@ this repository's releases (`forkNotes`, `forkNotesBack`), not upstream's
 `usemagpie.ai/api/notes`, whose versions and notes are upstream's. The
 only exception is when `MAGPIE_NOTES_FEED` names a feed.
 
+Settings' update channel (`settings.UpdateStable`) is honoured on the same
+list. Upstream's worker picks Stable's release on the server (`stableOf` in
+`site/worker.js`); this fork picks it the same way in `stableOf`
+([`fork.go`](../internal/update/fork.go)): the newest release published at
+least three days before this week's Monday (00:00 UTC), unless a newer one's
+notes start a line with `**Urgent release:**`. With none old enough and none
+urgent, the check says so instead of offering the newest rc.
+`internal/update/fork_stable_test.go` holds it to the worker's cases.
+
 Two details of this fork's releases shape that code:
 
 - Every version is `vX.Y.Z-rc.N`, which GitHub counts as a pre-release.
