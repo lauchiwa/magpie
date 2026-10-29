@@ -111,13 +111,21 @@ jobs:
           codesign --verify --deep --strict --verbose=2 magpie.app
           codesign -dv --verbose=2 magpie.app 2>&1 | grep -E 'Signature|Identifier'
 
+      # hdiutil sizes the image from -srcfolder itself, and on macos-15-intel
+      # that guess came out short for v0.1.1969-rc.0's app: "create failed -
+      # No space left on device" on both tries, while arm64 built the same
+      # tag. The size is given instead: the app's, plus 20% and 20 MB.
       - name: Build dmg
         run: |
           DMG=magpie-darwin-${{ matrix.arch }}.dmg
           mkdir -p $RUNNER_TEMP/dmg
           cp -R magpie.app $RUNNER_TEMP/dmg/
           ln -s /Applications $RUNNER_TEMP/dmg/Applications
-          hdiutil create -volname magpie -srcfolder $RUNNER_TEMP/dmg -ov -format UDZO "$DMG"
+          KB=$(du -sk $RUNNER_TEMP/dmg | cut -f1)
+          SIZE=$(( KB * 12 / 10 / 1024 + 20 ))m
+          df -h $RUNNER_TEMP .
+          echo "app ${KB}KB, image $SIZE"
+          hdiutil create -volname magpie -srcfolder $RUNNER_TEMP/dmg -size $SIZE -ov -format UDZO "$DMG"
 
       - name: Zip magpie.app
         run: ditto -c -k --keepParent magpie.app magpie-darwin-${{ matrix.arch }}.zip
