@@ -115,7 +115,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(posts.length, n + 1, "nothing saved");
         return posts.at(-1);
       };
-      const scrolled = () => page.evaluate(() => [window.scrollY, ...[...document.querySelectorAll("*")].filter((e) => e.scrollTop > 0).map((e) => `${e.className}:${e.scrollTop}`)].join(" "));
+      // where each box is scrolled to; .holds (the box under the pointer
+      // keeps the wheel, app.js) comes and goes with hovering, not scrolling
+      const scrolled = () => page.evaluate(() => [window.scrollY, ...[...document.querySelectorAll("*")].filter((e) => e.scrollTop > 0).map((e) => `${[...e.classList].filter((c) => c !== "holds").join(" ")}:${e.scrollTop}`)].join(" "));
 
       // none saved: Off, and On saves a price of nothing for "*"
       await open("Plain Relay");
