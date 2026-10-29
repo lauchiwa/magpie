@@ -299,6 +299,15 @@ app it can't replace) names this fork's Releases page (`update.Downloads`),
 not `usemagpie.ai`: a build from there is upstream's, which replaces this
 fork's and then updates from upstream.
 
+About keeps upstream's Website row (`usemagpie.ai`, "downloads, docs and
+what's new") and adds a Releases row under it that opens this fork's
+Releases page (`releasesRow` in
+[`releases.js`](../internal/gui/assets/releases.js), from
+`/api/settings`' `releases`, which is `update.Downloads`). Its words are in
+releases.js too, so app.js has one line of the fork for it and i18n.js none.
+`about-releases.test.cjs` checks the row in both engines, every language
+and a narrow window.
+
 A release's notes link upstream's release and compare pages for the upstream
 version it was synced from: that part of the build is upstream's.
 
