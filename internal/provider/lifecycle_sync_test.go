@@ -13,26 +13,25 @@ import (
 // rename, a delete, a delete and add again, or an edit made here after
 // that is never undone by the Mirror: it is refused (*ConflictError) and
 // nothing changes, the binding staying with the provider it is on. Under
-// lifecycle.json and without; one added again with the same bytes is
-// another instance only under lifecycle.json (without, an id is the
-// provider, and the mirror is written by id, as before).
+// lifecycle.json and without: one added again with the same bytes is
+// another instance under lifecycle.json, and without it the delete left
+// its record in providers.json (Deleted), so the bytes differ too.
 func TestAMirrorOnAnOlderBaseIsRefused(t *testing.T) {
 	for _, managed := range []bool{false, true} {
 		for _, c := range []struct {
-			name    string
-			change  func(h *lifeHome)
-			managed bool // refused only under lifecycle.json
+			name   string
+			change func(h *lifeHome)
 		}{
 			{"rename", func(h *lifeHome) {
 				if err := Rename("relay", "relay2"); err != nil {
 					h.t.Fatal(err)
 				}
-			}, false},
+			}},
 			{"delete", func(h *lifeHome) {
 				if err := Delete("relay"); err != nil {
 					h.t.Fatal(err)
 				}
-			}, false},
+			}},
 			{"recreate with the same bytes", func(h *lifeHome) {
 				if err := Delete("relay"); err != nil {
 					h.t.Fatal(err)
@@ -43,7 +42,7 @@ func TestAMirrorOnAnOlderBaseIsRefused(t *testing.T) {
 				if err := identity.Bind("relay", h.b.ID); err != nil {
 					h.t.Fatal(err)
 				}
-			}, true},
+			}},
 			{"recreate", func(h *lifeHome) {
 				if err := Delete("relay"); err != nil {
 					h.t.Fatal(err)
@@ -56,14 +55,14 @@ func TestAMirrorOnAnOlderBaseIsRefused(t *testing.T) {
 				if err := identity.Bind("relay", h.b.ID); err != nil {
 					h.t.Fatal(err)
 				}
-			}, false},
+			}},
 			{"edit", func(h *lifeHome) {
 				p := h.find("relay")
 				p.Name = "edited here"
 				if err := Save(p); err != nil {
 					h.t.Fatal(err)
 				}
-			}, false},
+			}},
 		} {
 			t.Run(map[bool]string{false: "legacy ", true: "managed "}[managed]+c.name, func(t *testing.T) {
 				var h *lifeHome
@@ -84,12 +83,6 @@ func TestAMirrorOnAnOlderBaseIsRefused(t *testing.T) {
 				before, bound := configSnapshot(t), boundNow(t)
 				// the server's: what was collected, and one added elsewhere
 				remote := append(collected, h.row("other"))
-				if c.managed && !managed {
-					if err := Mirror(remote, nil, OnBase(base)); err != nil {
-						t.Fatalf("without lifecycle.json, a mirror over the same bytes: %v", err)
-					}
-					return
-				}
 				if err := Mirror(remote, nil, OnBase(base)); !errors.As(err, new(*ConflictError)) || !errors.Is(err, ErrStale) {
 					t.Fatalf("a mirror on the base before a %s: %v, want *ConflictError", c.name, err)
 				}

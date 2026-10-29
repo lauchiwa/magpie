@@ -75,7 +75,7 @@ var (
 var videoSchema = map[string]any{
 	"name": videoTool,
 	"description": "Generate a short video from a text prompt, optionally starting from an image to animate, with a video model set up in Magpie " +
-		"(a Grok subscription's Grok Imagine, Volcengine Ark Agent Plan's Seedance, another Magpie's, or a provider whose model list marks video models). It takes from ten seconds to a few minutes, then the video is saved as an mp4 file in the project (" + VideoFolder +
+		"(a Grok subscription's Grok Imagine, Volcengine Ark Agent Plan's Seedance, a MiniMax API key's MiniMax H3, another Magpie's, or a provider whose model list marks video models). It takes from ten seconds to a few minutes, then the video is saved as an mp4 file in the project (" + VideoFolder +
 		"/ unless path says where) and its path is returned; when it is not ready within about 20 seconds, the answer is an id to wait on with " + resultTool + " instead. Describe the subject, the motion and the camera: what moves, how, and what the shot is.",
 	"inputSchema": map[string]any{
 		"type": "object",
@@ -614,6 +614,14 @@ func reference(project, ref string) (string, error) {
 		return "", fmt.Errorf("reference image %s isn't an image (%s)", ref, mt)
 	}
 	return "data:" + mt + ";base64," + base64.StdEncoding.EncodeToString(b), nil
+}
+
+// Target is where the i-th of n files made from prompt, of extension ext,
+// goes under dir: path as a file (numbered when n > 1) or a folder, else a
+// name from the prompt in dir's generated-images/ (generated-videos/);
+// never a file that is there. `magpie tool` saves what it is given by it.
+func Target(dir, path, prompt, ext string, i, n int) (string, error) {
+	return target(dir, path, prompt, ext, i, n)
 }
 
 var unslug = regexp.MustCompile(`[^a-z0-9]+`)

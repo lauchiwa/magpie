@@ -22,7 +22,10 @@ const libraryUsage = `magpie library                     what the library gives 
   magpie library mcp add <name> <url | command args…> [agents=a,b…]
   magpie library mcp agents <name> <a,b…|none>
   magpie library mcp rm <name>
+  magpie library mcp hub on|off      give each agent one MCP server, magpie, in place of the library's (magpie runs them, once for every agent)
   magpie library skill agents <name> <a,b…|none>
+  magpie library skill off-here <name>   turn it off on this computer only: a sync neither carries that nor turns it back on
+  magpie library skill on-here <name>    …and on again here
   magpie library skill rm <name>     (skills are installed from the app's Library page)
   magpie library skill rm --all [--yes]   every skill out of the library and the agents (asks first; --yes doesn't)
   magpie library skill rm --gone [--yes]  every skill an update found removed from its source (asks first; --yes doesn't)
@@ -117,6 +120,8 @@ func libraryCmd(args []string) error {
 			}
 		case len(rest) == 2 && rest[0] == "rm":
 			res, err = library.RemoveServer(rest[1])
+		case len(rest) == 2 && rest[0] == "hub" && (rest[1] == "on" || rest[1] == "off"):
+			res, err = library.SetMCPHub(rest[1] == "on")
 		default:
 			return fmt.Errorf("usage:\n  %s", libraryUsage)
 		}
@@ -135,6 +140,8 @@ func libraryCmd(args []string) error {
 			if res, err = removeEverySkill(rest[1:]); res == nil && err == nil {
 				return nil
 			}
+		case len(rest) == 2 && (rest[0] == "off-here" || rest[0] == "on-here") && !strings.HasPrefix(rest[1], "-"):
+			res, err = library.SkillHere(rest[1], rest[0] == "on-here")
 		case len(rest) == 2 && rest[0] == "rm":
 			res, err = library.RemoveSkill(rest[1])
 		case len(rest) == 3 && rest[0] == "use-library":
@@ -228,7 +235,7 @@ func removeEverySkill(args []string) (*library.Result, error) {
 		}
 		fmt.Printf("Remove all %s (%s) from the library and every agent? Folders magpie keeps go to its backups; folders of your own are only unlinked. [y/N] ",
 			plural(len(names), "skill"), strings.Join(names, ", "))
-		line, _ := stdin.ReadString('\n')
+		line, _ := stdin().ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
 			return nil, fmt.Errorf("nothing removed")
 		}
@@ -287,7 +294,7 @@ func removeGoneSkills(args []string) (*library.Result, error) {
 		}
 		fmt.Printf("Remove %s removed from their source (%s) from the library and every agent? The library's folders go to magpie's backups. [y/N] ",
 			plural(len(names), "skill"), strings.Join(shown, ", "))
-		line, _ := stdin.ReadString('\n')
+		line, _ := stdin().ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
 			return nil, fmt.Errorf("nothing removed")
 		}
@@ -407,6 +414,31 @@ func libraryStatus() error {
 			fmt.Println("   ", amber.Render("!"), a, muted.Render(e))
 		}
 	}
+	if v.MCPHub {
+		var given []string
+		keep := map[string][]string{}
+		for _, a := range v.Agents {
+			switch a.Hub {
+			case "":
+			case "on":
+				given = append(given, a.ID)
+			default:
+				keep[a.Hub] = append(keep[a.Hub], a.ID)
+			}
+		}
+		fmt.Printf("  %s → %s\n", bold.Render("magpie")+muted.Render(" (one server in place of these, at "+v.HubPath+"<agent>)"), on(given))
+		for _, why := range []string{"no-remote", "taken", "own"} {
+			if len(keep[why]) == 0 {
+				continue
+			}
+			say := map[string]string{
+				"no-remote": "reaches no MCP server over HTTP, so it keeps each server's own entry",
+				"taken":     "a library server is called magpie, so each agent keeps each server's own entry",
+				"own":       "has an MCP server called magpie of its own, so it keeps each server's own entry",
+			}[why]
+			fmt.Println("   ", amber.Render("!"), strings.Join(keep[why], ", "), muted.Render(say))
+		}
+	}
 	var found, own []string
 	for _, f := range v.FoundServers {
 		if f.Own {
@@ -432,6 +464,9 @@ func libraryStatus() error {
 		}
 		if s.Gone != "" {
 			fmt.Println("   ", amber.Render("!"), muted.Render("removed from "+s.Source+" · magpie library skill rm --gone"))
+		}
+		if s.OffHere {
+			fmt.Println("   ", muted.Render("off on this computer · magpie library skill on-here "+s.Name))
 		}
 	}
 	fmt.Println(muted.Render("  kept in " + v.Dir + " · magpie library help"))
@@ -487,8 +522,11 @@ func rtkCmd(args []string) error {
 			fmt.Println(amber.Render("  RTK "+v.Latest+" is out · waiting for "+v.Waiting), muted.Render("— "+v.Waiting+" has "+v.WaitingHas+" so far, and usually has a release within a few days"))
 		case v.Latest != "" && v.Version != "" && library.RTKNewer(v.Latest, v.Version):
 			up := "update it the way it was installed"
-			if v.Upgrade != "" {
+			switch {
+			case v.Upgrade != "":
 				up = "magpie library rtk upgrade runs: " + v.Upgrade
+			case v.NoUpgrade == "cargo":
+				up = "it was installed with cargo, but magpie can't find cargo: install Rust from https://rustup.rs, or run " + v.Manual
 			}
 			fmt.Println(amber.Render("  RTK "+v.Latest+" is out"), muted.Render("— "+up))
 		case len(args) == 1 && args[0] == "upgrade":

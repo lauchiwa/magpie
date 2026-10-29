@@ -91,7 +91,13 @@ func Agents() []AgentCount {
 
 func agentCounts(all []file) []AgentCount {
 	n := map[string]map[string]bool{}
+	// as listAgent lists them, from the parses kept: a copy of a
+	// conversation is not a session of its own (ccCopies)
+	copies := ccCopies(all)
 	for _, f := range all {
+		if copies[f.key] != "" {
+			continue
+		}
 		if n[f.agent] == nil {
 			n[f.agent] = map[string]bool{}
 		}
@@ -180,13 +186,12 @@ func idInFile(agent string) bool {
 }
 
 func nativeIDs(agents map[string]bool, all []file) map[string]map[string]bool {
-	groups := map[string][]file{}
+	groups := byKey(all, func(f *file) bool { return agents[f.agent] })
 	var want []file
 	for _, f := range all {
 		if !agents[f.agent] {
 			continue
 		}
-		groups[f.key] = append(groups[f.key], f)
 		if idInFile(f.agent) {
 			want = append(want, f)
 		}
@@ -203,11 +208,10 @@ func nativeIDs(agents map[string]bool, all []file) map[string]map[string]bool {
 }
 
 func listAgent(agent string, all []file) []Managed {
-	groups := map[string][]file{}
+	groups := byKey(all, func(f *file) bool { return f.agent == agent })
 	var mine []file
 	for _, f := range all {
 		if f.agent == agent {
-			groups[f.key] = append(groups[f.key], f)
 			mine = append(mine, f)
 		}
 	}
@@ -218,10 +222,16 @@ func listAgent(agent string, all []file) []Managed {
 		identities = codexIdentitySnapshot(mine)
 		taskTitles = codexSubagentTaskTitles(mine)
 	}
+	copies := ccCopies(mine)
+	copyIDs := copiesByKeeper(copies, groups)
 	price, titles := pricer(), codexTitleOf()
 	out := []Managed{}
-	for _, fs := range groups {
+	for k, fs := range groups {
+		if copies[k] != "" {
+			continue
+		}
 		s, _ := assemble(fs, price, titles)
+		s.Copies = copyIDs[k]
 		setSessionCodexIdentity(&s, identities)
 		setSessionCodexTaskTitle(&s, taskTitles)
 		listed(&s)
@@ -230,7 +240,7 @@ func listAgent(agent string, all []file) []Managed {
 		for _, f := range fs {
 			m.Size += f.size
 			if st := cache[f.path]; st != nil && f.main {
-				for _, d := range st.Days {
+				for _, d := range st.Days.all() {
 					m.Messages += d.Prompts + d.Replies
 				}
 			}
@@ -313,11 +323,10 @@ func Delete(agent, id string) (Trashed, error) {
 	loadCache()
 	defer useDBs()()
 	all := allFiles()
-	groups := map[string][]file{}
+	groups := byKey(all, func(f *file) bool { return f.agent == agent })
 	var mine []file
 	for _, f := range all {
 		if f.agent == agent {
-			groups[f.key] = append(groups[f.key], f)
 			mine = append(mine, f)
 		}
 	}
@@ -325,10 +334,11 @@ func Delete(agent, id string) (Trashed, error) {
 	// the session as the page lists it: by the id assemble gives it
 	var fs []file
 	var s Session
+	key := ""
 	price, titles := pricer(), codexTitleOf()
-	for _, g := range groups {
+	for k, g := range groups {
 		if one, _ := assembleListed(g, price, titles); one.ID == id {
-			fs, s = g, one
+			fs, s, key = g, one, k
 			break
 		}
 	}
@@ -339,6 +349,16 @@ func Delete(agent, id string) (Trashed, error) {
 		return Trashed{}, errors.New("this session is read only")
 	}
 	paths := sessionPaths(agent, id, fs)
+	// the copies of its conversation go with it: they were listed as
+	// this session, and one would come back as its row after (ccCopies)
+	if len(paths) > 0 {
+		for k, keeper := range ccCopies(mine) {
+			if c := groups[k]; keeper == key && len(c) > 0 && !c[0].readOnly {
+				paths = append(paths, sessionPaths(agent, sessionID(c), c)...)
+				fs = append(fs[:len(fs):len(fs)], c...)
+			}
+		}
+	}
 	if len(paths) == 0 {
 		// a stopped distro's listing, of files since gone
 		wslForget(fs)
@@ -378,6 +398,7 @@ func Delete(agent, id string) (Trashed, error) {
 	}
 	for _, f := range fs {
 		delete(cache, f.path)
+		delete(ccUUIDMemo, f.path)
 	}
 	saveCache()
 	wslForget(fs)
@@ -419,7 +440,7 @@ func sessionPaths(agent, id string, fs []file) []string {
 		}
 		for _, f := range fs {
 			add(dshSessionDir(f))
-			add(dshCacheRecord(f.sid))
+			add(dshCacheRecord(f.m().sid))
 		}
 		return out
 	}
@@ -449,16 +470,16 @@ func sessionPaths(agent, id string, fs []file) []string {
 	if agent == "droid" {
 		// each transcript's settings beside it: what it spent, its model
 		for _, f := range fs {
-			if f.manifest != "" && !inside(f.manifest, out) {
-				add(f.manifest)
+			if f.m().manifest != "" && !inside(f.m().manifest, out) {
+				add(f.m().manifest)
 			}
 		}
 	}
 	if agent == "claude" {
 		dir := ClaudeDir()
-		if fs[0].wsl != "" {
+		if fs[0].m().wsl != "" {
 			// the distro's own ~/.claude
-			if dir = wslHomeOf(fs[0].wsl); dir == "" {
+			if dir = wslHomeOf(fs[0].m().wsl); dir == "" {
 				return out
 			}
 			dir = filepath.Join(dir, ".claude")

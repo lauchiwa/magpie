@@ -30,7 +30,13 @@ type blockPricer struct {
 	price   func(Record) *catalog.Price
 	by      map[[4]string]pricedAs
 	agents  map[string][2]string
-	pooled  []*[]packedRow
+	// meta names what prices and names a call (requestState.meta): the
+	// blocks priced of it are shared with the other queries reading now
+	// (sharedPriced). A pricer of none keeps its blocks to itself.
+	meta   [32]byte
+	shared bool
+	held   []pricedKey
+	pooled []*[]packedRow
 }
 
 // pricedRows are the rows of the blocks a query priced, handed back when
@@ -38,13 +44,60 @@ type blockPricer struct {
 // and allocating and clearing their rows again each time was a third of it.
 var pricedRows = sync.Pool{New: func() any { s := make([]packedRow, 0, logBlockRows); return &s }}
 
+type pricedKey struct {
+	meta  [32]byte
+	block *rowChunk
+}
+
+// pricedBlock is a gateway block priced, held by refs queries.
+type pricedBlock struct {
+	c    *rowChunk
+	rows *[]packedRow // pooled, nil when c's rows are not
+	refs int
+}
+
+// sharedPriced are the gateway's blocks the queries reading now priced, by
+// block. A query over the whole history holds every block decoded until it
+// is done, and the GUI's requests arriving together each held their own:
+// at a cold start with the app open, three such queries held 105 MB of
+// rows between them and the app grew to 737 MB where it was 388 MB unasked
+// (#2278). A block is frozen once written (freeze), and its priced copy is
+// only read after: a query that changes a row's thread clones the chunk
+// first (cloneCodexChunks).
+var sharedPriced = struct {
+	sync.Mutex
+	blocks map[pricedKey]*pricedBlock
+}{blocks: map[pricedKey]*pricedBlock{}}
+
+// share has b's blocks shared with the other queries of meta, a hash of
+// requestState's root and meta.
+func (b *blockPricer) share(meta [32]byte) {
+	b.meta, b.shared = meta, true
+}
+
 // release hands the rows of the blocks it priced back, once the query no
-// longer reads them (a page's rows are copies).
+// longer reads them (a page's rows are copies); a shared block's, once
+// the last query holding it is done.
 func (b *blockPricer) release() {
 	for _, rows := range b.pooled {
 		pricedRows.Put(rows)
 	}
 	b.pooled = nil
+	if len(b.held) == 0 {
+		return
+	}
+	sharedPriced.Lock()
+	for _, k := range b.held {
+		e := sharedPriced.blocks[k]
+		if e.refs--; e.refs == 0 {
+			delete(sharedPriced.blocks, k)
+			if e.rows != nil {
+				pricedRows.Put(e.rows)
+			}
+		}
+	}
+	sharedPriced.Unlock()
+	b.held = nil
 }
 
 func newBlockPricer(renames provider.Renames, wires map[string]string, price func(Record) *catalog.Price) *blockPricer {
@@ -52,7 +105,8 @@ func newBlockPricer(renames provider.Renames, wires map[string]string, price fun
 }
 
 // as is priceRow's answer for a gateway call of these names, prov the
-// id the provider has now (Renames).
+// id the provider has now without a merge (Renames.Own): what it is
+// shown under does not change what it cost.
 func (b *blockPricer) as(prov, model, served, effort string) pricedAs {
 	k := [4]string{prov, model, served, effort}
 	if a, ok := b.by[k]; ok {
@@ -60,7 +114,7 @@ func (b *blockPricer) as(prov, model, served, effort string) pricedAs {
 	}
 	a := pricedAs{provider: prov, flags: swapKnown}
 	sent := provider.SentNameIn(b.wires, prov, model, effort)
-	if served != "" && Swapped(sent, served) && !(SameSpelled(model, served) || ServingName(model, served) || RelayRenamed(model, served)) {
+	if served != "" && Swapped(sent, served) && !(SameSpelled(model, served) || ServingName(model, served) || RelayRenamed(model, served) || ListedAs(prov, model, served)) {
 		a.flags |= 2
 	}
 	if GroupRouted(sent, served) {
@@ -82,18 +136,56 @@ func (b *blockPricer) agent(ua string) (string, string) {
 	return a[0], a[1]
 }
 
-// block is the priced copy of a raw block, made for one query and not kept.
+// block is the priced copy of a raw block, held until release: one
+// another query of the same meta priced and holds still, or one made now.
 func (b *blockPricer) block(packed *rowChunk) *rowChunk {
+	if !b.shared {
+		c, rows := b.priceBlock(packed)
+		if rows != nil {
+			b.pooled = append(b.pooled, rows)
+		}
+		return c
+	}
+	k := pricedKey{b.meta, packed}
+	sharedPriced.Lock()
+	if e := sharedPriced.blocks[k]; e != nil {
+		e.refs++
+		sharedPriced.Unlock()
+		b.held = append(b.held, k)
+		return e.c
+	}
+	sharedPriced.Unlock()
+	c, rows := b.priceBlock(packed)
+	if c == nil {
+		return nil
+	}
+	sharedPriced.Lock()
+	e := sharedPriced.blocks[k]
+	if e == nil { // priced by another query meanwhile: that one's is kept
+		e = &pricedBlock{c: c, rows: rows}
+		sharedPriced.blocks[k] = e
+	} else if rows != nil {
+		pricedRows.Put(rows)
+	}
+	e.refs++
+	sharedPriced.Unlock()
+	b.held = append(b.held, k)
+	return e.c
+}
+
+// priceBlock is the priced copy of a raw block, and the pooled rows it is in.
+func (b *blockPricer) priceBlock(packed *rowChunk) (*rowChunk, *[]packedRow) {
 	buf := pricedRows.Get().(*[]packedRow)
 	raw := packed.unpackInto(*buf)
 	// unpackInto decodes into the buffer whenever it is large enough
+	var pooled *[]packedRow
 	if raw != nil && raw != packed && cap(*buf) >= len(raw.Rows) {
-		b.pooled = append(b.pooled, buf)
+		pooled = buf
 	} else {
 		pricedRows.Put(buf)
 	}
 	if raw == nil {
-		return nil
+		return nil, nil
 	}
 	c := *raw
 	if raw == packed {
@@ -121,15 +213,15 @@ func (b *blockPricer) block(packed *rowChunk) *rowChunk {
 		flags uint16
 		price *catalog.Price
 	}
-	names := map[[5]uint32]ids{}
+	names := map[[6]uint32]ids{}
 	agents := map[uint32][2]uint32{}
-	shapes := map[[2]uint32]ids{}
+	shapes := map[[3]uint32]ids{}
 	// the provider each shape names, as it is now: one an id was given
 	// away from since has its calls told by when each was made, so its
 	// rows take the shape per provider they go to (Renames.Timed)
 	type renamedTo struct {
-		to    uint32
-		timed bool
+		to, own uint32 // shown under, and priced as (Renames.Both)
+		timed   bool
 	}
 	provs := map[uint32]renamedTo{}
 	for i := range c.Rows {
@@ -140,21 +232,23 @@ func (b *blockPricer) block(packed *rowChunk) *rowChunk {
 			id := c.Strings[raw]
 			to = renamedTo{timed: b.renames.Timed(id)}
 			if !to.timed {
-				to.to = intern(b.renames.Of(id, p.Time), raw)
+				shown, own := b.renames.Both(id, p.Time)
+				to.to, to.own = intern(shown, raw), intern(own, raw)
 			}
 			provs[raw] = to
 		}
 		if to.timed {
-			to.to = intern(b.renames.Of(c.Strings[raw], p.Time), raw)
+			shown, own := b.renames.Both(c.Strings[raw], p.Time)
+			to.to, to.own = intern(shown, raw), intern(own, raw)
 		}
-		sk := [2]uint32{p.Shape, to.to}
+		sk := [3]uint32{p.Shape, to.to, to.own}
 		got, ok := shapes[sk]
 		if !ok {
 			t := c.Shapes[p.Shape]
-			k := [5]uint32{t[1], t[5], t[7], t[8], to.to}
+			k := [6]uint32{t[1], t[5], t[7], t[8], to.to, to.own}
 			named, ok := names[k]
 			if !ok {
-				a := b.as(c.Strings[k[4]], c.Strings[k[1]], c.Strings[k[2]], c.Strings[k[3]])
+				a := b.as(c.Strings[k[5]], c.Strings[k[1]], c.Strings[k[2]], c.Strings[k[3]])
 				named = ids{k[4], a.flags, a.price}
 				names[k] = named
 			}
@@ -183,5 +277,5 @@ func (b *blockPricer) block(packed *rowChunk) *rowChunk {
 			p.Cost = got.price.CostSplit(int(p.Tokens[0]), int(p.Tokens[1]), int(p.Tokens[2]), int(p.Tokens[3]), int(p.Tokens[5]))
 		}
 	}
-	return &c
+	return &c, pooled
 }

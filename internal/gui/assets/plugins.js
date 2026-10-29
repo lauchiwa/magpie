@@ -139,7 +139,7 @@
   }
   function logo(ic, big, kind) {
     const box = el("span", "pm-logo" + (big ? " big" : ""));
-    if (ic) box.append(icon(ic));
+    if (ic) box.append(icon(ic, !big));
     else box.append(glyph({ mw: PIPE, ag: TERM, tl: TOOL, pg: PAGE }[kind] || PUZZLE, big ? 22 : 17, 1.4));
     return box;
   }
@@ -258,7 +258,24 @@
     draw();
   };
 
+  // pluginAgentsTo: Discover, at its Agents (the Agents page's More in
+  // Plugins). The scroll is the reader's click's, so it is made only while
+  // the click is fresh: Agents drawn later, the listings slow, is left
+  // where the page is.
+  let agentsFor = null; // the click that asked for Agents, till they are drawn
+  window.pluginAgentsTo = (ev) => {
+    query = "";
+    tab = "discover";
+    clearTimeout(searchTimer);
+    hits = null;
+    agentsFor = ev;
+    draw();
+  };
+
   async function refresh() {
+    // a plugin installed, switched on or off, or removed brings its
+    // page's tab, or takes it, now: not on the Plugins page's next load
+    window.loadPluginPages?.();
     try {
       const [m, p] = await Promise.all([api("plugins"), api("providers")]);
       mine = m;
@@ -911,7 +928,8 @@
       const pgs = ls.filter((l) => l.community && kindOf(l) === "pg");
       if (ours.length) out.push(section(t("Subscriptions"), t("written for magpie, checked against its own sign-ins"), ours));
       if (mws.length) out.push(section(t("Gateway middleware"), t("runs in magpie's gateway on what every agent sends and gets back, whichever provider serves it"), mws));
-      if (ags.length) out.push(section(t("Agents"), t("agents magpie has no setup of its own for, connected to it as its own are"), ags));
+      const agSec = ags.length ? section(t("Agents"), t("agents magpie has no setup of its own for, connected to it as its own are"), ags) : null;
+      if (agSec) { agSec.classList.add("pm-agents"); out.push(agSec); }
       if (tls.length) out.push(section(t("Tools for agents"), t("tools every agent can call, through magpie's MCP server"), tls));
       if (pgs.length) out.push(section(t("Pages"), t("pages of their own in magpie's window, each shut off from the rest and reading only what it lists"), pgs));
       if (gh.length) out.push(ghSection(gh));
@@ -919,6 +937,13 @@
       else if (taggedErr && !tagged.length) out.push(ghFailed());
       out.push(manual());
       replaceKeeping(body, out);
+      if (agentsFor && agSec) {
+        // after the view is put back where the reader was, as showing it
+        // does; the section then is the one drawn last (npm's answers draw
+        // it again)
+        if (window.scrollOnPurpose?.(agentsFor)) requestAnimationFrame(() => { body.querySelector(".pm-agents")?.scrollIntoView({ block: "start" }); window.arrived?.(page); });
+        agentsFor = null;
+      }
       return;
     }
     if (ls.length) out.push(section(t("Suggested"), "", ls));
@@ -1149,15 +1174,14 @@
       c.title = (isGit(e.spec) ? t("{head} is the newest commit of {repo}", { head: ck.head || e.head || "", repo: e.spec }) : t("v{v} is the newest on npm", { v: e.version })) + "\n" + t("Last checked {time}", { time: checkedAt() });
       nm.append(c);
     }
-    // the built-in subscriptions moved onto it: taking it away or off
-    // stops them, as there is no built-in to go back to, so the row says
-    // it carries them
+    // built-ins moved onto it, then its other providers if 2+ (#3902)
     const moved = (e.moved || []).map((id) => SUBS.find((x) => x.agent === id)?.name || id);
     const names = moved.join(t(", "));
-    if (moved.length && !e.off) {
+    const all = [...moved, ...e.serves || []];
+    if (all[0] && !e.off) {
       const c = el("span", "pm-chip moved");
-      c.append(el("span", "dot"), el("span", "", t("Serves {names}", { names })));
-      c.title = t("{names} runs on this plugin in place of the built-in", { names });
+      c.append(el("span", "dot"), el("span", "", t("Serves {names}", { names: all.join(t(", ")) })));
+      if (names) c.title = t("{names} runs on this plugin in place of the built-in", { names });
       nm.append(c);
     }
     // gateway middleware runs in magpie's gateway, not as a subscription:
@@ -1495,6 +1519,92 @@
     return d;
   }
 
+  // a README on its way: its lines are strings, and magpie's bird drops in
+  // and bounces down them, each bending under its feet and wobbling after
+  // it; leave() sends it off when the README comes. Its marks are data-*,
+  // not classes, so the dialog's observer doesn't place it again each hop
+  function bounceLoader() {
+    const box = el("div", "pm-bounce"), s = document.createElementNS("http://www.w3.org/2000/svg", "svg"), b = el("div", "sk-bird");
+    s.innerHTML = "<path/><path/><path/><path/>";
+    b.innerHTML = BIRD;
+    box.append(s, b);
+    const ps = [...s.children], ws = [1, .94, .6, .82], at = [.16, .44, .3, .58];
+    const L = ws.map((w, i) => ({ y: 31 + i * 22, d: 0, v: 0, bx: 0, hold: false }));
+    // the bird is placed by its feet: f faces it, r leans it, sx/sy squash it
+    let W = 0, x = 0, y = 0, f = 1, r = 0, sx = 1, sy = 1, gone = false;
+    const put = (o) => { ({ x = x, y = y, f = f, r = r, sx = sx, sy = sy } = o); b.style.transform = `translate(${x}px,${y}px) rotate(${r * f}deg) scale(${f * sx},${sy})`; };
+    const draw = () => L.forEach((l, i) => {
+      const h = l.y, d = l.d, x1 = W * ws[i] - 5, c = Math.min(x1 - 12, Math.max(17, l.bx));
+      ps[i].setAttribute("d", `M5 ${h}C${(5 + c) / 2} ${h} ${c - (c - 5) * .35} ${h + d} ${c} ${h + d}C${c + (x1 - c) * .35} ${h + d} ${(c + x1) / 2} ${h} ${x1} ${h}`);
+    });
+    // a step over frames; it stops when the box is gone, or the README came
+    const tween = (ms, fn, ease = (t) => t, exit) => new Promise((ok, no) => {
+      const t0 = performance.now();
+      const step = (now) => {
+        if (!box.isConnected || (gone && !exit)) return no();
+        const t = Math.min(1, (now - t0) / ms);
+        fn(ease(t), t);
+        t < 1 ? requestAnimationFrame(step) : ok();
+      };
+      requestAnimationFrame(step);
+    });
+    const easeIn = (t) => t * t * t, easeOut = (t) => 1 - (1 - t) ** 3;
+    (async () => {
+      await new Promise(requestAnimationFrame);
+      if (!box.isConnected || gone) return;
+      W = box.clientWidth;
+      if (calm()) return draw(), put({ x: at[0] * W, y: L[0].y - 5 });
+      // each string a damped spring, let go of when the bird leaves it
+      (async () => {
+        let last = performance.now();
+        for (;;) {
+          const now = await new Promise(requestAnimationFrame), dt = Math.min(.032, (now - last) / 1000);
+          if (!box.isConnected || gone) return;
+          last = now;
+          for (const l of L) if (!l.hold) { l.v += (-625 * l.d - 6 * l.v) * dt; l.d += l.v * dt; }
+          draw();
+        }
+      })();
+      for (;;) {
+        W = box.clientWidth;
+        ps.forEach((p) => delete p.dataset.lit);
+        const x0 = at[0] * W;
+        await tween(300, (e, t) => put({ x: x0 - 24 + 24 * t, y: -30 + (L[0].y + 25) * e, f: 1, r: 0, sx: 1 - .05 * t, sy: 1 + .08 * t }), easeIn);
+        for (let i = 0; i < L.length; i++) {
+          const l = L[i], top = l.y - 5, deep = i === L.length - 1 ? 16 : 10;
+          l.hold = true;
+          l.bx = x;
+          ps[i].dataset.lit = "";
+          await tween(140, (e) => { put({ y: top + deep * e, sx: 1 + .16 * e, sy: 1 - .2 * e }); l.d = y - top; }, easeOut);
+          await tween(90, (e) => { put({ y: top + deep * (1 - e), sx: 1.16 - .16 * e, sy: .8 + .3 * e }); l.d = y - top; }, easeIn);
+          l.hold = false;
+          l.v = -deep * 14;
+          const xa = x, ya = y;
+          if (i + 1 < L.length) {
+            const xb = at[i + 1] * W, yb = L[i + 1].y - 5;
+            put({ f: xb > xa ? 1 : -1 });
+            await tween(340, (e, t) => put({ x: xa + (xb - xa) * t, y: ya + (yb - ya) * t - 72 * t * (1 - t), sx: 1 - .06 * Math.sin(Math.PI * t), sy: 1 + .12 * Math.sin(Math.PI * t), r: (t - .5) * 20 }));
+          } else {
+            // the last one throws it high, out of sight, and it drops in again
+            b.dataset.flap = "";
+            await tween(520, (e) => put({ x: xa + 70 * e, y: ya - (ya + 60) * e, f: 1, r: -12, sx: 1, sy: 1 }), easeOut);
+            delete b.dataset.flap;
+            await tween(260, () => {});
+          }
+        }
+      }
+    })().catch(() => {});
+    box.leave = () => {
+      gone = true;
+      box.dataset.gone = b.dataset.flap = "";
+      const xa = x, ya = y;
+      tween(420, (e) => put({ x: xa + (W + 60 - xa) * e, y: ya - (ya + 80) * e, f: 1, r: -14, sx: 1, sy: 1 }), easeIn, true)
+        // gone once the dialog has grown to the README, not while it does
+        .then(() => tween(200, () => {}, undefined, true)).then(() => box.remove(), () => {});
+    };
+    return box;
+  }
+
   // the plugin's page: what it is, what npm says of it, and its README
   async function detail(l) {
     // a folder plugin: what it is comes from the folder, not from npm; a
@@ -1559,7 +1669,7 @@
     }
     if (l.replaces) main.append(el("p", "pm-note", t("magpie's own sign-in to this subscription is deprecated: this plugin takes its place, and accounts signed in there move to it.")));
     const readme = el("div", "pm-readme");
-    readme.append(el("div", "pm-rskel"), el("div", "pm-rskel short"), el("div", "pm-rskel"));
+    readme.append(bounceLoader());
     main.append(readme);
     ed.append(main);
     const bar = el("div", "bar");
@@ -1573,14 +1683,23 @@
     const tick = setInterval(() => { if (!ed.isConnected) return stop(); redrawAct(); }, 600);
     function stop() { clearInterval(tick); }
     // the README takes the skeleton's place, and the dialog grows to it on
-    // the spring it opened on, centred as it goes, not in one jump
+    // the spring it opened on, centred as it goes, not in one jump; the
+    // bird flies off over it
     const fill = (n) => {
-      const d = ed.parentElement, h = d.offsetHeight, y = d.style.top;
+      const d = ed.parentElement, h = d.offsetHeight, y = d.style.top, wait = readme.querySelector(".pm-bounce");
+      const m = d.parentElement, at = wait?.getBoundingClientRect(), o = m.getBoundingClientRect();
       readme.replaceChildren(n);
       if (!ed.isConnected || calm()) return;
+      // it leaves from over the dialog, where it was: anywhere in it, WebKit
+      // lays the fields out 8px short while it is there
+      if (wait) {
+        Object.assign(wait.style, { top: at.top - o.top + m.scrollTop + "px", left: at.left - o.left + m.scrollLeft + "px", width: at.width + "px" });
+        m.append(wait);
+        wait.leave();
+      }
       holdModal();
       d.animate([{ height: h + "px", top: y, overflow: "hidden" }, { height: d.offsetHeight + "px", top: d.style.top, overflow: "hidden" }], { duration: 570, easing: SPRING });
-      readme.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: "ease-out" });
+      n.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: "ease-out" });
     };
     try {
       const p = await api("plugins/page?name=" + encodeURIComponent(l.package));

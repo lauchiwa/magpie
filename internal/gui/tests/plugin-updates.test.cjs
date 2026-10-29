@@ -86,10 +86,21 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (side) {
           await up.waitFor();
           assert.equal(await up.textContent(), w.one);
-          assert.match(await page.evaluate(() => document.querySelector(".nav-s em.up").parentElement.textContent), new RegExp("^" + w.installed));
-          assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector(".nav-s em.up")).color), await page.evaluate(() => { const p = document.createElement("i"); p.style.color = "var(--accent)"; document.body.append(p); const c = getComputedStyle(p).color; p.remove(); return c; }), "in the dot's colour");
-          const box = await page.evaluate(() => { const e = document.querySelector(".nav-s em.up"), r = e.getBoundingClientRect(), b = e.parentElement.getBoundingClientRect(); return r.right <= b.right + 0.5 && r.left >= b.left; });
-          assert.ok(box, "the label fits its row");
+          assert.match(await up.evaluate((e) => e.parentElement.textContent), new RegExp("^" + w.installed));
+          // read where it is found, in one go: the rows are drawn again as
+          // the page's counts come in, so a label found a moment ago may be
+          // gone, and a gone one has no colour or box
+          const label = await page.evaluate(() => {
+            const e = document.querySelector(".nav-s em.up"), r = e.getBoundingClientRect(), b = e.parentElement.getBoundingClientRect();
+            const p = document.createElement("i");
+            p.style.color = "var(--accent)";
+            document.body.append(p);
+            const accent = getComputedStyle(p).color;
+            p.remove();
+            return { color: getComputedStyle(e).color, accent, fits: r.right <= b.right + 0.5 && r.left >= b.left };
+          });
+          assert.equal(label.color, label.accent, "in the dot's colour");
+          assert.ok(label.fits, "the label fits its row");
         }
         // the dot, followed, lands on Installed (the page was last on
         // Discover), which names the plugins with an update first
