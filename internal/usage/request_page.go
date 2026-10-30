@@ -1396,10 +1396,12 @@ func mapFor[K comparable, V any](m map[K]V, n int) map[K]V {
 	return m
 }
 
-// ReleaseScratch lets go of what the request matching keeps between calls.
+// ReleaseScratch lets go of what the request matching keeps between calls,
+// and the priced blocks no query holds.
 func ReleaseScratch() {
 	keptMatch.Store(nil)
 	keptPicks.Store(nil)
+	releasePriced()
 }
 
 // sized is s[:n], zeroed, in s's array when it holds n

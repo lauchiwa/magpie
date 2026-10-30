@@ -854,7 +854,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/", devPage(revalidated(http.FileServer(http.FS(staticFS())))))
 	devRoutes(mux)
-	pluginPageRoutes(mux)
+	pluginPageRoutes(mux, isWeb(w))
 	// boot.js hands the page the saved language and theme before it paints:
 	// they came only with the settings, so the tabs showed English first
 	mux.HandleFunc("GET /boot.js", func(rw http.ResponseWriter, r *http.Request) {
@@ -867,6 +867,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		if s.ReduceMotion {
 			boot["reduceMotion"] = true
+		}
+		if s.NoBird {
+			boot["noBird"] = true
 		}
 		// a browser tab keeps its own font choice (fonts.js)
 		if !isWeb(w) {
@@ -1309,6 +1312,10 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// nor whether animations are stilled (#3813)
 		if _, sent := fields["reduceMotion"]; !sent {
 			in.ReduceMotion = cur.ReduceMotion
+		}
+		// nor whether the loading bird is kept off
+		if _, sent := fields["noBird"]; !sent {
+			in.NoBird = cur.NoBird
 		}
 		// nor whether a value masked for the first time is told (Must2333)
 		if _, sent := fields["maskAlert"]; !sent {
@@ -2774,6 +2781,12 @@ func fail(rw http.ResponseWriter, err error) {
 		out["code"] = "runtime_unavailable"
 		out["offline"] = string(unavailable.Offline)
 	}
+	// an app's import link that nothing here opens, or that opens a
+	// program which is gone, said in the reader's language
+	var noHandler *agent.NoLinkHandlerError
+	if errors.As(err, &noHandler) {
+		out["code"], out["app"], out["exe"], out["said"] = "no_link_handler", noHandler.App, noHandler.Exe, linkSaid[noHandler.Exe != ""]
+	}
 	var noModels *agent.NoModelsError
 	if errors.As(err, &noModels) {
 		out["code"] = "no_models"
@@ -2895,6 +2908,14 @@ func countClient(m map[string]string, client, as string) (map[string]string, err
 var bunSaid = map[string]string{
 	"windows": "Bun, which runs plugins, can't start on this version of Windows: it needs Windows 10 version 1809 or later, or Windows Server 2019 or later. Update Windows to use plugins, or set MAGPIE_BUN to a bun that runs here.",
 	"cpu":     "Bun, which runs plugins, can't start on this computer's processor: it needs an x64 processor with SSE4.2 (Intel or AMD from 2008 on; in a virtual machine, a CPU type that passes it through). Run magpie on such a processor to use plugins, or set MAGPIE_BUN to a bun that runs here.",
+}
+
+// linkSaid is what the page says for an app's import link that nothing
+// here opens, by whether it names a program that is gone: an i18n.js key
+// like bunSaid's, with {app} and {exe} filled from the reply
+var linkSaid = map[bool]string{
+	false: "Nothing on this computer opens {app}'s links, so {app} didn't open: open {app} once or install it again, then click Add magpie again",
+	true:  "Nothing on this computer opens {app}'s links, so {app} didn't open: open {app} once or install it again, then click Add magpie again ({exe})",
 }
 
 // appOutJSON is Codex on magpie while its ChatGPT account is used up: the
