@@ -110,9 +110,11 @@ for (const engine of ["chromium", "webkit"]) {
     const browser = await (engine === "webkit" ? webkit : chromium).launch();
     t.after(() => browser.close());
     for (const heard of HEARD) for (const lang of LANGS) for (const width of [420, 1000]) for (const name of ["usage", "routing"]) for (const visit of ["opened", "opened again"]) {
-      await t.test(`${name}, ${visit}, wheels ${heard}, ${lang}, ${width}px`, async () => {
+      await t.test(`${name}, ${visit}, wheels ${heard}, ${lang}, ${width}px`, async (st) => {
         const ctx = await browser.newContext({ viewport: { width, height: 600 }, reducedMotion: "reduce" });
-        t.after(() => ctx.close());
+        // closed as its own case ends: on the parent, the 80 a browser opens
+        // stayed open to its end, ~20 GB, past a CI runner's memory
+        st.after(() => ctx.close());
         const p = await ctx.newPage();
         p.setDefaultTimeout(8000);
         const errors = [];
