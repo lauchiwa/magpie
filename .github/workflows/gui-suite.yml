@@ -108,8 +108,9 @@ jobs:
             'internal/gui/tests/*.test.cjs'
           echo "exit $?" > "$RUNNER_TEMP/out/exit.txt"
           echo "$(wc -l < "$RUNNER_TEMP/out/reds.txt") red"
-          # what earlyoom ended, if anything (its reds name the test)
-          sudo journalctl -u earlyoom --no-pager | grep -iE "sending|killed" | tee "$RUNNER_TEMP/out/oom.txt" || true
+          # what earlyoom ended, if anything (its reds name the test); its
+          # start-up lines say "sending SIGTERM when ..." and end nothing
+          sudo journalctl -u earlyoom --no-pager | grep -E "sending SIG[A-Z]+ to process" | tee "$RUNNER_TEMP/out/oom.txt" || true
       - uses: actions/upload-artifact@v4
         with:
           name: reds-${{ matrix.side }}-${{ matrix.engine }}-${{ matrix.shard }}
