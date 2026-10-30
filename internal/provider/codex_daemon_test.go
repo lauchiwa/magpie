@@ -581,6 +581,9 @@ func TestCodexAppStale(t *testing.T) {
 // as one a terminal started would (guotianci6 on X): magpie opened from
 // the desktop has neither.
 func TestCodexDaemonEnvIsTheTerminals(t *testing.T) {
+	if runtime.GOOS == "windows" { // fork: codexDaemonEnv keeps magpie's own environment there
+		t.Skip("a terminal's environment is the registry's on Windows")
+	}
 	oldEnv, oldPath := daemonLoginEnv, daemonLoginPath
 	t.Cleanup(func() { daemonLoginEnv, daemonLoginPath = oldEnv, oldPath })
 	login := map[string]string{"https_proxy": "http://127.0.0.1:7890", "NO_PROXY": "localhost"}
