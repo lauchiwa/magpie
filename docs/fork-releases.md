@@ -196,6 +196,23 @@ through the model prefs Save already sends, so the save path has no hook.
 `TestEditorSaysTheWholeProviderPrice` and `whole-provider-free.test.cjs`
 fail without them.
 
+The session folders' held listings (`internal/sessions/one_listing.go`)
+stamp `held.since` in `OneListing` and `ShareListing`, and a listing's
+`at` in `heldFiles`, with `heldStamp()` (`one_listing_fork.go`) instead of
+`time.Now()`. Windows' clock moves in ticks, so two stamps in one tick were
+equal and a hold begun just after a listing took that listing as its own.
+`TestOneListing` is red on Windows without the three hooks. When upstream
+changes these functions, keep its bodies and put `heldStamp()` back in
+those three places.
+
+Tests that can't pass on Windows for a reason upstream's CI never meets
+(it only builds them there) carry a `fork:` line: socket handover is
+skipped (`noHandOffHere`, `handover_fork_test.go`), a path is compared
+with `filepath.FromSlash`, and `internal/cli`'s TestMain calls
+`library.NoNpxInstall()` (`TestNoNpmInstallInTheseTests` fails without
+it). Upstream rewriting such a test drops its line; put it back only if
+the test is red on Windows again.
+
 The sync PR records each item below as checked, with what was run:
 
 - **The whole suite.** `go test -tags nogui ./...` and the GUI suite in
