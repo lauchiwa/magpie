@@ -159,9 +159,8 @@ func StatsAndNative(days int) (Stats, map[string]bool) {
 // are the same whatever the range, and the page keeps 7, 30 and every
 // day, each read again behind it (statsFor in internal/gui, #2278).
 func StatsAndNativeAll(days []int) ([]Stats, map[string]bool) {
-	native := map[string]bool{}
 	alias := provider.UsageAlias()
-	out := statsReadAll(days, time.Now(), native)
+	out, native := statsKept(days, time.Now(), true)
 	if alias != nil {
 		for i := range out {
 			out[i] = aliasStats(out[i], alias)
@@ -190,6 +189,17 @@ func statsRead(days int, now time.Time, native map[string]bool) Stats {
 // statsReadAll is statsRead for each of days, sharing what doesn't
 // depend on the range.
 func statsReadAll(ranges []int, now time.Time, native map[string]bool) []Stats {
+	out, listed := statsKept(ranges, now, native != nil)
+	if native != nil {
+		maps.Copy(native, listed)
+	}
+	return out
+}
+
+// statsKept is statsReadAll, and the agent|id of every session listed when
+// native is asked for. The ranges' Stats and the map are kept for the
+// next read (keptStats), so neither is written.
+func statsKept(ranges []int, now time.Time, wantNative bool) ([]Stats, map[string]bool) {
 	now = now.In(time.Local)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 
@@ -203,15 +213,30 @@ func statsReadAll(ranges []int, now time.Time, native map[string]bool) []Stats {
 	// every changed file, whatever the range, so a wider range picked later
 	// finds them read rather than starting another run
 	refresh(files, files)
+	price, titles := pricer(), codexTitleOf()
+	keptFor(files, today, price, titles)
+	out := make([]Stats, len(ranges))
+	var todo []int
+	for i, days := range ranges {
+		st, ok := keptStats.ranges[days]
+		if !ok {
+			todo = append(todo, i)
+		}
+		out[i] = st
+	}
+	if len(todo) == 0 && (!wantNative || keptStats.native != nil) {
+		return out, keptStats.native
+	}
+	price, titles = keptPrice(price), keptTitle(titles)
 	identities := codexIdentitySnapshot(files)
 	taskTitles := codexSubagentTaskTitles(files)
-	price, titles := pricer(), codexTitleOf()
 	// each session as listed, by key: what native is made of, and what a
 	// range's sessions are summed up from
 	var listed map[string]Session
-	if native != nil {
+	if wantNative {
 		groups := byKey(files, nil)
 		listed = make(map[string]Session, len(groups))
+		native := make(map[string]bool, len(groups))
 		for key, fs := range groups {
 			// as List: a session nothing was said in is not listed
 			if s, ok := assembleListed(fs, price, titles); ok {
@@ -219,6 +244,7 @@ func statsReadAll(ranges []int, now time.Time, native map[string]bool) []Stats {
 				listed[key] = s
 			}
 		}
+		keptStats.native = native
 	}
 	// a copy of a conversation is counted in the session it is kept in
 	// (ccCopies): its subagents' files, and what its own file holds that
@@ -232,11 +258,13 @@ func statsReadAll(ranges []int, now time.Time, native map[string]bool) []Stats {
 			folder[f.key] = st.Cwd
 		}
 	}
-	out := make([]Stats, len(ranges))
-	for i, days := range ranges {
-		out[i] = statsOfRange(days, today, files, copies, copied, folder, listed, identities, taskTitles, price, titles)
+	for _, i := range todo {
+		st := statsOfRange(ranges[i], today, files, copies, copied, folder, listed, identities, taskTitles, price, titles)
+		keepDesktop(st)
+		keepRange(ranges[i], st, ranges)
+		out[i] = st
 	}
-	return out
+	return out, keptStats.native
 }
 
 // statsOfRange is one range's Stats from what statsReadAll read, with the
@@ -252,12 +280,6 @@ func statsOfRange(days int, today time.Time, files []file, copies map[string]str
 		from = since.Format(time.DateOnly)
 	}
 	out := Stats{From: from, To: today.Format(time.DateOnly), Days: []Day{}, Sessions: []Summary{}, Keys: []string{}}
-	var want []file
-	for _, f := range files {
-		if !f.mod.Before(since) && (copies[f.key] == "" || copied[f.path] != nil) {
-			want = append(want, f)
-		}
-	}
 
 	type uk struct{ date, agent, cwd, model string }
 	type ak struct{ date, agent, cwd string }
@@ -268,22 +290,32 @@ func statsOfRange(days int, today time.Time, files []file, copies map[string]str
 	use := map[uk]Tokens{}
 	act := map[ak]*act0{}
 	dates := map[string]bool{}
-	// each session's share: its files' models and dates in range
+	// each session's share: its files' models and dates in range. A
+	// session has few of either, so they are slices, not maps: each poll
+	// made a session's maps for every session of every range (#2278)
 	type dayShare struct {
+		date             string
+		counted          bool // something was said, spent or worked that day
 		messages, output int
 		tools            map[string]int
 	}
+	type modelShare struct {
+		model string
+		t     Tokens
+	}
 	type share struct {
-		models           map[string]Tokens
+		models           []modelShare
 		active           int64
-		dates            map[string]bool
 		prompts, replies int
 		tools, skills    map[string]int
 		skillLast        map[string]string
-		perDate          map[string]*dayShare
+		perDate          []dayShare
 	}
 	shares := map[string]*share{}
-	for _, f := range want {
+	for _, f := range files {
+		if f.mod.Before(since) || (copies[f.key] != "" && copied[f.path] == nil) {
+			continue
+		}
 		st := cache[f.path]
 		if keeper := copies[f.key]; keeper != "" {
 			st, f.key = copied[f.path], keeper
@@ -329,36 +361,54 @@ func statsOfRange(days int, today time.Time, files []file, copies map[string]str
 			}
 			sh := shares[f.key]
 			if sh == nil {
-				sh = &share{models: map[string]Tokens{}, dates: map[string]bool{}, tools: map[string]int{},
-					skills: map[string]int{}, skillLast: map[string]string{}, perDate: map[string]*dayShare{}}
+				// tools and skills are made once a day has some: most
+				// sessions' days have none
+				sh = &share{}
 				shares[f.key] = sh
 			}
-			pd := sh.perDate[date]
-			if pd == nil {
-				pd = &dayShare{tools: map[string]int{}}
-				sh.perDate[date] = pd
+			// a session's files mostly come in date order: look from the end
+			pi := len(sh.perDate) - 1
+			for pi >= 0 && sh.perDate[pi].date != date {
+				pi--
 			}
+			if pi < 0 {
+				sh.perDate = append(sh.perDate, dayShare{date: date})
+				pi = len(sh.perDate) - 1
+			}
+			pd := &sh.perDate[pi]
 			for model, t := range d.Models.all() {
 				if !t.zero() {
-					u := sh.models[model]
-					u.add(t)
-					sh.models[model] = u
-					sh.dates[date] = true
+					mi := slices.IndexFunc(sh.models, func(m modelShare) bool { return m.model == model })
+					if mi < 0 {
+						sh.models = append(sh.models, modelShare{model: model})
+						mi = len(sh.models) - 1
+					}
+					sh.models[mi].t.add(t)
+					pd.counted = true
 					pd.output += t.Output
 				}
 			}
 			sh.prompts += d.Prompts
 			sh.replies += d.Replies
 			if d.Prompts+d.Replies > 0 {
-				sh.dates[date] = true
+				pd.counted = true
 				dates[date] = true
 			}
 			pd.messages += d.Prompts + d.Replies
 			for name, n := range d.Tools.all() {
+				if sh.tools == nil {
+					sh.tools = map[string]int{}
+				}
+				if pd.tools == nil {
+					pd.tools = map[string]int{}
+				}
 				sh.tools[name] += n
 				pd.tools[ToolCategory(name)] += n
 			}
 			for name, n := range d.Skills.all() {
+				if sh.skills == nil {
+					sh.skills, sh.skillLast = map[string]int{}, map[string]string{}
+				}
 				sh.skills[name] += n
 				if date > sh.skillLast[name] {
 					sh.skillLast[name] = date
@@ -366,7 +416,7 @@ func statsOfRange(days int, today time.Time, files []file, copies map[string]str
 			}
 			if d.Active > 0 {
 				sh.active += d.Active
-				sh.dates[date] = true
+				pd.counted = true
 			}
 		}
 	}
@@ -429,7 +479,7 @@ func statsOfRange(days int, today time.Time, files []file, copies map[string]str
 	// more than its rows, and every copy it was grown through (#2278)
 	out.Sessions = make([]Summary, 0, len(shares))
 	for key, sh := range shares {
-		if len(sh.dates) == 0 {
+		if !slices.ContainsFunc(sh.perDate, func(pd dayShare) bool { return pd.counted }) {
 			continue
 		}
 		var s Session
@@ -452,35 +502,35 @@ func statsOfRange(days int, today time.Time, files []file, copies map[string]str
 			sum.ToolCalls += n
 		}
 		sum.perDay = make([]summaryDay, 0, len(sh.perDate))
-		for date, pd := range sh.perDate {
-			if t, err := time.ParseInLocation(time.DateOnly, date, time.Local); err == nil {
-				sum.perDay = append(sum.perDay, summaryDay{day: int(math.Round(t.Sub(first).Hours() / 24)), messages: pd.messages, output: pd.output, tools: countsOf(pd.tools, nil)})
+		for _, pd := range sh.perDate {
+			t, err := time.ParseInLocation(time.DateOnly, pd.date, time.Local)
+			if err != nil {
+				continue
+			}
+			// whole days, across a change of the clocks too
+			day := int(math.Round(t.Sub(first).Hours() / 24))
+			sum.perDay = append(sum.perDay, summaryDay{day: day, messages: pd.messages, output: pd.output, tools: countsOf(pd.tools, nil)})
+			if pd.counted {
+				sum.Days = append(sum.Days, day)
 			}
 		}
 		slices.SortFunc(sum.perDay, func(a, b summaryDay) int { return cmp.Compare(a.day, b.day) })
 		// in the models' order, as assembleListed sums a session's cost
-		for _, model := range slices.Sorted(maps.Keys(sh.models)) {
-			t := sh.models[model]
-			sum.Tokens.add(t)
-			sum.Models = append(sum.Models, model)
-			if p := price(model); p != nil {
-				sum.Cost += p.At(0).CostSplit(t.Input, t.Output, t.CacheRead, t.CacheWrite, t.CacheWrite1h)
+		slices.SortFunc(sh.models, func(a, b modelShare) int { return cmp.Compare(a.model, b.model) })
+		for _, m := range sh.models {
+			sum.Tokens.add(m.t)
+			if p := price(m.model); p != nil {
+				sum.Cost += p.At(0).CostSplit(m.t.Input, m.t.Output, m.t.CacheRead, m.t.CacheWrite, m.t.CacheWrite1h)
 			} else {
 				sum.Priced = false
 			}
 		}
-		sort.Slice(sum.Models, func(i, j int) bool {
-			a, b := sh.models[sum.Models[i]], sh.models[sum.Models[j]]
-			if a.Input+a.Output != b.Input+b.Output {
-				return a.Input+a.Output > b.Input+b.Output
-			}
-			return sum.Models[i] < sum.Models[j]
+		slices.SortStableFunc(sh.models, func(a, b modelShare) int {
+			return cmp.Compare(b.t.Input+b.t.Output, a.t.Input+a.t.Output)
 		})
-		for date := range sh.dates {
-			if t, err := time.ParseInLocation(time.DateOnly, date, time.Local); err == nil {
-				// whole days, across a change of the clocks too
-				sum.Days = append(sum.Days, int(math.Round(t.Sub(first).Hours()/24)))
-			}
+		sum.Models = make([]string, 0, len(sh.models))
+		for _, m := range sh.models {
+			sum.Models = append(sum.Models, m.model)
 		}
 		sort.Ints(sum.Days)
 		out.Sessions = append(out.Sessions, sum)

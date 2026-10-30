@@ -52,6 +52,10 @@ func TestStatsAllRangesOnePass(t *testing.T) {
 		t.Fatalf("no stats: %+v", all[0])
 	}
 	for i, days := range ranges {
+		// read again, not the ranges kept
+		mu.Lock()
+		forgetKeptStats()
+		mu.Unlock()
 		if one := statsRead(days, now, nil); !reflect.DeepEqual(all[i], one) {
 			t.Fatalf("days=%d: one pass %+v\nalone %+v", days, all[i], one)
 		}

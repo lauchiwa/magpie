@@ -48,6 +48,19 @@ counts as in its list, and on `/api/sessions/delete`, a native session is any
 session file the agent keeps, one nothing was said in too, with no limit
 (`sessions.NativeIDs`); one pass over the agents' files (`sessions.Manage`)
 reads only the agent shown and the agents with gateway sessions (#2776).
+It answers before a first read of a long history (hey_boyce on X: the page
+stood on its placeholder rows on its first open). A file it would read whole
+(no parse kept, an older index, a file written over, or a Claude Code or
+Codex parse that can't be read on after a restart) is read behind the
+answer once more than `quickBytes` (32 MB) of them is waiting; until then its
+row stands on the parse kept, or on a glance at its first 256 KB (id,
+folder, first prompt, start) and, for Claude Code, the titles in its last
+64 KB, with its last activity the file's time. Such a row has `pending:
+true` and no counts, the page asks again every 1.5 s until none is, and a
+glance is never saved in the index (`savable`) nor taken by a refresh as a
+parse (`parsed`). See
+[`internal/sessions/manage_quick.go`](../../internal/sessions/manage_quick.go),
+`TestManageAnswersBeforeFirstReads` and `sessions-pending-fill.test.cjs`.
 Gateway projections have no path,
 resume command or terminal action: the agent's own files of them are not on
 this computer. Their rows carry `gateway: true`; the Sessions page groups them
@@ -141,6 +154,24 @@ list the session), and `HasGatewayConversations` counts it.
 Implementation: [`internal/sessions/gateway_delete.go`](../../internal/sessions/gateway_delete.go),
 `Restore` in [`internal/sessions/manage.go`](../../internal/sessions/manage.go), and
 [`internal/gui/sessions_manage.go`](../../internal/gui/sessions_manage.go).
+A deleted Codex session also leaves the Codex app's list (zhuddan on Discord).
+The app (ChatGPT.app's Codex, 26.x) lists threads from its own catalog,
+`<CODEX_HOME>/sqlite/codex.db` (`codex-dev.db` for a non-prod build), table
+`local_thread_catalog`, and drops a row only on the app-server's
+`thread/deleted` or `thread/archived`; after its first full sweep it takes in
+only threads newer than its watermark. Delete removes the local host's rows of
+threads whose rollout is gone from that Codex folder's `sessions` and
+`archived_sessions` (named by Codex's state database, neither the file nor its
+packed twin there; a file that can't be looked at counts as there) and raises
+`catalog_revision`, in one `BEGIN IMMEDIATE` transaction that waits for the
+app's own. The removed rows go into the trash note (`codex_catalog`), and
+Restore puts them back. `/api/sessions/manage` does the same once a run
+(`TidyCodexCatalog`) for threads deleted before this. Implementation:
+[`internal/sessions/codex_catalog.go`](../../internal/sessions/codex_catalog.go);
+verification: `TestDeleteForgetsCodexAppCatalog`,
+`TestTidyCodexCatalogForgetsEarlierDeletes`,
+`TestTidyCodexCatalogKeepsWhatItCantJudge`, with schemas from Codex 26.1023 in
+`internal/sessions/testdata/codex-app/`.
 All-time statistics include gateway history older than native files. Calendar
 activity and output totals use each session's actual request dates, including
 intermediate dates; extending the range rebases existing native calendar indices.
