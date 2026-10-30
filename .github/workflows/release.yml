@@ -115,6 +115,9 @@ jobs:
       # that guess came out short for v0.1.1969-rc.0's app: "create failed -
       # No space left on device" on both tries, while arm64 built the same
       # tag. The size is given instead: the app's, plus 20% and 20 MB.
+      # v0.1.1999-rc.0's first try failed "create failed - Resource busy" on
+      # macos-15-intel, a runner's disk briefly held by something else, and
+      # its rerun built it: so it gets four tries, 15, 30 and 45 s apart.
       - name: Build dmg
         run: |
           DMG=magpie-darwin-${{ matrix.arch }}.dmg
@@ -125,7 +128,16 @@ jobs:
           SIZE=$(( KB * 12 / 10 / 1024 + 20 ))m
           df -h $RUNNER_TEMP .
           echo "app ${KB}KB, image $SIZE"
-          hdiutil create -volname magpie -srcfolder $RUNNER_TEMP/dmg -size $SIZE -ov -format UDZO "$DMG"
+          for try in 1 2 3 4; do
+            if hdiutil create -volname magpie -srcfolder $RUNNER_TEMP/dmg -size $SIZE -ov -format UDZO "$DMG"; then
+              exit 0
+            fi
+            if [ "$try" -lt 4 ]; then
+              echo "hdiutil create failed (try $try of 4), again in $(( try * 15 ))s"
+              sleep $(( try * 15 ))
+            fi
+          done
+          exit 1
 
       - name: Zip magpie.app
         run: ditto -c -k --keepParent magpie.app magpie-darwin-${{ matrix.arch }}.zip
