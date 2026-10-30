@@ -213,6 +213,12 @@ with `filepath.FromSlash`, and `internal/cli`'s TestMain calls
 it). Upstream rewriting such a test drops its line; put it back only if
 the test is red on Windows again.
 
+`internal/gateway`'s tests set `hubPruneEvery` to a day
+(`hub_prune_fork_test.go`): a gateway a test serves pruned the MCP hub
+every 5s, reading `MCPHub` while a later test set it, and the macOS Race
+step went red in `TestHubMCPOff`. Drop the file when upstream's
+`keepHubPruned` is waited for or reads `MCPHub` under a lock.
+
 The sync PR records each item below as checked, with what was run:
 
 - **The whole suite.** `go test -tags nogui ./...` and the GUI suite in
