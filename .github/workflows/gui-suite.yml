@@ -1,0 +1,160 @@
+name: GUI suite
+
+# The whole GUI suite (internal/gui/tests) in Chromium and WebKit, in shards,
+# on a ref of this fork and, to compare with, on an upstream tag. Run by hand
+# for a sync (docs/fork-releases.md): a red that the upstream tag doesn't
+# have is the fork's. Upstream's CI never runs this suite, so its own reds
+# are expected on both sides.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "This fork's branch, tag or commit to test"
+        required: true
+        default: main
+      base:
+        description: "Upstream tag to compare with (vX.Y.Z), or empty for none"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui-suite-${{ inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sides:
+    runs-on: ubuntu-latest
+    outputs:
+      sides: ${{ steps.s.outputs.sides }}
+    steps:
+      - id: s
+        env:
+          BASE: ${{ inputs.base }}
+        run: |
+          if [ -n "$BASE" ]; then
+            case "$BASE" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::base must be an upstream tag like v0.1.1999"; exit 1 ;; esac
+            echo 'sides=["fork","upstream"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'sides=["fork"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  suite:
+    needs: sides
+    name: ${{ matrix.side }} ${{ matrix.engine }} ${{ matrix.shard }}/8
+    strategy:
+      fail-fast: false
+      matrix:
+        side: ${{ fromJSON(needs.sides.outputs.sides) }}
+        engine: [chromium, webkit]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.side == 'upstream' && 'yetone/magpie' || github.repository }}
+          ref: ${{ matrix.side == 'upstream' && inputs.base || inputs.ref }}
+          path: src
+          # mobile-web compares screenshots with BASE_REF's assets, read
+          # through git
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          path: ci
+          sparse-checkout: .github/gui-suite
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Playwright and fonts
+        env:
+          ENGINE: ${{ matrix.engine }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk fonts-noto-color-emoji
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund playwright@1.61.1
+          npx playwright install --with-deps "$ENGINE"
+      - name: Shard
+        working-directory: src
+        env:
+          BROWSER: ${{ matrix.engine }}
+          SHARD: ${{ matrix.shard }}
+          SIDE: ${{ matrix.side }}
+          BASE: ${{ inputs.base }}
+        run: |
+          export NODE_PATH="$RUNNER_TEMP/pw/node_modules"
+          # the fork side compares screenshots with the upstream tag, and the
+          # upstream side with itself
+          if [ -n "$BASE" ]; then
+            git rev-parse -q --verify "refs/tags/$BASE" >/dev/null || git fetch -q --no-tags https://github.com/yetone/magpie.git "refs/tags/$BASE:refs/tags/$BASE"
+            export BASE_REF="$BASE"
+          fi
+          mkdir -p "$RUNNER_TEMP/out" && touch "$RUNNER_TEMP/out/reds.txt"
+          set +e
+          node --test --test-concurrency=2 --test-shard="$SHARD/8" \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter="file://$GITHUB_WORKSPACE/ci/.github/gui-suite/reds.mjs" --test-reporter-destination="$RUNNER_TEMP/out/reds.txt" \
+            'internal/gui/tests/*.test.cjs'
+          echo "exit $?" > "$RUNNER_TEMP/out/exit.txt"
+          echo "$(wc -l < "$RUNNER_TEMP/out/reds.txt") red"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reds-${{ matrix.side }}-${{ matrix.engine }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+
+  compare:
+    needs: suite
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: reds-*
+          path: reds
+      - name: Reds by side
+        env:
+          BASE: ${{ inputs.base }}
+          REF: ${{ inputs.ref }}
+        run: |
+          export LC_ALL=C
+          shopt -s nullglob
+          # each shard's lines, as "engine<TAB>file<TAB>test name"
+          side() {
+            for d in reds/reds-$1-*; do
+              e=${d#reds/reds-$1-}; e=${e%-*}
+              if [ -f "$d/reds.txt" ]; then sed "s/^/$e\t/" "$d/reds.txt"; fi
+            done | sort -u
+          }
+          # shards that ran to the end, whatever their reds
+          ran() {
+            for d in reds/reds-$1-*; do if [ -f "$d/exit.txt" ]; then echo; fi; done | wc -l
+          }
+          side fork > fork.txt
+          s="## GUI suite: $REF"$'\n\n'"Fork: $(wc -l < fork.txt) red tests."
+          n=0
+          if [ -n "$BASE" ]; then
+            side upstream > upstream.txt
+            comm -23 fork.txt upstream.txt > new.txt
+            n=$(wc -l < new.txt)
+            s+=" Upstream $BASE: $(wc -l < upstream.txt). Red only on the fork: $n."
+            if [ "$n" -gt 0 ]; then s+=$'\n\n```\n'"$(head -200 new.txt)"$'\n```'; fi
+          fi
+          whole=yes
+          for x in fork ${BASE:+upstream}; do
+            got=$(ran "$x")
+            if [ "$got" -ne 16 ]; then whole=no; s+=$'\n\n'"**$x: $got of 16 shards ran to the end; the comparison is incomplete.**"; fi
+          done
+          echo "$s" >> "$GITHUB_STEP_SUMMARY"
+          echo "$s"
+          [ "$n" -eq 0 ] && [ "$whole" = yes ]
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-suite-reds
+          path: "*.txt"
+          retention-days: 30

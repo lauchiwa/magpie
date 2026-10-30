@@ -201,7 +201,13 @@ The sync PR records each item below as checked, with what was run:
 - **The whole suite.** `go test -tags nogui ./...` and the GUI suite in
   Chromium and WebKit ([code standards](code-standards.md)).
   `TestNoProductionStoreOfALiteralFile` fails on a new production
-  `store(file{…})`.
+  `store(file{…})`. The GUI suite runs on Actions:
+  `gh workflow run gui-suite.yml -f ref=sync-vX.Y.Z -f base=vX.Y.Z` runs
+  it in 16 shards on the sync branch and on the upstream tag, and fails
+  when a test is red only on the branch. Upstream's CI never runs this
+  suite, so the tag's own reds are expected; those the branch adds are the
+  fork's to fix. It runs on Linux: a change to a Windows-only path is
+  tried on Windows too.
 - **Provider writes** (`internal/provider`): `store` is still
   `commit(f, intent{})` in `provider.go`. `Save`, `AddCopy`, `Delete`,
   `Rename` (`rename.go`), `Mirror` (`backup.go`), `AddKeys` (`keys.go`) and
