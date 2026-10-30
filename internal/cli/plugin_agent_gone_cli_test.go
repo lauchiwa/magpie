@@ -28,6 +28,9 @@ const goneAgentMine = "{\n  // mine\n  \"model\": \"anthropic/claude-sonnet-4-5\
 func goneAgentHome(t *testing.T) (string, string) {
 	t.Helper()
 	groupsHome(t)
+	// fork: the plugin host `magpie kilo` starts ends before the test's
+	// folders go; on Windows its open files kept them
+	t.Cleanup(plugin.Settle)
 	home := os.Getenv("HOME")
 	dir := filepath.Join(home, "plugins", "kilo")
 	os.MkdirAll(dir, 0o755)

@@ -243,6 +243,7 @@ func answerOn(c net.Conn) (string, error) {
 // closed its listener, and closed it unanswered when it read the request
 // after that end began (#3568).
 func TestHandedOffGatewayTakesNoNewConnection(t *testing.T) {
+	noHandOffHere(t, false) // fork
 	old, addr, stopOld, oldDone := handOffSandbox(t)
 	defer func() {
 		stopOld()
@@ -296,6 +297,7 @@ func TestHandedOffGatewayAnswersAConnectionItTook(t *testing.T) {
 			name = "make dev"
 		}
 		t.Run(name, func(t *testing.T) {
+			noHandOffHere(t, dev) // fork
 			was := Handover
 			Handover = dev
 			defer func() { Handover = was }()
@@ -368,6 +370,7 @@ func TestHandedOffGatewayAnswersAKeptAliveConnection(t *testing.T) {
 			name = "make dev"
 		}
 		t.Run(name, func(t *testing.T) {
+			noHandOffHere(t, dev) // fork
 			was := Handover
 			Handover = dev
 			defer func() { Handover = was }()
@@ -477,6 +480,7 @@ func TestHandedOffGatewayAnswersAConnectionStillAnswering(t *testing.T) {
 			name = "make dev"
 		}
 		t.Run(name, func(t *testing.T) {
+			noHandOffHere(t, dev) // fork
 			was := Handover
 			Handover = dev
 			defer func() { Handover = was }()

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/testenv"
 )
 
@@ -19,6 +20,9 @@ func TestMain(m *testing.M) {
 	// start-up ran the real wsl.exe on a Windows machine with a distro up,
 	// and wrote wsl.json into the home of a test that checks what run wrote
 	agent.NoWSL()
+	// fork: and never the npm registry for an npx server (library's own
+	// tests have it so)
+	library.NoNpxInstall()
 	os.Exit(testenv.RunIn(m, func(string) { testenv.Offline() }))
 }
 

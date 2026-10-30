@@ -33,7 +33,7 @@ type heldList struct {
 func OneListing() (done func()) {
 	held.Lock()
 	held.n++
-	held.since = time.Now()
+	held.since = heldStamp() // fork: later than any listing before it
 	held.Unlock()
 	return letGo()
 }
@@ -48,7 +48,7 @@ func ShareListing() (done func()) {
 	held.Lock()
 	defer held.Unlock()
 	if held.n++; held.n == 1 {
-		held.since = time.Now()
+		held.since = heldStamp() // fork
 	}
 	return letGo()
 }
@@ -83,7 +83,7 @@ func heldFiles(key string, list func() []file) []file {
 		<-l.ready
 		return slices.Clone(l.files)
 	}
-	mine := &heldList{at: time.Now(), ready: make(chan struct{})}
+	mine := &heldList{at: heldStamp(), ready: make(chan struct{})} // fork
 	if held.lists == nil {
 		held.lists = map[string]*heldList{}
 	}
