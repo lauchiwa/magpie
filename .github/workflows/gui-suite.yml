@@ -73,7 +73,14 @@ jobs:
           ENGINE: ${{ matrix.engine }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y fonts-noto-cjk fonts-noto-color-emoji
+          sudo apt-get install -y fonts-noto-cjk fonts-noto-color-emoji earlyoom
+          # a test that keeps browsers open until the runner runs out of
+          # memory (upstream's view-open-wheel at v0.1.1999, ~20 GB) took the
+          # whole shard down with it, and with no reds reported the compare
+          # had nothing for ~120 files. earlyoom ends a browser first, so that
+          # test is red and the shard goes on.
+          echo 'EARLYOOM_ARGS="-m 6 -s 100 -r 60 --prefer (WebKit|webkit|chrome|headless_shell|MiniBrowser) --avoid (node|Runner|systemd|sshd)"' | sudo tee /etc/default/earlyoom >/dev/null
+          sudo systemctl restart earlyoom
           mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
           npm init -y >/dev/null
           npm install --no-audit --no-fund playwright@1.61.1
@@ -101,6 +108,8 @@ jobs:
             'internal/gui/tests/*.test.cjs'
           echo "exit $?" > "$RUNNER_TEMP/out/exit.txt"
           echo "$(wc -l < "$RUNNER_TEMP/out/reds.txt") red"
+          # what earlyoom ended, if anything (its reds name the test)
+          sudo journalctl -u earlyoom --no-pager | grep -iE "sending|killed" | tee "$RUNNER_TEMP/out/oom.txt" || true
       - uses: actions/upload-artifact@v4
         with:
           name: reds-${{ matrix.side }}-${{ matrix.engine }}-${{ matrix.shard }}
@@ -148,6 +157,9 @@ jobs:
           for x in fork ${BASE:+upstream}; do
             got=$(ran "$x")
             if [ "$got" -ne 16 ]; then whole=no; s+=$'\n\n'"**$x: $got of 16 shards ran to the end; the comparison is incomplete.**"; fi
+          done
+          for d in reds/reds-*; do
+            if [ -s "$d/oom.txt" ]; then s+=$'\n\n'"${d#reds/reds-}: earlyoom ended a browser ($(wc -l < "$d/oom.txt") times)."; fi
           done
           echo "$s" >> "$GITHUB_STEP_SUMMARY"
           echo "$s"
