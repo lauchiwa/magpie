@@ -609,6 +609,14 @@ func (u *unroutedHold) giveUp(unknown bool) {
 		where = " its body still arriving (" + u.bodySaid() + ")"
 		msg, status = unroutedBodyMsg(held, u.bodySaid()), http.StatusRequestTimeout
 	}
+	// the report is taken while it is still held: once its context ends,
+	// what held it lets go, and the stacks would show it gone. fork: and
+	// before the answer, whose Connection: close lets the client go and
+	// so ends the context (TestUnroutedHeldReportSaved, ubuntu Race)
+	asked, _ := u.asked.Load().(string)
+	who := cmpOr(u.agent, cmpOr(f.agent, "?"))
+	where = cmpOr(where, " not masking it")
+	report := u.s.heldReport(u, held, status, who, asked, where)
 	if !u.w.answer(unroutedProto(u.r.URL.Path), status, msg) {
 		f.mu.Unlock()
 		return // the handler is answering
@@ -628,12 +636,6 @@ func (u *unroutedHold) giveUp(unknown bool) {
 	u.s.trace.update(shown, func(r *Route) {
 		r.Done, r.Status, r.Error, r.Millis = true, status, msg, time.Since(r.Time).Milliseconds()
 	})
-	// the report is taken while it is still held: once its context ends,
-	// what held it lets go, and the stacks would show it gone
-	asked, _ := u.asked.Load().(string)
-	who := cmpOr(u.agent, cmpOr(f.agent, "?"))
-	where = cmpOr(where, " not masking it")
-	report := u.s.heldReport(u, held, status, who, asked, where)
 	u.cancel(errUnrouted)
 	name, err := writeHeld(report)
 	saved := ""
