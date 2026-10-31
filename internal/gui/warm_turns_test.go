@@ -16,7 +16,9 @@ func TestColdTurnsTaken(t *testing.T) {
 	coldTurns.over.Store(false)
 	t.Cleanup(func() { coldTurnsTaken = false; coldTurns.over.Store(false) })
 	var inStep, inPage, both atomic.Int32
-	asked, release := make(chan struct{}), make(chan struct{})
+	// fork: the page asks once the step has its turn; the step waiting on
+	// the ask let the page take the turn first and be answered at once
+	reading, release := make(chan struct{}), make(chan struct{})
 	page := coldTurn(func(http.ResponseWriter, *http.Request) {
 		inPage.Add(1)
 		if inStep.Load() > 0 {
@@ -33,7 +35,7 @@ func TestColdTurnsTaken(t *testing.T) {
 		warmUp(func() {
 			inStep.Add(1)
 			defer inStep.Add(-1)
-			<-asked
+			close(reading)
 			<-release
 		}, func() {
 			inStep.Add(1)
@@ -45,7 +47,7 @@ func TestColdTurnsTaken(t *testing.T) {
 	}()
 	answered := make(chan struct{})
 	go func() {
-		close(asked)
+		<-reading
 		ask()
 		close(answered)
 	}()
