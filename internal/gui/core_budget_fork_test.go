@@ -26,7 +26,7 @@ func forkScript(name string) bool { return slices.Contains(forkScripts, name) }
 // core against upstream's budgets plus this, so those budgets stay
 // upstream's text as they come; a hook that needs more raises this and
 // says why in its commit.
-const forkHookBudget = 2_240 // 1,678 on upstream v0.1.1353, plus room for the accountmodels rev; 2,203 with the whole-provider toggle's one line (wholeFreeField, freeprice.js), plus 1.5%
+const forkHookBudget = 2_294 // 1,678 on upstream v0.1.1353, plus room for the accountmodels rev; 2,203 with the whole-provider toggle's one line (wholeFreeField, freeprice.js), plus 1.5%; 2,260 on v0.1.1999 and v0.1.2310 alike, 20 over, which upstream's room had hidden, plus 1.5%
 
 func TestForkScriptBudget(t *testing.T) {
 	page, err := os.ReadFile("assets/index.html")
