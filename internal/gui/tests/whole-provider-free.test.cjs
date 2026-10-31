@@ -104,7 +104,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         return {
           label: label.textContent, hint: wrap.querySelector(".hint")?.textContent || "",
           on: s.querySelector(".opt.on")?.textContent, disabled: [...s.querySelectorAll(".opt")].map((b) => b.disabled),
-          afterRate: !!label.previousElementSibling?.querySelector("input.price-rate"),
+          // among the price fields, after Price rate (upstream's Free for me
+          // and rate windows may come between: they are appended with it)
+          afterRate: (() => { const r = label.parentElement.querySelector("input.price-rate"); return !!r && !!(r.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING); })(),
         };
       });
       const pick = (name) => seg.getByRole("button", { name, exact: true });
