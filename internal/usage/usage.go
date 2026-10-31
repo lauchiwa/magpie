@@ -130,8 +130,8 @@ type Record struct {
 	Own int64 `json:"own_ms,omitempty"`
 	// Masking: the ms of Own that went on masking the request (Settings
 	// → Privacy: the rules, and the local model with its wait for a
-	// turn); 0 where nothing was masked, or in a record from before it
-	// was kept.
+	// turn), all of it where Own is unknown; 0 where nothing was masked,
+	// or in a record from before it was kept.
 	Masking int64 `json:"masking_ms,omitempty"`
 	Retried int64 `json:"retried_ms,omitempty"`
 	Queued  int64 `json:"queued_ms,omitempty"`
@@ -418,6 +418,34 @@ func IsAgent(id string) bool {
 	return slices.ContainsFunc(knownAgents(), func(k Known) bool { return k.ID == id || slices.Contains(k.Names, id) })
 }
 
+// libraries are the product names of HTTP libraries, runtimes and API
+// SDKs as AgentOf names a client by its User-Agent, lower-cased. A
+// request that says only one of these is from a script, or from a tool
+// built on the library, and says nothing of which: it is no agent of its
+// own (theforeveriris on X: Bun, curl and python-httpx each had an
+// agent's scorecard on the Context tab).
+var libraries = map[string]bool{
+	// command lines and API tools
+	"curl": true, "wget": true, "httpie": true, "postmanruntime": true, "insomnia": true,
+	// JavaScript
+	"bun": true, "node": true, "deno": true, "node-fetch": true, "undici": true, "axios": true, "got": true, "ky": true,
+	// Python
+	"python": true, "python-httpx": true, "httpx": true, "python-requests": true, "requests": true,
+	"python-urllib": true, "urllib3": true, "aiohttp": true,
+	// Go, JVM, Ruby, PHP, Dart, Rust
+	"go-http-client": true, "go-resty": true, "resty": true, "okhttp": true, "java": true, "java-http-client": true,
+	"apache-httpclient": true, "reactor-netty": true, "ruby": true, "faraday": true, "rest-client": true,
+	"guzzlehttp": true, "dart": true, "reqwest": true, "libcurl": true,
+	// the vendors' SDKs, which an app or a script calls a model with
+	"openai": true, "asyncopenai": true, "anthropic": true, "asyncanthropic": true, "ai-sdk": true, "google-genai-sdk": true,
+}
+
+// IsLibrary says whether a client, by the name AgentOf gives it (a
+// record's Agent, old records' too), is an HTTP library, a runtime or an
+// API SDK rather than an agent: curl, Bun, python-httpx, Go-http-client,
+// OpenAI/Python.
+func IsLibrary(id string) bool { return libraries[strings.ToLower(strings.TrimSpace(id))] }
+
 // AgentOf names the agent behind a client User-Agent. Known agents map to
 // their magpie id; anything else keeps its product name.
 func AgentOf(ua string) string {
@@ -459,13 +487,14 @@ const (
 var Periods = []Period{Today, Week, Month, All}
 
 // CostAt is what the call costs at a price: at the tier its input reaches,
-// its 1-hour cache writes at theirs. A reported call that said what it
-// cost costs that, at any price.
+// its 1-hour cache writes at theirs, and at the hour it was made (an
+// off-peak price doubles at peak, Price.In). A reported call that said
+// what it cost costs that, at any price.
 func (r Record) CostAt(p catalog.Price) float64 {
 	if r.OwnCost != nil {
 		return *r.OwnCost // a reported call's own cost (#1874)
 	}
-	return p.CostSplit(r.Input, r.Output, r.CacheRead, r.CacheWrite, r.CacheWrite1h)
+	return p.In(r.Time).CostSplit(r.Input, r.Output, r.CacheRead, r.CacheWrite, r.CacheWrite1h)
 }
 
 // Totals is a sum of calls.

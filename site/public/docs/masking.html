@@ -50,6 +50,7 @@
     <a class="toc-only" href="/docs/docker">Docker</a>
     <a class="toc-only" href="/docs/privacy">Privacy</a>
     <a class="toc-only" href="/docs/masking">Privacy masking</a>
+    <a class="toc-only" href="/docs/mcp-router">MCP router</a>
     <a href="/docs/import">Add to magpie</a>
     <a href="/docs/integrate">Integrate</a>
     <a href="https://github.com/yetone/magpie-releases/releases">Releases</a>
@@ -152,7 +153,8 @@
       <li><b>Ids and tool definitions go as written:</b> model ids, message and call ids, UUIDs, tool names, MCP server names, and tool schemas (their descriptions are masked), so a vendor or a tool can still check them.</li>
       <li><b>Images and file data are sent as they are.</b> Text inside a screenshot is not masked.</li>
       <li><b>It fails closed.</b> If masking is on and can’t run (the <span class="ui">Privacy masking</span> plugin turned off by hand, or the local model you turned on can’t answer), the request gets a 503 that says nothing was sent. It is never sent unmasked instead. The model on by default that can’t answer leaves the rules to mask alone.</li>
-      <li><b>Local models can skip it.</b> <span class="ui">Send requests unmasked</span> on a provider whose every address is on this computer or your local network (Ollama, LM Studio) sends its requests as written; <code>magpie provider set ollama unmasked=yes</code> does the same. The logs keep the masked body.</li>
+      <li><b>A provider can skip it.</b> <span class="ui">Send requests unmasked</span> on a provider sends its requests as written: a model on this computer or your local network (Ollama, LM Studio), and, if you choose, any other provider, a subscription or a plugin’s provider too. Turned on for one that isn’t local, the editor says its vendor gets your requests unmasked. A request that can fall back to a provider still masked is masked. <code>magpie provider set ollama unmasked=yes</code> does the same.</li>
+      <li><b>Or send what masking would change to one of them.</b> In <span class="ui">Settings › Privacy</span>, <span class="ui">Instead of masking, send to</span> picks such a model. An agent’s request that masking would change then goes to it as written, so it can answer about the real names, and a request with nothing to mask goes where it was going. If that model fails, the request fails: it is never masked and sent to a vendor instead. Off by default.</li>
       <li><b>The model sees placeholders.</b> It can’t read or reason about a masked value; it can only pass it on. Put a value it must read under <span class="ui">Never mask</span>.</li>
       <li><b>Rules find shapes.</b> A phone number in another country’s format or a name in free text needs <span class="ui">Find with a local model</span>, or your own <span class="ui">Masked words</span> and <span class="ui">Masking rules</span>. Try your own text in <span class="ui">Try it</span> first.</li>
     </ul>
@@ -171,6 +173,7 @@
     <a href="/docs/docker">Docker</a>
     <a href="/docs/privacy">Privacy</a>
     <a href="/docs/masking">Privacy masking</a>
+    <a href="/docs/mcp-router">MCP router</a>
     <a href="/docs/import">Add to magpie</a>
     <a href="/docs/integrate">Integrate</a>
     <a href="https://github.com/yetone/magpie">GitHub</a>

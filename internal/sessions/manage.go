@@ -70,7 +70,7 @@ type AgentCount struct {
 // those kept as files of their own, in a layout magpie knows whole.
 func Deletable(agent string) bool {
 	switch agent {
-	case "claude", "qoder", "qoder-cn", "workbuddy", "codebuddy", "codex", "pi", "omp", "cursor", "dsh", "droid":
+	case "claude", "qoder", "qoder-cn", "workbuddy", "codebuddy", "codex", "pi", "raft", "omp", "cursor", "dsh", "droid":
 		return true
 	}
 	return false
@@ -193,7 +193,7 @@ func readFor(want, all []file, quick bool) (pending map[string]bool, done func()
 // session's file, not taken from its name (as assemble does).
 func idInFile(agent string) bool {
 	switch agent {
-	case "codex", "pi", "omp", "dsh", "grok", "droid":
+	case "codex", "pi", "raft", "omp", "dsh", "grok", "droid":
 		return true
 	}
 	return false
@@ -204,10 +204,12 @@ func nativeIDs(agents map[string]bool, all []file) map[string]map[string]bool {
 }
 
 func nativeIDsWith(agents map[string]bool, all []file, quick bool) map[string]map[string]bool {
-	groups := byKey(all, func(f *file) bool { return agents[f.agent] })
+	// Raft's Pi sessions are Pi's to the gateway (GatewayKeys)
+	asked := func(agent string) bool { return agents[agent] || agent == "raft" && agents["pi"] }
+	groups := byKey(all, func(f *file) bool { return asked(f.agent) })
 	var want []file
 	for _, f := range all {
-		if !agents[f.agent] {
+		if !asked(f.agent) {
 			continue
 		}
 		if idInFile(f.agent) {
@@ -221,7 +223,17 @@ func nativeIDsWith(agents map[string]bool, all []file, quick bool) map[string]ma
 		out[a] = map[string]bool{}
 	}
 	for _, fs := range groups {
-		out[fs[0].agent][sessionID(fs)] = true
+		id := sessionID(fs)
+		if a := fs[0].agent; agents[a] {
+			out[a][id] = true
+			// its subagents' calls are counted in it (subIDs)
+			for _, sub := range subIDs(fs, id) {
+				out[a][sub] = true
+			}
+		}
+		if fs[0].agent == "raft" && agents["pi"] {
+			out["pi"][id] = true
+		}
 	}
 	return out
 }
@@ -246,7 +258,7 @@ func listAgentWith(agent string, all []file, quick bool) []Managed {
 		identities = codexIdentitySnapshot(mine)
 		taskTitles = codexSubagentTaskTitles(mine)
 	}
-	copies := ccCopies(mine)
+	copies, branches := ccFamily(mine)
 	copyIDs := copiesByKeeper(copies, groups)
 	price, titles := pricer(), codexTitleOf()
 	out := []Managed{}
@@ -256,6 +268,7 @@ func listAgentWith(agent string, all []file, quick bool) []Managed {
 		}
 		s, _ := assemble(fs, price, titles)
 		s.Copies = copyIDs[k]
+		setBranch(&s, branches[k], groups)
 		setSessionCodexIdentity(&s, identities)
 		setSessionCodexTaskTitle(&s, taskTitles)
 		listed(&s)
@@ -493,7 +506,7 @@ func sessionPaths(agent, id string, fs []file) []string {
 			}
 			// the folder beside it: a Claude Code session's subagents and
 			// tool results, an omp session's artifacts
-			if agent != "codex" && agent != "pi" {
+			if agent != "codex" && agent != "pi" && agent != "raft" {
 				if d := strings.TrimSuffix(f.path, ".jsonl"); d != f.path {
 					if fi, err := os.Stat(d); err == nil && fi.IsDir() {
 						add(d)

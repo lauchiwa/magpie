@@ -153,14 +153,17 @@ meanwhile. `TestAScheduledFetchDropsPicksOnlyOfTheProviderItRead`
 (`autolist_fork_test.go`) fails without it.
 
 `Provider.FreeModel` (`internal/provider/models.go`) asks `userFree`
-(`freemodel_fork.go`) first, so a model the user priced at nothing with
+(`freemodel_fork.go`) right after upstream's `CountFree` (the user's word
+that the whole provider costs nothing outranks a price they set on one of
+its models; upstream's `TestFreeFirstSpendsTheProviderTheUserCountsFree`
+prices both and fails otherwise) and before the vendor's word, so a model the user priced at nothing with
 `magpie model price` is free to routing `free` as it already was to the
 usage ledger: a relay lists no model free, and its model ids carry their
 maker's price. `TestFreeModelReadsTheUsersOwnPrice` and
 `TestFreeFirstSpendsWhatTheUserPricedAtNothing` and
 `TestFreeFirstFallsToThePaidOneWhenTheFreeOneIsSpent` fail without the hook.
 When upstream changes `FreeModel`, keep its body and put the one line
-back at its top.
+back after the `CountFree` check.
 
 `Provider.PaidBesideFree` (`internal/provider/models.go`) sets each
 listed model's `Free` from `freeBy` (`freemodel_fork.go`) as the first
@@ -197,13 +200,11 @@ through the model prefs Save already sends, so the save path has no hook.
 fail without them.
 
 The session folders' held listings (`internal/sessions/one_listing.go`)
-stamp `held.since` in `OneListing` and `ShareListing`, and a listing's
-`at` in `heldFiles`, with `heldStamp()` (`one_listing_fork.go`) instead of
-`time.Now()`. Windows' clock moves in ticks, so two stamps in one tick were
-equal and a hold begun just after a listing took that listing as its own.
-`TestOneListing` is red on Windows without the three hooks. When upstream
-changes these functions, keep its bodies and put `heldStamp()` back in
-those three places.
+were a fork hook (`heldStamp`) until upstream counted holds instead of
+stamping them (`held.gen`, #4114, in v0.1.2310): two `time.Now()` in one
+Windows clock tick were equal, and a hold begun just after a listing took
+that listing as its own. `TestOneListing` checks it. If upstream ever goes
+back to times there, they need to be strictly increasing again.
 
 Tests that can't pass on Windows for a reason upstream's CI never meets
 (it only builds them there) carry a `fork:` line: socket handover is
@@ -218,6 +219,28 @@ the test is red on Windows again.
 every 5s, reading `MCPHub` while a later test set it, and the macOS Race
 step went red in `TestHubMCPOff`. Drop the file when upstream's
 `keepHubPruned` is waited for or reads `MCPHub` under a lock.
+
+`readonly_fork_test.go` puts the fork's identity capture routes in
+`readOnlyRefused`: `TestReadOnlyKeyEveryRoute` asks every route to be
+classified, and those routes are the fork's.
+
+v0.1.2310 was red on upstream's own CI, so the sync carries `fork:` lines in
+upstream files that are fixes, not fork features. Drop each one when upstream
+fixes the same thing, and take upstream's version:
+- `internal/claudetui/child_unix.go` starts Claude Code with `proc.Command`
+  (`TestNoCommandBypassesProc`).
+- `settings_keep_test.go` sets `SearchAll`, which upstream added and left out
+  of the test.
+- `warm_turns_test.go`: the page asks only once the warm-up step has its turn
+  (`TestColdTurnsTaken`).
+- `lody_test.go` gives two more tests an `APPDATA` of their own (Windows).
+- `tool_args_cr_test.go` doesn't apply its 8s bound under `-race`
+  (`raceOn`). Upstream's Race step never ran it, because its Test step was
+  red.
+- `unrouted.go`'s `giveUp` takes the held report before the 504. The 504 says
+  `Connection: close`, and the client leaving ended the wait the report was
+  meant to show (`TestUnroutedHeldReportSaved`). This is the one fix in
+  production code.
 
 The sync PR records each item below as checked, with what was run:
 
@@ -288,7 +311,8 @@ The sync PR records each item below as checked, with what was run:
   pops again when it finds the answer, before calling the reply "no
   response"; `TestHeadPushedBeforeTheAnswerIsRead` fails without it.
 - **Free first.** `Provider.FreeModel` in `provider/models.go` still asks
-  `userFree(heldSettings(), p.ID, model)` before the vendor's word.
+  `userFree(heldSettings(), p.ID, model)` after `CountFree` and before the
+  vendor's word.
 - **Paid beside free.** `Provider.PaidBesideFree` in `provider/models.go`
   still sets `m.Free = freeBy(heldSettings(), p.ID, m)` first in its loop.
 - **Free badge.** `entryFor`, `viaMagpie` and `providerInfoWith`'s `named`

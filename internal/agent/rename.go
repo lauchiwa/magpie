@@ -43,7 +43,7 @@ func applyRenameMoves(moves []renameMove, from, to string) ([]string, error) {
 	}
 	if from != to {
 		for _, a := range Detected() {
-			if a.RenameRefs == nil {
+			if a.RenameRefs == nil || a.handWired() {
 				continue
 			}
 			ok, err := a.RenameRefs(from, to)
@@ -106,6 +106,11 @@ func refMoves(renamed func(ref string) (string, bool)) []renameMove {
 	type move = renameMove
 	var moves []move
 	for _, a := range Detected() {
+		// a provider named magpie written by hand is the user's, the
+		// models it names too (handWired)
+		if a.handWired() {
+			continue
+		}
 		vals := a.Values()
 		for _, f := range a.Fields {
 			v := vals[f.Key]

@@ -647,6 +647,7 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		if codex != nil {
 			codexFacts(&m, r, codex)
 		}
+		kimiFacts(&m, r)
 		out = append(out, m)
 	}
 	return out, v.HasMore, v.LastID, nil
@@ -728,6 +729,48 @@ type liveModel struct {
 	Window    any    `json:"context_window"`
 	MaxWindow any    `json:"max_context_window"`
 	Inputs    any    `json:"input_modalities"`
+	// what Kimi Code's list (/coding/v1/models) says of a model's
+	// thinking and tools, flat and nested: supports_thinking_type
+	// "only" is a model that always thinks, supports_dynamic_tools one
+	// that loads tools mid-conversation, think_efforts' default_effort
+	// the effort it thinks at unasked (Model.AlwaysThinks, DynamicTools,
+	// DefaultEffort). any, as an odd value mustn't lose the whole list
+	ThinkingType any `json:"supports_thinking_type"`
+	DynTools     any `json:"supports_dynamic_tools"`
+	ThinkEfforts any `json:"think_efforts"`
+	Reasoning    any `json:"reasoning"`
+	Tools        any `json:"tools"`
+}
+
+// kimiFacts reads what Kimi Code's model list says of a model's thinking
+// and tools into m, from its flat fields or their nested forms
+// (reasoning.type, reasoning.effort.default, tools.dynamic_load).
+func kimiFacts(m *Model, r liveModel) {
+	field := func(v any, keys ...string) any {
+		for _, k := range keys {
+			o, ok := v.(map[string]any)
+			if !ok {
+				return nil
+			}
+			v = o[k]
+		}
+		return v
+	}
+	if t, _ := r.ThinkingType.(string); t == "only" {
+		m.AlwaysThinks = true
+	} else if t, _ := field(r.Reasoning, "type").(string); t == "only" && r.ThinkingType == nil {
+		m.AlwaysThinks = true
+	}
+	if b, ok := r.DynTools.(bool); ok {
+		m.DynamicTools = b
+	} else if b, ok := field(r.Tools, "dynamic_load").(bool); ok {
+		m.DynamicTools = b
+	}
+	if d, _ := field(r.ThinkEfforts, "default_effort").(string); d != "" {
+		m.DefaultEffort = d
+	} else if d, _ := field(r.Reasoning, "effort", "default").(string); d != "" {
+		m.DefaultEffort = d
+	}
 }
 
 // codexFacts reads what a Codex catalog entry says of its model into m:
@@ -831,6 +874,7 @@ func targetAPIs(target string) []string {
 // catalog's entry for the same id, keeping the live order.
 func Decorate(live []Model, known []Model) []Model {
 	byID := make(map[string]Model, len(known))
+	var bySame map[string]Model
 	for _, m := range known {
 		byID[m.ID] = m
 	}
@@ -840,6 +884,20 @@ func Decorate(live []Model, known []Model) []Model {
 		k, ok := byID[m.ID]
 		if i := strings.LastIndexByte(m.ID, '/'); !ok && i >= 0 {
 			k, ok = byID[m.ID[i+1:]] // a gateway's "deepseek/deepseek-chat"
+		}
+		if !ok && len(known) > 0 {
+			// the same model under another spelling (SameModel): Ark's
+			// list says glm-5-3-flash-260828 where its plan's catalog
+			// says glm-5.3-flash. Of several, the first known.
+			if bySame == nil {
+				bySame = make(map[string]Model, len(known))
+				for _, x := range known {
+					if _, dup := bySame[SameModel(x.ID)]; !dup {
+						bySame[SameModel(x.ID)] = x
+					}
+				}
+			}
+			k, ok = bySame[SameModel(m.ID)]
 		}
 		if ok {
 			if m.Name == "" || m.Name == m.ID {

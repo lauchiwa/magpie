@@ -47,6 +47,18 @@ a live gateway.
 
 ## Gateway Caller Keys
 
+`key-page.test.cjs` drives the gateway's key page (`/me`,
+`internal/gateway/keypage.html`, under the gateway's CSP) at 390px in
+Chromium and WebKit and every language: a wrong key is told so in the
+page's language and shows nothing; the right one shows its limit, its
+usage and most used model, picks that model, and gives Claude Code, Codex,
+OpenAI-compatible and curl setup at the address the page was opened at,
+with a placeholder until "Put my key in the setup" is ticked. A reload
+keeps the key in the tab, Forget takes it away, and no request carries the
+key in its address. A read-only key gets no setup. Gateway → Gateway keys
+shows the page's address (the LAN one, or `MAGPIE_PUBLIC_URL`) with a
+Copy, translated, and nothing with no key.
+
 `gateway-keys-empty.test.cjs` checks the Gateway page with no gateway key
 yet, as magpie web on a 390px phone: "No gateway keys yet" sits inside the
 list's card, inset from its edges, in the muted colour and size of Recent
@@ -354,7 +366,10 @@ with the API faked.
 `plugins-more-discover.test.cjs` checks that the add sheet's "More in
 Plugins" row and its "look for a plugin" link open Plugins on Discover,
 after Built-in or Installed was the tab open last (outloudvi on Discord).
-English and Chinese, Chromium and WebKit, with the API faked.
+From the tray panel they ask the window for Plugins with what was looked
+for (`window/main?view=plugins&q=`), and the window opened at the address
+`mainView` makes of that shows Discover once, its address giving q up
+(#3579). English and Chinese, Chromium and WebKit, with the API faked.
 
 `plugin-git.test.cjs` checks a plugin installed from a git repository: the
 market's field says it takes a GitHub repo, and Install sends
@@ -493,6 +508,13 @@ posts `subagent_effort`.
 `gateway-fold.test.cjs` folds Connect on the Gateway page with the view
 scrolled: its fields hide, the head keeps the base URL and a copy button, the
 head stays where it was, and the fold is remembered across a reload.
+
+`gateway-models-open-steady.test.cjs` opens the Gateway page's folded models,
+with the open list running past the window, in both engines, en and zh, the
+window and magpie web: Connect's head and the models' keep their place and
+height, every head on the page keeps its height, and folded again the head
+is back where it was. A view is a flex column and shrank every head of a set
+height once it overflowed (the owner, 10-29).
 
 `sse-body.test.cjs` opens streamed replies in the Gateway page's recent
 calls (Anthropic Messages, Chat Completions with `[DONE]`, OpenAI Responses cut
@@ -1650,6 +1672,15 @@ with a click, with no left-border accent. The copy button beside it
 says it was copied. Open again is still there, and nothing scrolls. The
 checks run in English and Chinese, in Chromium and WebKit.
 
+`signin-link-only.test.cjs` checks Settings › Privacy › Sign-in pages (max2020
+on Discord, who signs in from a separate fingerprint browser). "Open sign-in
+pages in the browser" is On by default, and Off saves signInLinkOnly without
+moving the page or scrolling sideways, at 900px and 360px. A sign-in the
+server kept to its link (linkOnly) opens no tab. It says so, shows the link
+with Copy link, and offers Open where it would say Open again. A sign-in
+without linkOnly opens its page once, as before. Every language, in Chromium
+and WebKit; the API is faked.
+
 `copy-command.test.cjs` copies from a tab with no clipboard API, as
 `magpie web` on a NAS is when opened from another computer over http:
 /api/copy refuses and navigator.clipboard is missing, so the copy command
@@ -2088,8 +2119,10 @@ carried over. Every language at 1100, 520 and 360px, in Chromium and WebKit.
 keys by their rows (no handle) in every routing mode, and by Alt+↑/↓: the
 first row, its First mark and the order saved for routing agree, one save
 goes out per drop, Escape and a failed save put the rows back, a disabled
-account is not made first, and account text stays selectable. It runs in
-Chromium and WebKit with an isolated API fixture:
+account is not made first, and account text stays selectable. Each editor
+is acted on once its accounts' allowances are in and drawn, as that answer
+draws every row again (#4468). It runs in Chromium and WebKit with an
+isolated API fixture:
 
 ```sh
 node --test internal/gui/tests/account-arrange.test.cjs
@@ -2571,3 +2604,17 @@ that scrolls a box vertically is built from its selector, filled and pointed
 at, and has to hold the wheel; one that doesn't is named by file and
 selector. With the engine made to lack overscroll-behavior (Safari 15),
 compat.js still keeps Requests' list's wheel. Chromium and WebKit.
+
+## A page's first load has a minute
+
+`nav-timeout.test.cjs` reads every GUI test file, with no browser: a page
+given a default timeout under a minute (most files give 5s, a click's bar)
+is given `setDefaultNavigationTimeout` of at least a minute too, as
+Playwright otherwise holds `page.goto` and `reload` to the click's bar and
+a busy machine's first load of app.js, i18n.js and the plugins takes
+longer (claude-switch-only, #4470). It names each file and page that
+hasn't.
+
+```sh
+node --test internal/gui/tests/nav-timeout.test.cjs
+```

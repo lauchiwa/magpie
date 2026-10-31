@@ -193,6 +193,10 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 /* a package the market doesn't list */
 .pm-manual { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; border: 1px dashed var(--line); flex-wrap: wrap; }
 .pm-mlabel { font-size: 12px; color: var(--muted); }
+.pm-registry { display: flex; align-items: center; gap: 8px; padding: 4px 12px 0; flex-wrap: wrap; font-size: 12px; min-width: 0; }
+.pm-reg-url { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.pm-reg-from { color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.pm-reg-err { flex-basis: 100%; color: var(--red); }
 .pm-minput { flex: 1; min-width: 180px; height: 26px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font: var(--code-style, normal) var(--code-weight, 400) 12px var(--code-font, var(--code)); font-stretch: var(--code-stretch, 100%); outline: none; }
 .pm-minput:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 /* the system's folder picker, beside the field it fills */

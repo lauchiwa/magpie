@@ -41,7 +41,9 @@ type updater struct {
 	mirror  string      // error: the mirror the failed download came through (#893)
 	network bool        // error: the network broke the download off (update.Network)
 	staged  string
-	aside   string // Windows: where install moved the running exe, to put back
+	// stable: latest was found on Settings' Stable channel
+	stable bool
+	aside  string // Windows: where install moved the running exe, to put back
 	// a version this computer wouldn't start (Smart App Control, #894),
 	// which the clock's checks don't download again; byClock, the check
 	// under way is the clock's
@@ -127,6 +129,9 @@ func updateDue(s settings.Settings, last, now time.Time) bool {
 
 func (u *updater) start() {
 	u.place(runtime.GOOS, update.GUI)
+	if u.bundle != "" {
+		go update.ForgetOldStaging(u.bundle) // #3965
+	}
 	go func() {
 		time.Sleep(5 * time.Second) // let the app settle first
 		for {
@@ -356,15 +361,29 @@ func (u *updater) run() {
 	if lang == "" {
 		lang = notesLang(trayLang(s.Lang, systemLang))
 	}
+	stable := s.UpdateChannel == settings.UpdateStable
 	rel, err := update.LatestIn(ctx, lang)
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	// the feed names an older version than the one found before: Settings'
-	// Update channel went to Stable since (ssharpcc on X). What was
-	// downloaded from every version isn't put in, and the version found
-	// is the feed's again, as if never found.
 	if err == nil && u.latest != nil && update.Newer(u.latest.Version, rel.Version) {
-		u.staged, u.latest = "", nil
+		if stable != u.stable {
+			// an older version than the one found before, on another
+			// channel: Settings' Update channel went to Stable since
+			// (ssharpcc on X). What was downloaded from every version
+			// isn't put in, and the version found is the feed's again, as
+			// if never found.
+			u.staged, u.latest = "", nil
+		} else {
+			// on the same channel it is the feed behind: the site, short
+			// of GitHub's API, answers from GitHub's latest redirect or
+			// the last answer it kept, which can be a release or more
+			// old. Restart to update asks the feed first (recheck), and
+			// such an answer dropped the download it was about to put
+			// in: no restart, and the app stayed on the version it was
+			// (littleHong on Discord, v0.1.2037 offered v0.1.2038). The
+			// version found stands, and so does its download.
+			rel, lang = u.latest, u.notesIn
+		}
 	}
 	// a version downloaded on a click stays the one restarted into while
 	// downloads wait for a click: a newer one out since isn't fetched
@@ -385,7 +404,7 @@ func (u *updater) run() {
 		u.state, u.err = "error", err.Error()
 		return
 	}
-	u.latest, u.notesIn = rel, lang
+	u.latest, u.notesIn, u.stable = rel, lang, stable
 	switch {
 	case !update.Released(Version):
 		u.state = "source"

@@ -2,11 +2,13 @@ package agent
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +26,7 @@ import (
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/codexcat"
+	"github.com/yetone/magpie/internal/codexrelay"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/lastgood"
@@ -596,7 +599,18 @@ func codexIn(at place) *Agent {
 	// (uses_openai_actor_authorization); no sign-in at all would have the
 	// app ask for one. A sign-in read that says nothing leaves the table
 	// as it is.
+	//
+	// requires_openai_auth = false is never magpie's (it writes true or
+	// nothing): the user wrote it, to have the Codex app on magpie with no
+	// ChatGPT account of its own (蛋仔 on Discord), and it stays.
+	ownNoAuth := func() bool {
+		t, _ := edit.GetTOMLTable(path, "model_providers."+magpieID)
+		return t["requires_openai_auth"] == "false"
+	}
 	openaiAuth := func() (want, known bool) {
+		if ownNoAuth() {
+			return false, false
+		}
 		signedIn, known := codexChatGPTKnown(dir)
 		if !known {
 			return false, false
@@ -631,6 +645,8 @@ func codexIn(at place) *Agent {
 		want, known := openaiAuth()
 		if want {
 			kvs = append(kvs, edit.KV{Path: "requires_openai_auth", Value: true})
+		} else if ownNoAuth() {
+			kvs = append(kvs, edit.KV{Path: "requires_openai_auth", Value: false})
 		}
 		if err := edit.SetTOMLTable(path, "model_providers."+magpieID, kvs...); err != nil {
 			return err
@@ -1528,8 +1544,12 @@ func codexIn(at place) *Agent {
 		// mark stays for Sync to put it back beside the sign-in: the
 		// Agents row said "its own models stay in /model" while the Codex
 		// app was meant to be in its API state (#2267)
-		Joined:      func() bool { return joined() && !asProvider() },
-		AppOut:      func() bool { return asProvider() && !api() && chatGPT() && stashLoad()[at.key("codex.out")] == "1" },
+		Joined: func() bool { return joined() && !asProvider() },
+		AppOut: func() bool { return asProvider() && !api() && chatGPT() && stashLoad()[at.key("codex.out")] == "1" },
+		HoldMatters: func() bool {
+			return stashLoad()[at.key("codex.login")] == "" && chatGPT() &&
+				(viaBase() || asProvider() && stashLoad()[at.key("codex.out")] == "1")
+		},
 		Beside:      beside,
 		Routed:      routed,
 		FailingOver: failingOver,
@@ -2310,22 +2330,51 @@ func codexFailover() bool {
 // The app-server codex sessions share read the old base URL as it started
 // and keeps it, and KeepCodexDaemonCurrent ends with magpie, so it is
 // restarted here, when no session is on it (thisisvainxx on X: back on
-// its own config, Codex took "several restarts").
-func EndCodexFailover() error {
+// its own config, Codex took "several restarts"). ended says it took
+// failover out: a thread open in the Codex app still sends to the
+// gateway's address, which the caller leaves a relay at (codexrelay).
+func EndCodexFailover() (ended bool, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return false, err
 	}
 	a := codex(home)
 	if !a.FailingOver() {
-		return nil
+		return false, nil
 	}
 	if err := a.EndFailover(); err != nil {
-		return err
+		return false, err
 	}
 	codexDaemonCheck(a.Path)
-	return nil
+	return true, nil
 }
+
+// RelayOpenCodex leaves a relay at the gateway's address for the Codex
+// processes running as magpie quits (codexrelay.Start), when the address
+// is this computer's own and Codex is running at all.
+func RelayOpenCodex() error {
+	u, err := url.Parse(gateway.URL())
+	if err != nil {
+		return err
+	}
+	if ip := net.ParseIP(u.Hostname()); !strings.EqualFold(u.Hostname(), "localhost") && (ip == nil || !ip.IsLoopback()) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	pids := codexPIDs(ctx)
+	if len(pids) == 0 {
+		return nil
+	}
+	return startRelay(u.Host, pids)
+}
+
+// startRelay and codexPIDs are vars so tests start no relay and list
+// Codex processes of their own.
+var (
+	startRelay = codexrelay.Start
+	codexPIDs  = provider.CodexPIDs
+)
 
 // CodexDesktopList is the list a Codex beside its ChatGPT sign-in is
 // handed, as the file the Codex app reads it from (deskList); ok false
@@ -2411,6 +2460,18 @@ func codexChatGPTKnown(dir string) (signedIn, known bool) {
 	if settings.AccountDiscoveryOff() {
 		return false, true
 	}
+	// forced_login_method = "api" in Codex's own config (another tool or
+	// guide writes it; magpie never does): Codex won't use a ChatGPT
+	// sign-in then. The TUI logs it out on start and the app server reads
+	// no account (openai/codex login/src/auth/manager.rs
+	// enforce_login_restrictions, load_auth), so wired beside it the
+	// Codex app asked for a sign-in and offered an API key alone (Tiger on
+	// Discord: "重启 codex 之后登不回去了"). Counted as no sign-in, magpie
+	// is the provider and Codex needs none. The line is the user's own and
+	// stays: taking it out is how they sign in to ChatGPT again.
+	if v, ok := edit.GetTOMLTop(filepath.Join(dir, "config.toml"), "forced_login_method"); ok && strings.EqualFold(strings.TrimSpace(v), "api") {
+		return false, true
+	}
 	var a struct {
 		Tokens *struct {
 			Access string `json:"access_token"`
@@ -2426,7 +2487,18 @@ func codexChatGPTKnown(dir string) (signedIn, known bool) {
 		// valid JSON that isn't an object: not a sign-in Codex wrote
 		return false, false
 	}
-	return a.Tokens != nil && a.Tokens.Access != "", true
+	if a.Tokens == nil || a.Tokens.Access == "" {
+		return false, true
+	}
+	// a sign-in OpenAI refused to refresh for good (revoked, or failed for
+	// good, #4308): Codex keeps its auth.json, but beside it every turn
+	// fails at Codex's workspace routing discovery, magpie's models too.
+	// None to magpie, as forced api above, until it is signed in again
+	// (another refresh token). A record that can't be read says nothing.
+	if gone, known := provider.CodexSignInGone(dir, b); !known || gone {
+		return false, known
+	}
+	return true, true
 }
 
 // codexReached reads Codex's newest model request since a time — the

@@ -19,6 +19,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const page = await (await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: "reduce" })).newPage();
         await page.addInitScript(() => { try { localStorage.setItem("magpie.gwConnectFolded", "0"); } catch {} }); // Connect opened, as a user who reads it
         page.setDefaultTimeout(6000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         // each goto and reload cancels the reads still on their way (on
         // Windows the title bar's colour among them), and WebKit reports each

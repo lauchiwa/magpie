@@ -59,7 +59,8 @@ const providerUsage = `usage:
   magpie provider fallback <id> <provider/model>…   where requests go when it's out of quota or down (none clears)
   magpie provider models <id> [ids…]      fetch the vendor's model list, or choose which models to expose:
                                           ids… replace the list, +id adds one, -id takes one out, all: the default,
-                                          none: serve none of them, its balance and usage still shown
+                                          none: serve none of them, its balance and usage still shown,
+                                          best: only the newest of each family it lists (Opus 5.6 replaces 5.5 once listed)
   magpie provider refresh <id>            fetch the vendor's model list again (as the app's Fetch models)
   magpie provider refresh-every <id> [6h|1d|off]
                                           have the gateway (magpie serve, the app) fetch the list again by itself
@@ -116,6 +117,8 @@ const providerUsage = `usage:
        magpie provider add bailian-decision sk-… workspace=<workspace id>   (or region=ap-southeast-1, or region=token-plan with an sk-sp- key)
        magpie provider add bailian-token-plan sk-sp-…   (Bailian's Token Plan: its chat models, and its decision model for routing groups;
                                     qwen-token-plan is the Qwen AI platform's, qwen-decision its pay-as-you-go decision model)
+       magpie provider add qwencloud sk-ws-… region=us-east-1   (Qwen Cloud, Alibaba's international platform, pay as you go;
+                                    qwencloud-token-plan sk-sp-… is its Token Plan)
        magpie provider add google-vertex project=my-project impersonate=vertex@my-project.iam.gserviceaccount.com
                                    (Google Vertex AI in your Google Cloud project, with no key: signed with gcloud's
                                     Application Default Credentials (gcloud auth application-default login) unless
@@ -134,8 +137,12 @@ const providerUsage = `usage:
                                    (Ollama, LM Studio, oMLX or MLX-Serve on another port or computer: each of its
                                     URLs moves there, keeping its path; address= alone puts it back at the default)
        magpie provider set ollama unmasked=yes
-                                   (a model on this computer or the local network: Settings' redaction leaves its
-                                    requests as written; not for a local relay that passes them on to a vendor)
+                                   (Settings' redaction leaves its requests as written, at any address: your call,
+                                    so mind a relay that passes them on to a vendor; a subscription or a plugin's
+                                    provider too, whose vendor gets them so; never another magpie)
+       magpie provider set modelscope free=yes
+                                   (every model of it counts as free, so a Free first routing spends it before
+                                    paid ones, as a free daily quota; prices and Usage's costs stay as listed)
        magpie provider add "My Relay" url=https://relay.example.com/v1 key=sk-… balance=https://relay.example.com/api/usage/token balance.path='$data.total_available / 500000'
        magpie provider set my-relay balance.path='(1 - credits.monthlyCredits / 70) %'
        magpie provider set my-relay balance.method=POST
@@ -163,9 +170,9 @@ func keyColumn(p provider.Provider) string {
 	case p.Account != nil && signedOut(p):
 		// every account in use refused: listed to be signed in again,
 		// as the app's row says, never "signed in"
-		return amber.Render("○ "+p.Account.User+" is signed out") + muted.Render(" · sign in again")
+		return amber.Render("○ "+p.AccountShown(p.Account.User)+" is signed out") + muted.Render(" · sign in again")
 	case p.Account != nil:
-		return green.Render("●") + " " + muted.Render("signed in as "+p.Account.User)
+		return green.Render("●") + " " + muted.Render("signed in as "+p.AccountShown(p.Account.User))
 	case p.IsVertex() && !p.Ready():
 		// no project an address can be made of (providers.json edited
 		// by hand): nothing is asked, as the app's row says
@@ -407,7 +414,9 @@ func notExposed(p provider.Provider) ([]string, string) {
 		}
 	}
 	why := "not picked"
-	if len(p.Models) == 0 {
+	if len(p.Models) == 0 && p.BestInFamily {
+		why = "best in family: an older one of its family"
+	} else if len(p.Models) == 0 {
 		why = fmt.Sprintf("none picked, so only the first %d", len(shown))
 	}
 	return out, why
@@ -681,16 +690,19 @@ func providerCmd(args []string) error {
 		if len(rest) > 1 {
 			before := *p
 			// none: no model served at all, the provider kept for its
-			// balance and usage (#1818); all is the vendor's list again
+			// balance and usage (#1818); best: the newest of each family
+			// the vendor lists (Best in family); all is the vendor's list
+			// again
 			none := len(rest) == 2 && rest[1] == "none"
+			best := len(rest) == 2 && rest[1] == "best"
 			picks, err := editPicks(*p, rest[1:])
-			if none {
+			if none || best {
 				picks, err = nil, nil
 			}
 			if err != nil {
 				return err
 			}
-			p.Models, p.NoModels = picks, none
+			p.Models, p.NoModels, p.BestInFamily = picks, none, best
 			if err := provider.Save(*p); err != nil {
 				return err
 			}
@@ -836,18 +848,21 @@ func showProvider(p provider.Provider) error {
 		kv("user-agent", "agent's"+muted.Render(why))
 	}
 	if p.Unredacted {
-		why := "  local: Settings' redaction leaves its requests as written"
+		why := "  Settings' redaction leaves its requests as written"
 		if !p.SkipsRedaction() {
-			why = "  but masked: not every address of it is on this computer or the local network"
+			why = "  but masked: another magpie or no address"
 		}
 		kv("unmasked", "yes"+muted.Render(why))
+	}
+	if p.CountFree {
+		kv("free", "yes"+muted.Render("  counted free by Free first and Cheapest routing; prices and Usage's costs stay as listed"))
 	}
 	if p.NativeCompaction {
 		kv("compaction", "native"+muted.Render("  Codex's own, sealed by the key or account that answers it"))
 	}
 	switch {
 	case p.Account != nil:
-		who := p.Account.User
+		who := p.AccountShown(p.Account.User)
 		if p.Account.Plan != "" {
 			who += muted.Render("  " + p.Account.Plan)
 		}
@@ -1178,14 +1193,27 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 				return fmt.Errorf("compaction=native|magpie, not %q", v)
 			}
 		case "unmasked":
-			// yes: a model on this computer or the local network gets the
-			// requests as written, unmasked by Settings' redaction (lc on
-			// Discord); only while every address of it is local
-			// (provider.SkipsRedaction)
+			// yes: the provider gets the requests as written, unmasked by
+			// Settings' redaction (lc, AcMilan on Discord): the user's word
+			// at any address, a subscription's or a plugin's provider's too
+			// (isee1_1), never another magpie's (provider.SkipsRedaction)
 			if v != "yes" && v != "no" {
 				return fmt.Errorf("unmasked=yes|no, not %q", v)
 			}
 			p.Unredacted = v == "yes"
+		case "free":
+			// yes: every model of it counts as free for Free first and
+			// Cheapest routing, by the user's word (jiabubu on Discord:
+			// ModelScope's free daily quota); prices and Usage's costs
+			// stay as listed (provider.CountFree)
+			switch strings.ToLower(v) {
+			case "yes", "on":
+				p.CountFree = true
+			case "no", "off":
+				p.CountFree = false
+			default:
+				return fmt.Errorf("free=yes|no, not %q", v)
+			}
 		case "context":
 			if err := setContext(p, "*", v); err != nil {
 				return err
@@ -1200,8 +1228,10 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 			if err != nil {
 				return err
 			}
-			if r == provider.Manual {
-				return fmt.Errorf("routing=manual is a group's: a provider's keys or accounts are routed smart, order, rotate, usage, pace, weight, free or fast")
+			if r == provider.Manual || r == provider.Cheapest {
+				// cheap: its keys and accounts all bill the provider's one
+				// price, so there is nothing to weigh
+				return fmt.Errorf("routing=%s is a group's: a provider's keys or accounts are routed smart, order, rotate, usage, pace, weight, free or fast", r)
 			}
 			p.Routing = r
 		case "icon":

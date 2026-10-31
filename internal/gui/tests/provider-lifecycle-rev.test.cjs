@@ -294,6 +294,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator(`#providers .row.provider[data-id="${p.id}"]`).click();
         const acc = page.locator(`.editor .accts .acc[data-account-id="${ref}"]`);
         await acc.hover();
+        // an account's unset settings wait under ⋯ (upstream 18005c803); a key's row has none
+        if (await acc.locator(".acc-more").count()) await acc.locator(".acc-more").click();
         await acc.locator(".amodels").click();
         await acc.locator(".acct-models .mchip", { hasText: model }).click();
         const n = world.posts.length;

@@ -130,7 +130,7 @@ async function loadUsage(asked) {
   // the page's way in (#4064)
   if (asked && usageTab === "usage") quotasOpened();
   if (usageTab === "sessions") return loadSessions();
-  if (usageTab === "requests") return loadLedger();
+  if (usageTab === "requests") return loadLedger(asked && ledger && ledgerWant === ledParams({ offset: ledOffset, limit: LED_PAGE }) ? "open" : false);
   if (usageTab === "context") return window.loadContext?.();
   renderUsageLoading();
   if (!asked) loadQuotas();
@@ -813,6 +813,141 @@ async function hideUsageAgent(id, hide) {
   }
 }
 
+// ---------- allowance cards hidden from the Overview ----------
+//
+// An allowance card can be hidden from the Overview (whqtian_07012 on
+// Discord: StepFun's plan card wanted, its balance card not), from the
+// card's own menu (quotaCardMenus). Only from this page: routing, caps and
+// the counting never hear of it, the tray panel's Allowances tab has its
+// own (Arrange), and a menu bar cell asking for a hidden card shows it
+// until the page is left. Each is kept by its tray card id and its kind
+// (cardHideKey), in magpie's settings (usageCardsHidden), so every window
+// and magpie web agree; one line at the section's end says how many, and
+// has them back.
+let quotaHidOpen = false; // the hidden cards listed under their line
+let usagePeek = ""; // a card a menu bar cell asked for, shown though hidden
+new MutationObserver(() => { if ($("#view-usage").hidden) usagePeek = ""; }).observe($("#view-usage"), { attributes: true, attributeFilter: ["hidden"] });
+const cardHideKind = (q) => q.balance && !q.windows?.length && !q.plan ? "balance" : "plan";
+const cardHideKey = (q) => trayCardID(q) + "|" + cardHideKind(q);
+// the keys a card as drawn stands for: a plan's card carrying its key's
+// balance (keyCards) hides both
+const cardHideKeys = (q) => [cardHideKey(q), ...(q.balanceCard ? [q.balanceCard + "|balance"] : [])];
+const hiddenCards = () => new Set(state.settings?.usageCardsHidden || []);
+const cardPeeked = (q) => !!usagePeek && (trayCardID(q) === usagePeek || q.provider === usagePeek);
+// overviewCards: the cards the Overview draws, a provider's keys sharing
+// one balance already one card (sharedBalances), the hidden left out
+function overviewCards(list) {
+  const hid = hiddenCards();
+  list = sharedBalances(list);
+  return hid.size ? list.filter((q) => !hid.has(cardHideKey(q)) || cardPeeked(q)) : list;
+}
+// quotaCardMenus gives a card its menu: a right-click, the keyboard's menu
+// key on its handle, or on a touch screen a long press (iOS Safari sends
+// no contextmenu for one), for the account whose section it was on, or
+// the whole card from its head
+let quotaPressed = 0; // when a long press last opened a card's menu
+// the mouse events a phone makes up once the finger lifts don't close it,
+// nor press what the finger was on
+const quotaPressing = () => !!agentMenu && performance.now() - quotaPressed < 1000;
+for (const k of ["mousedown", "click"]) addEventListener(k, (e) => { if (quotaPressing() && !e.target.closest?.(".row-menu")) { e.stopImmediatePropagation(); e.preventDefault(); } }, true);
+function quotaCardMenus(card, subs) {
+  let press = null;
+  card.oncontextmenu = (e) => {
+    if (e.target.closest("input, textarea")) return;
+    e.preventDefault();
+    // Android sends one after the long press that opened it already
+    if (quotaPressing()) return;
+    quotaCardMenu(e.target, card, subs);
+  };
+  const stop = () => { clearTimeout(press?.timer); press = null; };
+  card.addEventListener("pointerdown", (e) => {
+    stop();
+    if (e.pointerType !== "touch" || usageArranging || e.target.closest(".us-handle, input, textarea")) return;
+    const at = e.target;
+    press = { x: e.clientX, y: e.clientY, timer: setTimeout(() => { press = null; quotaPressed = performance.now(); quotaCardMenu(at, card, subs); }, 550) };
+  });
+  card.addEventListener("pointermove", (e) => { if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 8) stop(); });
+  for (const k of ["pointerup", "pointercancel", "pointerleave"]) card.addEventListener(k, stop);
+}
+function quotaCardMenu(target, card, subs) {
+  let part = [...card.children].find((c) => c.contains(target));
+  while (part && !part.classList.contains("subscription-account") && !part.classList.contains("subscription-head")) part = part.previousElementSibling;
+  const who = part?.classList.contains("subscription-account") && subs.find((q) => trayCardID(q) === part.dataset.card);
+  const of = who ? [who] : subs;
+  const anchor = card.querySelector(".us-handle") || card.querySelector(".subscription-head");
+  const again = agentMenu?.anchor === anchor;
+  closeAgentMenu();
+  if (again) return;
+  const one = of.length === 1 && of[0];
+  openRowMenu(anchor, [
+    { name: who && subs.length > 1 ? "Hide this account from Overview" : "Hide from Overview", icon: EYE_OFF, run: () => hideQuotaCards(of.flatMap(cardHideKeys), true) },
+    // a plan's card showing its key's balance: the balance alone
+    ...(one?.balanceCard ? [{ name: "Hide its balance from Overview", icon: EYE_OFF, run: () => hideQuotaCards([one.balanceCard + "|balance"], true) }] : []),
+  ]);
+}
+// renderQuotaHid: the line under the cards saying how many are hidden,
+// opening them, each with Unhide, and Show all
+function renderQuotaHid() {
+  const hb = $("#quotaHid");
+  const hid = hiddenCards();
+  const hidden = quotas && hid.size ? sharedBalances(quotas).filter((q) => hid.has(cardHideKey(q)) && !cardPeeked(q)) : [];
+  hb.hidden = !hidden.length;
+  if (!hidden.length) { quotaHidOpen = false; return; }
+  const line = hb.querySelector(".us-hidline"), hl = hb.querySelector(".list");
+  let all = hb.querySelector(".us-showall");
+  if (!all) {
+    all = el("button", "text us-showall", t("Show all"));
+    all.type = "button";
+    hb.append(all);
+  }
+  all.textContent = t("Show all");
+  all.hidden = !quotaHidOpen || hidden.length < 2;
+  all.onclick = () => hideQuotaCards(hidden.map(cardHideKey), false);
+  line.replaceChildren(el("span", "", t("{n} hidden", { n: hidden.length })), svg(CHEV, 11, 1.6));
+  line.title = t("Hidden from the Overview only: they are still used and counted. Click to see them.");
+  line.setAttribute("aria-expanded", String(quotaHidOpen));
+  line.onclick = () => { quotaHidOpen = !quotaHidOpen; renderQuotaHid(); };
+  hl.hidden = !quotaHidOpen;
+  hl.replaceChildren();
+  if (!quotaHidOpen) return;
+  for (const q of hidden) {
+    const r = el("div", "row stat hid acts");
+    r.dataset.id = cardHideKey(q);
+    r.append(icon(q.icon));
+    const who = el("div", "who");
+    who.append(el("div", "name", quotaName(q)), el("div", "sub", [q.alias || q.user, t(cardHideKind(q) === "balance" ? "Balance" : "Plan")].filter(Boolean).join(" · ")));
+    const b = el("button", "text us-unhide", t("Unhide"));
+    b.type = "button";
+    b.onclick = (e) => { e.stopPropagation(); hideQuotaCards([cardHideKey(q)], false); };
+    r.append(who, b);
+    hl.append(r);
+  }
+}
+// hideQuotaCards hides cards from the Overview, or has them back: drawn at
+// once, put back if the save fails
+async function hideQuotaCards(keys, hide) {
+  const prev = state.settings || {};
+  const cur = (prev.usageCardsHidden || []).filter((k) => !keys.includes(k));
+  const cardsHidden = hide ? [...cur, ...keys] : cur;
+  usagePeek = "";
+  state.settings = { ...prev, usageCardsHidden: cardsHidden };
+  const again = () => {
+    renderQuotas();
+    // the keyboard stays near: on the hidden line, or the card put back
+    const to = $("#quotaHid .us-hidline");
+    (hide && to && !to.closest("[hidden]") ? to : null)?.focus({ preventScroll: true });
+  };
+  again();
+  try {
+    const s = await api("usage/arrange", { cardsHidden });
+    state.settings = { ...state.settings, usageCardsHidden: s.usageCardsHidden || [] };
+  } catch (e) {
+    state.settings = prev;
+    again();
+    status(e.message, "err");
+  }
+}
+
 // ---------- requests ----------
 //
 // The ledger: every request of the period, one row each, newest first —
@@ -822,6 +957,7 @@ async function hideUsageAgent(id, hide) {
 // server pages it (/api/usage/requests) and saves it whole as CSV.
 
 let ledger = null; // the page shown: { rows, offset, total, agents, …totals }
+let ledgerWant = ""; // the ledParams it was read with
 let ledOffset = 0, ledPurpose = "", ledAgent = "", ledProvider = "", ledAccount = "", ledCallerKey = "", ledFailed = false, ledRetried = false, ledQuery = "", ledModel = "", ledRoute = 0, ledComputer = "", ledDay = "", ledVia = "";
 
 const LED_PAGE = 100;
@@ -936,7 +1072,11 @@ function ledRead(kind, path, want) {
 }
 const ledAborted = (e) => e?.name === "AbortError";
 
-// quiet: a refresh while it's looked at, redrawn only on a change
+// quiet: a refresh while it's looked at, redrawn only on a change.
+// "open": the page opened again on the rows it showed (#4064, xisdumpling):
+// they stay as they are while read, are drawn again only on a change, and
+// that redraw (a hundred rows, their chart and heatmap) waits for the
+// sidebar to settle on the page, not stopping it halfway
 async function loadLedger(quiet) {
   if (!ledger && !quiet) renderLedgerLoading();
   // a pick over rows shown: they stay, dimmed, till its answer comes, so
@@ -955,8 +1095,23 @@ async function loadLedger(quiet) {
   if (want !== ledParams({ offset: ledOffset, limit: LED_PAGE })) return; // another page or filter was picked meanwhile
   ledPending(false);
   if (quiet && JSON.stringify(l) === JSON.stringify(ledger)) return;
+  if (quiet === "open") {
+    const was = ledger;
+    await navSettled();
+    if (ledger !== was || want !== ledParams({ offset: ledOffset, limit: LED_PAGE })) return; // read again or drawn meanwhile
+  }
   ledger = l;
+  ledgerWant = want;
   if (view === "usage" && usageTab === "requests") renderLedger();
+}
+// navSettled: the sidebar's move to a page opened (navTopStep's spring,
+// navSubEnter's tabs coming in) has run its course, or 700ms have passed
+function navSettled() {
+  const until = performance.now() + 700;
+  return new Promise((done) => {
+    const look = () => performance.now() < until && (window.navTop?.raf || document.querySelector("#nav .nav-sub.moving")) ? requestAnimationFrame(look) : done();
+    look();
+  });
 }
 
 function ledPending(on) {
@@ -1686,6 +1841,10 @@ new ResizeObserver(() => {
   ledFitFrame = requestAnimationFrame(() => {
     ledFitFrame = 0;
     const wrap = $("#ledWrap");
+    // out of sight it has no width: what was fit stays, so the page shown
+    // again at the width it had fits nothing again (#4064: each fit of a
+    // hundred rows restyles them twice and lays them out)
+    if (!wrap.clientWidth) return;
     wrap.style.setProperty("--ledw", wrap.clientWidth + "px");
     if (wrap.clientWidth !== ledFitW) { ledFitW = wrap.clientWidth; ledFit(); }
     ledHScroll();
@@ -2115,6 +2274,10 @@ function renderLedger() {
     // one that tested the provider (the editor's Test, Detect APIs, a model
     // list) is counted nowhere, and says so (neiko on Discord)
     const probe = r.source === "probe";
+    // an agent's call to a tool of magpie's MCP servers (ferock on Discord)
+    const mcp = r.source === "mcp";
+    // magpie's ask of a search API, for a search an agent's model made (cybercaius on Discord)
+    const search = r.source === "search";
     if (r.agent === "magpie") {
       const own = ownBadge();
       if (probe) own.title = probeWhy();
@@ -2130,7 +2293,10 @@ function renderLedger() {
     // resolved to a provider's name, which would promote an unknown request
     // to an official provider — and the row keeps saying it is a local
     // session. A row whose file names none says only that.
-    const where = local ? (r.session_account || r.session_provider || t("Local session")) : t(r.providerName) + (r.host ? " · " + r.host : "");
+    const where = local ? (r.session_account || r.session_provider || t("Local session"))
+      : mcp ? [r.providerName && t(r.providerName), r.host].filter(Boolean).join(" · ") || "—"
+      : search ? [r.providerName && t(r.providerName), r.host, r.providerKeyName].filter(Boolean).join(" · ") || "—"
+      : t(r.providerName) + (r.host ? " · " + r.host : "");
     const wc = td(el("div", "where-name", where), "where", where);
     const badges = el("div", "source-badges");
     if (local && r.session_account && r.session_official_login) {
@@ -2166,6 +2332,17 @@ function renderLedger() {
     if (probe) {
       const k = el("span", "src probe", window.kindName ? window.kindName(r.kind) : r.kind);
       k.title = probeWhy();
+      badges.append(k);
+    }
+    if (mcp) {
+      const k = el("span", "src mcp", "MCP");
+      k.title = t("{agent} called the tool {tool} of magpie's MCP server {server}. Its arguments are not kept, and it is not counted in any total: the model requests it made are rows of their own.", { agent: name, tool: r.req || "—", server: r.host || "magpie" });
+      badges.append(k);
+    }
+    if (search) {
+      // a search API's, or a plan's own search service's (r.provider)
+      const k = el("span", "src search", t(r.provider ? "Web search" : "Search API"));
+      k.title = t("magpie asked {api} to search the web for {agent}. The query is not kept, and it is not counted in any total.", { api: r.req || "—", agent: name });
       badges.append(k);
     }
     if (badges.childElementCount) wc.append(badges);
@@ -2215,7 +2392,7 @@ function renderLedger() {
     const st = el("span", "st");
     // a status when the gateway logged the call; a session file has none,
     // and says only whether it went well
-    let word = r.status ? String(r.status) : r.source === "log" ? (bad ? r.err_type || t("Failed") : t("Succeeded")) : "—";
+    let word = r.status ? String(r.status) : r.source === "log" || mcp || search ? (bad ? r.err_type || t("Failed") : t("Succeeded")) : "—";
     if (r.status && bad && r.err_type) word += " · " + r.err_type;
     if (r.handed_on) word += " · " + t("handed on");
     else if (r.tries > 1) word += " · " + t("{n} tries", { n: r.tries });
@@ -2804,11 +2981,13 @@ function renderSessions() {
   // the agent filter is a menu, as the model and folder ones beside it: a
   // strip of a segment per agent ran past the window with a dozen of them
   // in range, and scrolled sideways to reach the last
-  const agents = [...new Map([...all.map((s) => [s.agent, s.name]), ...Object.entries(st.agents || {})]).entries()];
+  // a session is under the agent it ran in: s.app, when its files are
+  // another's (Claude Desktop's Code tab's, in Claude Code's folder)
+  const agents = [...new Map([...all.map((s) => [s.app || s.agent, s.name]), ...Object.entries(st.agents || {})]).entries()];
   if (sessAgent !== "all" && !agents.some(([id]) => id === sessAgent)) sessAgent = "all";
 
   // the model and folder filters offer what the range has, under the other filters
-  const byAgent = (x) => sessAgent === "all" || x.agent === sessAgent;
+  const byAgent = (x) => sessAgent === "all" || (x.app || x.agent) === sessAgent;
   const byModel = (x) => !sessModel || x.model === sessModel;
   const byFolder = (x) => !sessFolder || x.cwd === sessFolder;
   const spent = (list, key) => {
@@ -3312,7 +3491,7 @@ function renderSessTop() {
   const list = ov.top?.[sessTopBy] || [];
   const body = el("div", "sess-tops");
   if (!list.length) body.append(el("div", "sess-none", ov.top ? t("Nothing in this range.") : "…"));
-  const icons = new Map((sessions?.sessions || []).map((s) => [s.agent, s.icon]));
+  const icons = new Map((sessions?.sessions || []).map((s) => [s.app || s.agent, s.icon]));
   const names = sessStats?.agents || {};
   for (const s of list) {
     const open = sessTopOpen === s.key;
@@ -3822,6 +4001,7 @@ if (mode === "window" && params.get("view") === "usage") {
   const per = params.get("period");
   if (PERIODS.some(([id]) => id === per)) period = per;
   quotaFocus = usageTab === "usage" ? (params.get("card") || params.get("provider") || "") : "";
+  usagePeek = quotaFocus;
   quotaFocusUntil = performance.now() + 5000;
   ledProvider = params.get("provider") || "";
   ledAgent = params.get("agent") || "";

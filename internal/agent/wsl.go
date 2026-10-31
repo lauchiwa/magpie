@@ -1296,6 +1296,20 @@ func wslRemember(name, key, v string) {
 	wsl.dirty = true
 }
 
+// WSLKeep has magpie remember v under key for the WSL distro name, in
+// wsl.json beside what its probe found, for while the distro is stopped:
+// what another package learnt of the distro's files while it ran (the
+// library's places for each agent there), which it can't read again then
+// without starting it (#3896). Nothing is kept for a distro never found.
+func WSLKeep(name, key, v string) {
+	wslRemember(name, key, v)
+	wslSave()
+}
+
+// WSLKept is what WSLKeep last kept under key for the distro; "" for
+// nothing.
+func WSLKept(name, key string) string { return wslLastSeen(name, key) }
+
 func wslLastSeen(name, key string) string {
 	wsl.Lock()
 	defer wsl.Unlock()
@@ -1332,7 +1346,7 @@ func wslReady(kind string) []distro {
 func wslClaudeStandIn(model string) string {
 	for _, d := range wslReady("claude") {
 		path := filepath.Join(d.local(d.Home), ".claude", "settings.json")
-		if m := claudeStandInAt(path, model, d.base()); m != "" {
+		if m := claudeStandInAt(d.place("claude@wsl:"+d.Name), path, model); m != "" {
 			return m
 		}
 	}
