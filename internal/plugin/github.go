@@ -45,7 +45,7 @@ type Tagged struct {
 	// it as, its version, and whether it is gateway middleware or an agent
 	Package string `json:"package,omitempty"`
 	Version string `json:"version,omitempty"`
-	Kind    string `json:"kind,omitempty"` // "middleware", "agent" or "page" when that is all it is
+	Kind    string `json:"kind,omitempty"` // "middleware", "agent", "page" or "hooks" when that is all it is
 	// its package.json's magpie.icon, as an installed plugin gives its
 	// provider one: an https URL or a data:image URI, as it is written
 	Icon string `json:"icon,omitempty"`
@@ -407,6 +407,7 @@ func readTagged(pc context.Context, t Tagged, branch string) (Tagged, bool, bool
 		Magpie  struct {
 			Middleware string `json:"middleware"`
 			Agent      string `json:"agent"`
+			Hooks      string `json:"hooks"`
 			Icon       string `json:"icon"`
 			Page       struct {
 				File string `json:"file"`
@@ -436,12 +437,17 @@ func readTagged(pc context.Context, t Tagged, branch string) (Tagged, bool, bool
 			t.Kind = "agent"
 		case strings.TrimSpace(pj.Magpie.Page.File) != "":
 			t.Kind = "page"
+		// gateway hooks alone (magpie.hooks) need no entry of their
+		// own, as the host loads them: the hooks file is the one to
+		// find (#3821)
+		case strings.TrimSpace(pj.Magpie.Hooks) != "":
+			t.Kind = "hooks"
 		}
 	}
 	// published to npm from this repository: npm's copy is the one
 	// built to be installed (a repository often leaves its dist out,
 	// built only to publish), so it is installed from npm
-	b, err := fetchJSON(pc, npmRegistry+"/"+npmPath(pj.Name)+"/latest", 1<<20)
+	b, err := fetchNPM(pc, pj.Name, "/"+npmPath(pj.Name)+"/latest", 1<<20)
 	known := err == nil || errors.Is(err, errNotFound)
 	var unknown error
 	if !known {
@@ -471,6 +477,8 @@ func readTagged(pc context.Context, t Tagged, branch string) (Tagged, bool, bool
 			entry = pj.Magpie.Agent
 		} else if t.Kind == "page" {
 			entry = pj.Magpie.Page.File
+		} else if t.Kind == "hooks" {
+			entry = pj.Magpie.Hooks
 		} else if t.Kind != "middleware" {
 			entry = pkgEntry(pj.Exports, pj.Main)
 			if !IsGit(t.Spec) {

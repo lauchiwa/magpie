@@ -137,6 +137,7 @@ for (const engine of engines) {
         const context = await browser.newContext({ viewport: { width: 360, height: 760 }, isMobile: engine === "chromium", hasTouch: true, reducedMotion: "reduce" });
         const page = await context.newPage();
         page.setDefaultTimeout(6000);
+        page.setDefaultNavigationTimeout(60000);
         await page.route("**/*", serve(lang));
         // the load has room of its own, not the 6s each step has: alone a
         // page loads in ~1.5s in WebKit, with four WebKits at once in up to

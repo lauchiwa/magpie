@@ -122,9 +122,13 @@ type Route struct {
 	Queued  int64 `json:"queued,omitempty"`
 	// Phase: "redact" while it is being masked and not yet done
 	// (noteRedacting), so its row says masking rather than routing;
-	// Masking: the ms of Own that went on masking it (maskingMs)
+	// Masking: the ms of Own that went on masking it, all of it when Own
+	// is unknown (maskingMs)
 	Phase   string `json:"phase,omitempty"`
 	Masking int64  `json:"masking,omitempty"`
+	// Held: the file name, in HeldDir, of the report saved of a request
+	// magpie held too long before routing it and stopped (giveUp)
+	Held string `json:"held,omitempty"`
 	// Served: the model the reply says answered, as the last try has it;
 	// Swapped: another than the one that try asked for; Routed: that try
 	// asked another magpie's routing group, and Served is its member
@@ -236,6 +240,16 @@ func groupRef(g provider.Group, ms []provider.Member) *GroupRef {
 	return ref
 }
 
+// SeatPrice is what a weighed one's model costs on it at the request's
+// time, as Cheapest first went by it: a million tokens each, in the
+// catalog's dollars, Peak when that is its vendor's peak-hour price.
+type SeatPrice struct {
+	Input     float64 `json:"input"`
+	Output    float64 `json:"output"`
+	CacheRead float64 `json:"cacheRead,omitempty"`
+	Peak      bool    `json:"peak,omitempty"`
+}
+
 // Weighed is one account or key as routing weighed it.
 type Weighed struct {
 	ID       string  `json:"id"` // what rests after a failure
@@ -271,6 +285,7 @@ type Weighed struct {
 	Free     bool              `json:"free,omitempty"`     // its model costs nothing there (free first)
 	LateTTFT float64           `json:"lateTtft,omitempty"` // speed first: its ms to the first token lately, 0 if not measured (speed.go)
 	LateTPS  float64           `json:"lateTps,omitempty"`  // speed first: its tokens a second lately, 0 if not told
+	Price    *SeatPrice        `json:"price,omitempty"`    // cheapest first: what its model costs on it now, nil if not known
 	Turn     bool              `json:"turn,omitempty"`     // in turn: it was this one's turn
 	Fit      int               `json:"fit,omitempty"`      // keyFit
 	Speaks   provider.Protocol `json:"speaks,omitempty"`   // a key made for one protocol only
@@ -352,6 +367,10 @@ type Try struct {
 	// first text, when it streamed any (#196)
 	TTFT      int64 `json:"ttft,omitempty"`
 	FirstText int64 `json:"firstText,omitempty"`
+	// SentBy: what sent its request to the vendor when magpie's own
+	// client didn't, so it has no Net and the Routing page says why
+	// (sentBy)
+	SentBy string `json:"sentBy,omitempty"`
 	// FirstReasoning is the start of paced visible reasoning, absent for hidden reasoning.
 	FirstReasoning  int64 `json:"firstReasoning,omitempty"`
 	ReasoningHidden bool  `json:"reasoningHidden,omitempty"`
@@ -494,6 +513,9 @@ func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from 
 	}
 	if sp, ok := wg.speed[c.restID()]; ok {
 		w.LateTTFT, w.LateTPS = math.Round(sp[0]), math.Round(sp[1]*10)/10
+	}
+	if pr, ok := wg.price[c.restID()]; ok {
+		w.Price = &SeatPrice{Input: pr.in, Output: pr.out, CacheRead: pr.cache, Peak: pr.peak}
 	}
 	if sinks(p.Sink, p.Routing) {
 		markSunk(&w, c)

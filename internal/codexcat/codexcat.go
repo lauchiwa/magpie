@@ -150,10 +150,19 @@ type model struct {
 	} `json:"truncation_policy"`
 	Tools      []string `json:"experimental_supported_tools"`
 	Modalities []string `json:"input_modalities"`
-	Context    *int     `json:"context_window,omitempty"`
-	// the model's whole window when Context is the working one
-	// (settings.Working): Codex's model_context_window may raise it
-	// that far, as it does OpenAI's own models'
+	// the model's whole window, which Codex shows (95% of it) as the
+	// context the conversation has
+	Context *int `json:"context_window,omitempty"`
+	// where Codex compacts the conversation when that is before the
+	// window: the threshold set on the model or its provider, else
+	// Long conversations' (settings.Working). Codex compacts at the
+	// lesser of this and 90% of Context, and a
+	// model_auto_compact_token_limit the user put in config.toml comes
+	// before it. Until 10-30 the threshold went in Context, so a 1M
+	// model showed 258K in Codex (01huadalang on Discord).
+	AutoCompact *int `json:"auto_compact_token_limit,omitempty"`
+	// never written now; kept a field so it is one magpie owns, and
+	// Keep doesn't carry an old catalog's over
 	MaxContext *int   `json:"max_context_window,omitempty"`
 	Tiers      []tier `json:"service_tiers"`
 	// Without the search, Codex puts every MCP tool's schema (a
@@ -194,6 +203,28 @@ type model struct {
 	// the model Codex's auto-review runs on, settings.CodexAutoReview
 	// (see AutoReview)
 	AutoReview string `json:"auto_review_model_override,omitempty"`
+	// "none" on a DeepSeek model, as DeepSeek's own Codex setup says (see
+	// deepSeek); Codex's default, auto, otherwise, where a value the user
+	// put in by hand stays (Keep).
+	Summary string `json:"default_reasoning_summary,omitempty" keep:"unset"`
+	// Codex may send an image at its original detail: on a DeepSeek model
+	// that takes images, as DeepSeek's setup says. A true the user put in
+	// stays (Keep).
+	DetailOriginal bool `json:"supports_image_detail_original,omitempty" keep:"true"`
+}
+
+// deepSeekModel is a DeepSeek model of the V4 line on any host
+// (deepseek/deepseek-v4-pro, a relay's deepseek-ai/deepseek-v4-pro-0813,
+// DeepSeek's own deepseek-flash, a found auto/deepseek-flash), named by
+// the model's own id after its provider's. A routing group is not one: it
+// may hand the turn to any model.
+var deepSeekModel = regexp.MustCompile(`(?i)^deepseek-(v[4-9]|v\d\d|flash|pro|chat|reasoner)`)
+
+func deepSeek(id string) bool {
+	if strings.HasPrefix(id, "group/") {
+		return false
+	}
+	return deepSeekModel.MatchString(id[strings.LastIndex(id, "/")+1:])
 }
 
 // Entries renders models as models.json entries, ranked after the first
@@ -270,17 +301,40 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 		}
 		if c := m.Context; c > 0 {
 			// the model's or its provider's threshold, else the one for
-			// every model (#876); one at or above c is its whole window
+			// every model (#876); one at or above c is its whole window.
+			// A DeepSeek model too, though DeepSeek's own Codex setup
+			// compacts at none of its 1M: magpie's 272K came of a
+			// DeepSeek report (e950eb080: turns of ~550K waited 70-90s
+			// for a first token), and Full window or the model's own
+			// Compact at gives it the whole window
 			w := work.Working(c)
 			if m.Compact > 0 {
 				w = min(c, m.Compact)
 			}
-			e.Context = &w
+			e.Context = &c
 			if w < c {
-				e.MaxContext = &c
+				e.AutoCompact = &w
 			}
 		}
 		e.Truncation.Mode, e.Truncation.Limit = "tokens", 10000
+		if deepSeek(m.ID) {
+			// as DeepSeek's own Codex setup has its models (its
+			// models.json; Rollkey8 on X): shell_command, the one-shot
+			// shell tool of a Codex before 0.16x (0.165 reads it as
+			// unified_exec, its only one); low verbosity;
+			// no reasoning summary asked for (DeepSeek streams its
+			// reasoning as text); Codex's agents in V2; an image at its
+			// original detail. Its prompt (base_instructions) is not
+			// taken: magpie never rewrites a model's Codex prompt.
+			e.Shell = "shell_command"
+			low := "low"
+			e.Verbosity, e.DefVerbosity = true, &low
+			e.Summary = "none"
+			if e.MultiAgent == "" {
+				e.MultiAgent = "v2"
+			}
+			e.DetailOriginal = m.Images
+		}
 		for _, ef := range m.Efforts {
 			e.Efforts = append(e.Efforts, level{Effort: ef})
 		}
@@ -298,7 +352,9 @@ func entriesAt(ms []catalog.Model, after int, effort string) []any {
 // owned are the keys of an entry magpie writes, or leaves out on purpose:
 // every field of model, and the two ownEntry takes out of Codex's own.
 // keepTrue are those of them where a true the user set by hand stays over
-// magpie's false (keep:"true").
+// magpie's false (keep:"true"). A field tagged keep:"unset" is not owned:
+// written on some models only, the user's own on the rest stays, as
+// before magpie wrote it anywhere.
 var owned, keepTrue = func() (own, yes map[string]bool) {
 	own = map[string]bool{"availability_nux": true, "upgrade": true}
 	yes = map[string]bool{}
@@ -310,8 +366,11 @@ var owned, keepTrue = func() (own, yes map[string]bool) {
 			continue
 		}
 		own[name] = true
-		if f.Tag.Get("keep") == "true" {
+		switch f.Tag.Get("keep") {
+		case "true":
 			yes[name] = true
+		case "unset":
+			delete(own, name)
 		}
 	}
 	return own, yes
@@ -897,7 +956,7 @@ func listedEntry(m catalog.Model, priority int, work settings.Settings, autoRevi
 			w = work.Working(c)
 		}
 		if w < c {
-			e["context_window"] = w
+			e["auto_compact_token_limit"] = w
 		}
 	}
 	// the levels, where the user's differ from the vendor's: those the
@@ -983,6 +1042,7 @@ func Window(e map[string]any, n, most int) {
 // Tag names a list of magpie's models: another list, another tag.
 func Tag(ms []catalog.Model) string {
 	b, _ := json.Marshal(ms)
+	b = append(b, catalogFormat...)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:6])
 }
@@ -996,6 +1056,12 @@ func UsedTag(used []string) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:6])
 }
+
+// catalogFormat changes when the entries made of the same models change
+// shape, so a Codex holding the list magpie gave before asks again: v2 put
+// the window in context_window and the threshold in
+// auto_compact_token_limit (10-30).
+const catalogFormat = "v2"
 
 // tagMark is where a tag starts in an ETag magpie made.
 const tagMark = "+magpie-"
