@@ -220,6 +220,28 @@ every 5s, reading `MCPHub` while a later test set it, and the macOS Race
 step went red in `TestHubMCPOff`. Drop the file when upstream's
 `keepHubPruned` is waited for or reads `MCPHub` under a lock.
 
+`readonly_fork_test.go` puts the fork's identity capture routes in
+`readOnlyRefused`: `TestReadOnlyKeyEveryRoute` asks every route to be
+classified, and those routes are the fork's.
+
+v0.1.2310 was red on upstream's own CI, so the sync carries `fork:` lines in
+upstream files that are fixes, not fork features. Drop each one when upstream
+fixes the same thing, and take upstream's version:
+- `internal/claudetui/child_unix.go` starts Claude Code with `proc.Command`
+  (`TestNoCommandBypassesProc`).
+- `settings_keep_test.go` sets `SearchAll`, which upstream added and left out
+  of the test.
+- `warm_turns_test.go`: the page asks only once the warm-up step has its turn
+  (`TestColdTurnsTaken`).
+- `lody_test.go` gives two more tests an `APPDATA` of their own (Windows).
+- `tool_args_cr_test.go` doesn't apply its 8s bound under `-race`
+  (`raceOn`). Upstream's Race step never ran it, because its Test step was
+  red.
+- `unrouted.go`'s `giveUp` takes the held report before the 504. The 504 says
+  `Connection: close`, and the client leaving ended the wait the report was
+  meant to show (`TestUnroutedHeldReportSaved`). This is the one fix in
+  production code.
+
 The sync PR records each item below as checked, with what was run:
 
 - **The whole suite.** `go test -tags nogui ./...` and the GUI suite in
