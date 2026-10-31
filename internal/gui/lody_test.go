@@ -211,7 +211,8 @@ func TestLodyImportRunsLodyOnLinux(t *testing.T) {
 // Cindy's database that can't be read leaves its row's added out, as
 // unknown: the window never says "Not added" for what it couldn't read.
 func TestImportStatusUnreadableIsUnknown(t *testing.T) {
-	sandboxHome(t)
+	home := sandboxHome(t)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming")) // fork: as TestLodyImportHandoff, for os.UserConfigDir on Windows
 	cfg, err := os.UserConfigDir()
 	if err != nil {
 		t.Fatal(err)
@@ -238,7 +239,8 @@ func TestImportStatusUnreadableIsUnknown(t *testing.T) {
 // aionui:// link; with AionUi's folder and no database yet it says not
 // added, and with a database it can't read it says nothing.
 func TestAionUiImportRow(t *testing.T) {
-	sandboxHome(t)
+	home := sandboxHome(t)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming")) // fork: as TestLodyImportHandoff, for os.UserConfigDir on Windows
 	cfg, err := os.UserConfigDir()
 	if err != nil {
 		t.Fatal(err)
