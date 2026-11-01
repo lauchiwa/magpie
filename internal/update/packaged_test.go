@@ -3,6 +3,7 @@ package update
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -77,7 +78,13 @@ func TestPackagedByDpkg(t *testing.T) {
 	root := t.TempDir()
 	info := filepath.Join(root, "var/lib/dpkg/info")
 	writeFile(t, filepath.Join(info, "coreutils.list"), "/.\n/bin\n/bin/ls\n")
-	writeFile(t, filepath.Join(info, "magpie:amd64.list"), "/.\n/usr\n/usr/bin\n/usr/bin/magpie\n")
+	// fork: NTFS takes a colon for a stream name, so "magpie:amd64.list" is
+	// a file named "magpie" there; Windows gets the name without its arch
+	list := "magpie:amd64.list"
+	if runtime.GOOS == "windows" {
+		list = "magpie.list"
+	}
+	writeFile(t, filepath.Join(info, list), "/.\n/usr\n/usr/bin\n/usr/bin/magpie\n")
 	p := packagedIn(root, "linux", "/usr/bin/magpie")
 	if p == nil || p.Manager != "dpkg" || p.Package != "magpie" || p.Name() != "apt" || p.Command() != "sudo apt install --only-upgrade magpie" {
 		t.Fatalf("%+v", p)
