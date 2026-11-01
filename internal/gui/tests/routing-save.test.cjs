@@ -78,6 +78,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const open = async () => {
           await page.locator(".row.provider", { hasText: p.name }).first().click();
           await page.locator(".editor .accts").first().waitFor();
+          // the editor is drawn again when the accounts' allowance comes in
+          // (loginUsageOf), so what the clicks below redraw is judged after it
+          await page.waitForFunction(() => Object.values(loginUsage).every((u) => u.at && !u.loading));
+          await page.locator(".editor .accts").first().waitFor();
         };
         // the field under a label: the label's next sibling
         const fieldOf = (label) => page.locator(".editor label", { hasText: new RegExp(`^${label}$`) }).locator("xpath=following-sibling::div[1]");
