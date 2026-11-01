@@ -111,7 +111,7 @@ func zcode(home string) *Agent {
 					return err
 				}
 				if v == "" {
-					if _, ok := stashLoad()[zcodeSearchedKey]; ok {
+					if _, ok := stashShared()[zcodeSearchedKey]; ok {
 						forget(zcodeSearchedKey)
 					}
 					return edit.DelJSON(path, key)
@@ -131,7 +131,7 @@ func zcode(home string) *Agent {
 func zcodeProviderJSON(path string, keep bool) any {
 	was := zcodeVariants(path)
 	ms := map[string]any{}
-	for _, m := range magpieModels("zcode") {
+	for _, m := range sharedModels("zcode") {
 		window := m.Context
 		if window == 0 {
 			window = 200000
@@ -441,7 +441,7 @@ func zcodeRules(path string, on, keep bool) error {
 		format := zcodeFormat(filepath.Dir(path))
 		searched, known := zcodeSearched()
 		var ids []string
-		for _, m := range magpieModels("zcode") {
+		for _, m := range sharedModels("zcode") {
 			ids = append(ids, m.ID)
 			if byHand[m.ID] {
 				// set by hand in ZCode: its own settings, and the default
@@ -613,7 +613,7 @@ func zcodeSearchedPut(searched map[string]bool, ids []string) {
 		}
 	}
 	v := strings.Join(keep, "\n")
-	if stashLoad()[zcodeSearchedKey] != v {
+	if stashShared()[zcodeSearchedKey] != v {
 		stash(map[string]string{zcodeSearchedKey: v})
 	}
 }

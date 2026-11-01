@@ -110,7 +110,7 @@ func heatSettledKey(d heatDiskRef, cut, since time.Time, f Filter, identities ma
 	f.Zone = nil
 	h := sha256.New()
 	fmt.Fprintf(h, "heat-v1\x00%s\x00%s\x00%s\x00%d\x00%d\x00%s\x00%#v\x00%s\x00%d:%d:%d\x00",
-		sessions.CallCacheVersion+"\x00"+settledCountVersion, d.root, d.meta, cut.UnixNano(), since.UnixNano(), cut.Location(), f, zone, before.n, before.at, before.tokens)
+		sessions.CallCacheVersion()+"\x00"+settledCountVersion, d.root, d.meta, cut.UnixNano(), since.UnixNano(), cut.Location(), f, zone, before.n, before.at, before.tokens)
 	hashCodexIdentities(h, identities)
 	var b []byte
 	rows := lentRows()

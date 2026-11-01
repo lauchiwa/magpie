@@ -225,34 +225,46 @@ func pluginLogins(pp plugin.Provider) []pluginLogin {
 	}
 	labels := pluginLabels(pp, named)
 	loginsMu.Lock()
-	ls := readLogins()
+	// looked at as kept, and copied only at the first change: nearly
+	// every list changes nothing, and a page's state lists each plugin's
+	ls := sharedLogins()
 	changed := false
 	have := map[string]bool{}
-	keep := ls[:0]
-	for _, l := range ls {
+	var keep []savedLogin
+	for i, l := range ls {
+		drop, edit := false, false
 		if l.Agent == agent {
 			if _, ok := byKey[l.Home]; !ok || have[l.Home] {
-				changed = true // signed out, or listed twice
-				continue
-			}
-			have[l.Home] = true
-			renamed := l.User != labels[l.Home]
-			if renamed {
-				l.User, changed = labels[l.Home], true
-			}
-			// the agent's own, hidden, shows again once the agent signs
-			// in anew: told by its sign-in's mark, else by another account
-			if l.Hidden != "" && own[l.Home] && (mark != "" && mark != l.Hidden || mark == "" && l.Hidden == hiddenNoMark && renamed) {
-				l.Hidden, changed = "", true
+				drop = true // signed out, or listed twice
+			} else {
+				have[l.Home] = true
+				renamed := l.User != labels[l.Home]
+				if renamed {
+					l.User, edit = labels[l.Home], true
+				}
+				// the agent's own, hidden, shows again once the agent signs
+				// in anew: told by its sign-in's mark, else by another account
+				if l.Hidden != "" && own[l.Home] && (mark != "" && mark != l.Hidden || mark == "" && l.Hidden == hiddenNoMark && renamed) {
+					l.Hidden, edit = "", true
+				}
 			}
 		}
-		keep = append(keep, l)
+		if (drop || edit) && !changed {
+			keep, changed = slices.Clone(ls[:i:i]), true
+		}
+		if changed && !drop {
+			keep = append(keep, l)
+		}
 	}
-	ls = keep
+	if changed {
+		ls = keep
+	}
 	for _, a := range pp.Accounts {
 		if !have[a.Key] {
+			if !changed {
+				ls, changed = slices.Clone(ls), true
+			}
 			ls = append(ls, savedLogin{Agent: agent, User: labels[a.Key], Home: a.Key, On: true, Seen: time.Now().UTC().Truncate(time.Second)})
-			changed = true
 		}
 	}
 	if changed {

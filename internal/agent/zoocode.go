@@ -232,7 +232,7 @@ func zooCodeProfiles(ref string) map[string]any {
 		"openAiBaseUrl": gatewayV1(), "openAiApiKey": agentKey("zoo-code"),
 		"openAiModelId": ref, "openAiStreamingEnabled": true,
 	}
-	for _, m := range magpieModels("zoo-code") {
+	for _, m := range sharedModels("zoo-code") {
 		if m.ID == ref {
 			p["openAiCustomModelInfo"] = zooCodeModelInfo(m)
 			break

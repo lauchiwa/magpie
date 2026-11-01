@@ -45,14 +45,14 @@ func kimiDir(at place) (dir string, legacy bool) {
 	if d := at.getenv("KIMI_CODE_HOME"); d != "" {
 		return d, false
 	}
-	code := filepath.Join(at.home, ".kimi-code")
+	code := at.join(".kimi-code")
 	if at.isDir(code) {
 		return code, false
 	}
 	if d := at.getenv("KIMI_SHARE_DIR"); d != "" {
 		return d, true
 	}
-	if d := filepath.Join(at.home, ".kimi"); at.isDir(d) {
+	if d := at.join(".kimi"); at.isDir(d) {
 		return d, true
 	}
 	return code, false
@@ -66,7 +66,7 @@ func kimiModelTables(path string, legacy bool, wrote map[string]map[string]strin
 	var out []edit.Table
 	now := map[string]map[string]string{}
 	names, _ := edit.TOMLTables(path)
-	for _, m := range magpieModels("kimi") {
+	for _, m := range sharedModels("kimi") {
 		name := "models." + strconv.Quote(magpieID+"/"+m.ID)
 		ctx := m.Context
 		if ctx <= 0 {
@@ -177,7 +177,7 @@ func kimiWroteKey(path string) string { return "kimi:" + path + ":wrote" }
 
 func kimiWrote(path string) map[string]map[string]string {
 	out := map[string]map[string]string{}
-	if v := stashLoad()[kimiWroteKey(path)]; v != "" {
+	if v := stashShared()[kimiWroteKey(path)]; v != "" {
 		json.Unmarshal([]byte(v), &out)
 	}
 	return out
@@ -309,7 +309,7 @@ func kimiIn(at place) *Agent {
 		},
 		Notice: func() string {
 			if Running(`(^|/)kimi( |$)`, `(^|/)kimi-cli( |$)`) {
-				return noticeKimi.String()
+				return kimiNotice(legacy).String()
 			}
 			return ""
 		},
@@ -361,7 +361,7 @@ func kimiIn(at place) *Agent {
 				return dropMagpie()
 			},
 			Options: func(cur map[string]string) []Option {
-				return append(kimiOwnOptions(path, cur["model"]), viaMagpie("kimi", magpieID+"/")...)
+				return withVia(kimiOwnOptions(path, cur["model"]), "kimi", magpieID+"/")
 			},
 		}},
 	}, path)
@@ -424,7 +424,31 @@ func kimiModelTableForKey(path, key string) (map[string]string, error) {
 	return nil, nil
 }
 
-// what kimi says after a change (notice.go)
+// what kimi says after a change (notice.go). kimi-cli reads config.toml at
+// start-up. Kimi Code 2.x watches it and reloads it, so an open session takes
+// new models at once, but the model picker of its web and desktop app is
+// read again only when Settings › Providers is opened again (jiabubu: a
+// stale picker's pick said "is not configured in config.toml").
 var (
-	noticeKimi = newNotice("Kimi Code reads its settings at start-up — restart open kimi sessions to use this.")
+	noticeKimi        = newNotice("Kimi Code reads its settings at start-up — restart open kimi sessions to use this.")
+	noticeKimiCode    = newNotice("Kimi Code reads this as it runs; in its web or desktop app, reopen Settings › Providers or reload the page to see new models.")
+	noticeWSLKimi     = newNotice("{agent} in WSL {distro} reads its settings at start-up — restart open kimi sessions to use this.")
+	noticeWSLKimiCode = newNotice("{agent} in WSL {distro} reads this as it runs; in its web or desktop app, reopen Settings › Providers or reload the page to see new models.")
 )
+
+// kimiNotice is the advice after a change for kimi-cli (legacy) or Kimi
+// Code 2.x.
+func kimiNotice(legacy bool) notice {
+	if legacy {
+		return noticeKimi
+	}
+	return noticeKimiCode
+}
+
+// kimiWSLNotice is kimiNotice for Kimi in a WSL distro.
+func kimiWSLNotice(at place) notice {
+	if _, legacy := kimiDir(at); legacy {
+		return noticeWSLKimi
+	}
+	return noticeWSLKimiCode
+}

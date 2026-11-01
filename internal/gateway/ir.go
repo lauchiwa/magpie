@@ -171,7 +171,9 @@ type Tool struct {
 
 // Request is a call to a model, whichever API it arrived in.
 type Request struct {
-	// clientCache is non-nil only for the Claude bridge's explicit opt-in.
+	// clientCache is non-nil only for a request read with its client's
+	// marks: the Claude bridge's explicit opt-in, and a Messages ask
+	// translated to an Anthropic upstream (parseTranslated, #4571).
 	clientCache *clientCache
 	// leanPrompt has the Claude bridge give the caller's instructions as
 	// the run's system prompt, in place of Claude Code's (ClaudeLeanPrompt).
@@ -185,6 +187,8 @@ type Request struct {
 	// Code's environment as a {role: "system"} message), not in the
 	// caller's instructions (envTurnsNote).
 	envInTurns bool
+	// envDir: that working directory, as the caller names it.
+	envDir string
 	// envUnknown: the caller is on another computer (remoteCaller) and its
 	// instructions name no working directory, so the run's own prompt
 	// describes a machine no tool runs on, and nothing says which does
@@ -419,6 +423,10 @@ type Usage struct {
 	// cacheUnknown: the reply said its vendor counts no cache tokens
 	// (a plugin's magpie_cache_unknown), so a CacheRead of 0 is not a miss
 	cacheUnknown bool
+	// searches: the web searches the reply says its model ran with its
+	// provider's own tool (searchTally), for the request log's Web search
+	// rows; told nowhere else
+	searches int
 
 	Reasoning int `json:"reasoning"`
 	// Served: the model the vendor's reply says answered, when it named
@@ -498,6 +506,7 @@ func (u *Usage) add(v Usage) {
 	}
 	u.cacheCreationReported = u.cacheCreationReported || v.cacheCreationReported
 	u.cacheUnknown = u.cacheUnknown || v.cacheUnknown
+	u.searches = max(u.searches, v.searches)
 	if v.Reasoning > 0 {
 		u.Reasoning = v.Reasoning
 	}

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/filememo"
 )
 
@@ -26,7 +27,7 @@ import (
 
 // LivePath is where the fetched model list of one provider is kept.
 func LivePath(provider string) string {
-	return filepath.Join(filepath.Dir(CachePath()), "models", provider+".json")
+	return appdir.JoinFile(appdir.Join(filepath.Dir(CachePath()), "models"), provider, ".json")
 }
 
 type liveFile struct {
@@ -51,12 +52,34 @@ func readLive(provider string) (liveFile, error) {
 		if err := json.Unmarshal(b, &f); err != nil {
 			return f, err
 		}
+		mendKinds(f.Models)
+		for _, side := range f.Sides {
+			mendKinds(side)
+		}
 		f.byID = map[string][]Model{}
 		for _, m := range Chat(f.Models) {
 			f.byID[m.ID] = append(f.byID[m.ID], m)
 		}
 		return f, nil
 	})
+}
+
+// mendKinds reads a list saved before Kinds as Kinds reads it now: an
+// OpenCode Go list kept with media types ("image/jpeg") said its models
+// took no image until it was fetched again, so a model that sees is told
+// so from the first read after the update, not the next fetch.
+func mendKinds(ms []Model) {
+	for i := range ms {
+		m := &ms[i]
+		if m.InputModalities == nil {
+			continue
+		}
+		m.InputModalities, m.OutputModalities = Kinds(m.InputModalities), Kinds(m.OutputModalities)
+		if m.ImageInput != nil && !*m.ImageInput && slices.Contains(m.InputModalities, "image") {
+			yes := true
+			m.ImageInput, m.Images = &yes, true
+		}
+	}
 }
 
 // LiveByID are the models of Live with this id, in the list's order
@@ -68,6 +91,24 @@ func LiveByID(provider, model string) []Model {
 		return nil
 	}
 	return slices.Clone(f.byID[model])
+}
+
+// LiveByIDShared is LiveByID without the copy, for a caller that only
+// reads it: asked for a model's APIs, price or tiers for every model a
+// page lists, the copies were 32 MB of a live magpie's 2.6 GB in a minute
+// and a half.
+func LiveByIDShared(provider, model string) []Model {
+	f, err := readLive(provider)
+	if err != nil {
+		return nil
+	}
+	return slices.Clip(f.byID[model])
+}
+
+// LiveListed is whether Live lists any model, without the list copied.
+func LiveListed(provider string) bool {
+	f, err := readLive(provider)
+	return err == nil && len(f.byID) > 0
 }
 
 // Live returns the model list last fetched from the provider, if any: the
@@ -616,7 +657,8 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 		if name == "" {
 			name = id
 		}
-		input := imageInput(r.Modalities.Input)
+		ins, outs := Kinds(r.Modalities.Input), Kinds(r.Modalities.Output)
+		input := imageInput(ins)
 		apis := EndpointAPIs(r.Endpoints)
 		if native := EndpointAPIs(r.Native); len(native) > 0 {
 			apis = native
@@ -625,7 +667,7 @@ func fetchPage(ctx context.Context, url, key string, anthropic bool, headers map
 			apis = targetAPIs(r.TypeTarget)
 		}
 		m := Model{ID: id, Name: name, Plain: plain, ImageInput: input, APIs: apis, Draws: drawer, Films: films, Decides: decision,
-			InputModalities: r.Modalities.Input, OutputModalities: r.Modalities.Output}
+			InputModalities: ins, OutputModalities: outs}
 		if n, ok := r.ContextLength.(float64); ok && n > 0 {
 			m.Context = int(n)
 		}
@@ -792,6 +834,7 @@ func codexFacts(m *Model, r liveModel, raw json.RawMessage) {
 				in = append(in, s)
 			}
 		}
+		in = Kinds(in)
 		m.InputModalities, m.ImageInput = in, imageInput(in)
 		m.Images = *m.ImageInput
 	}

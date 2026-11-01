@@ -8,7 +8,9 @@
 // motion the light is there at once. Read from the pixels: the ink near
 // the pointer stands further off the ground than the word's far end, and
 // both ends turn when the pointer goes to the other end. Both engines,
-// light and dark, English and Chinese.
+// light and dark, English and Chinese. The sidebar's page rows (Providers,
+// Routing, Gateway…), Settings and the gateway's address under it are lit
+// the same way.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -21,7 +23,7 @@ function serve(lang, theme) {
   return async (route) => {
     const url = new URL(route.request().url());
     const json = (data) => route.fulfill({ json: data });
-    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:${JSON.stringify(lang)},theme:${JSON.stringify(theme)},web:false};` });
+    if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:${JSON.stringify(lang)},theme:${JSON.stringify(theme)},web:false,sideGateway:{url:"http://127.0.0.1:3425",running:true}};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
     if (url.pathname === "/api/state") return json({ agents: [], profiles: [], settings: { lang, theme } });
     if (url.pathname === "/api/settings") return json({ lang, theme, tray: "panel", version: "0.1.400", dir: "~/.config/magpie", gateway: "http://127.0.0.1:3425", lanURLs: [], visionModels: [], imageGenModels: [], workbuddyCheckins: [], redactWords: [] });
@@ -76,7 +78,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", serve(lang, theme));
       await page.goto("http://magpie.test/?view=settings");
       await page.waitForSelector(".nav-sub > .nav-s + .nav-s");
+      await page.mouse.move(40, 300); // over the sidebar, which loads the lamp
       await page.waitForFunction(() => document.documentElement.classList.contains("navlamp"));
+      await page.mouse.move(700, 500);
       await page.waitForTimeout(600); // the list's own unrolling
       let all = await words(page);
       assert(all.every((w) => !w.lit), "nothing lit before the pointer comes");
@@ -129,6 +133,81 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       const now = (await words(page))[long.i];
       assert(now.lit && now.si === 1, `lit at once with reduced motion: ${JSON.stringify(now)}`);
+      assert.deepEqual(errors, []);
+    });
+  });
+}
+
+// a page row's word (Providers, Routing…, Settings): its box, whether lit,
+// whether its page is open
+const tops = (page) => page.$$eval("#side :is(#nav > button[data-view], #prefs, #sideGw) > span", (all) => all.filter((s) => s.offsetWidth).map((s) => {
+  const b = s.getBoundingClientRect();
+  return { x: b.left, y: b.top, w: b.width, h: b.height, lit: s.classList.contains("lit"), on: s.parentElement.classList.contains("on"), id: s.parentElement.dataset.view || s.parentElement.id };
+}));
+
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(`${engine}: a page row in the sidebar is lit as by a torch`, async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    t.after(() => browser.close());
+    for (const theme of ["dark", "light"]) for (const lang of ["en", "zh"]) await t.test(`${theme} ${lang}`, async () => {
+      const context = await browser.newContext({ viewport: { width: 1024, height: 800 }, colorScheme: theme });
+      t.after(() => context.close());
+      const page = await context.newPage();
+      page.setDefaultTimeout(5000);
+      page.setDefaultNavigationTimeout(60000);
+      const errors = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+      await page.route("**/*", serve(lang, theme));
+      await page.goto("http://magpie.test/?view=agents");
+      await page.waitForSelector("body.side-nav #side #nav > button[data-view]");
+      await page.mouse.move(40, 300); // over the sidebar, which loads the lamp
+      await page.waitForFunction(() => document.documentElement.classList.contains("navlamp"));
+      await page.mouse.move(700, 500);
+      await page.waitForTimeout(400);
+      let all = await tops(page);
+      assert(all.length >= 5 && all.some((w) => w.id === "prefs") && all.some((w) => w.id === "sideGw"), `the page rows, Settings and the gateway's address: ${JSON.stringify(all.map((w) => w.id))}`);
+      assert(all.every((w) => !w.lit), "nothing lit before the pointer comes");
+      const at = (id) => all.findIndex((w) => w.id === id);
+      const lit = (i) => page.waitForFunction((i) => { const s = [...document.querySelectorAll("#side :is(#nav > button[data-view], #prefs, #sideGw) > span")].filter((s) => s.offsetWidth)[i]; return s.classList.contains("lit") && +s.style.getPropertyValue("--si") > 0.99; }, i);
+      const out = (i) => page.waitForFunction((i) => ![...document.querySelectorAll("#side :is(#nav > button[data-view], #prefs, #sideGw) > span")].filter((s) => s.offsetWidth)[i].classList.contains("lit"), i);
+      const pv = at("providers"), gw = at("gateway"), prefs = at("prefs"), word = all[pv];
+
+      // at the word's start, the start stands off the ground more than its end
+      await page.mouse.move(word.x + 2, word.y + word.h / 2);
+      await lit(pv);
+      await page.waitForTimeout(400);
+      const atStart = await ink(page, word);
+      assert(atStart.start > atStart.end + 12, `brightest where the pointer is: ${JSON.stringify(atStart)}`);
+      assert.equal((await tops(page)).filter((w) => w.lit).length, 1, "only the row under the pointer is lit");
+      await page.mouse.move(word.x + word.w - 2, word.y + word.h / 2, { steps: 8 });
+      await page.waitForTimeout(600);
+      const atEnd = await ink(page, word);
+      assert(atEnd.end > atEnd.start + 12, `the light follows the pointer: ${JSON.stringify(atEnd)}`);
+
+      // to Gateway, then Settings: each takes the light from the one before
+      await page.mouse.move(all[gw].x + 4, all[gw].y + all[gw].h / 2, { steps: 4 });
+      await lit(gw);
+      await out(pv);
+      await page.mouse.move(all[prefs].x + 4, all[prefs].y + all[prefs].h / 2, { steps: 4 });
+      await lit(prefs);
+      await out(gw);
+      // the gateway's address under Settings, brightest where the pointer is
+      const addr = all[at("sideGw")];
+      await page.mouse.move(addr.x + 2, addr.y + addr.h / 2, { steps: 4 });
+      await lit(at("sideGw"));
+      await out(prefs);
+      await page.waitForTimeout(400);
+      const gwInk = await ink(page, addr);
+      assert(gwInk.start > gwInk.end + 12, `the address brightest where the pointer is: ${JSON.stringify(gwInk)}`);
+      await page.mouse.move(700, 500);
+      await out(at("sideGw"));
+
+      // the open page's row keeps its own ink
+      const cur = all.find((w) => w.on);
+      assert(cur, "a page is open");
+      await page.mouse.move(cur.x + 4, cur.y + cur.h / 2);
+      await page.waitForTimeout(200);
+      assert((await tops(page)).every((w) => !w.lit), "the open page's row is never lit");
       assert.deepEqual(errors, []);
     });
   });

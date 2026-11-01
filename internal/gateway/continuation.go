@@ -61,6 +61,12 @@ func emptyRetries(w http.ResponseWriter, ctx context.Context) int {
 // than ended with the loop's error.
 const loopReasks = 1
 
+// cutReasks is how many times a try a plugin ended on its upstream's
+// stream dying mid-call (plugins#38) is asked again where it stood, before
+// the next member is (#2873): the parser reads the same, the cut doesn't
+// come again.
+const cutReasks = 1
+
 // errStreamCut ends a reply's read once its error event is in hand,
 // without waiting on a vendor that keeps the connection open after it.
 var errStreamCut = errors.New("stream cut mid-reply")
@@ -552,6 +558,7 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				}
 				ended := false // the upstream said its reply ended
 				var tail chatTail
+				var found searchTally // the searches it ran by itself
 				// the client is kept alive while the upstream says
 				// nothing at all, its first event yet to come too: the
 				// upstream's 200 is in, and a holdWriter holds what is
@@ -567,8 +574,9 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 					defer wmu.Unlock()
 					heard()
 					tail.see([]byte(data))
+					found.see(actual, []byte(data))
 					st := upstreamStop([]byte(data))
-					u.add(Usage{Upstream: upstreamOf([]byte(data)), Stop: st, Tier: upstreamTier([]byte(data))})
+					u.add(Usage{Upstream: upstreamOf([]byte(data)), Stop: st, Tier: upstreamTier([]byte(data)), searches: found.count()})
 					ended = ended || replyEnds(actual, data, st)
 					if err := dec(data, attemptSee); err != nil {
 						return err
