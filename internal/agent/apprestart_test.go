@@ -373,6 +373,9 @@ func TestChangedAtWithoutAWrite(t *testing.T) {
 func TestWorkBuddyOwnSaveAfterStartIsNoChange(t *testing.T) {
 	for _, osName := range []string{"darwin", "windows"} {
 		t.Run(osName, func(t *testing.T) {
+			if osName == "darwin" && runtime.GOOS == "windows" { // fork: as TestWorkBuddyRestartOnMac
+				t.Skip("a Mac bundle's path, on Windows")
+			}
 			home := restartSandbox(t)
 			start := time.Now().Add(-time.Hour)
 			if osName == "windows" {
