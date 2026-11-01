@@ -188,14 +188,15 @@ func TestClaudeLeanPromptSaysWhereToolsRun(t *testing.T) {
 
 // A caller elsewhere whose environment is a message, as Claude Code 2.1.296
 // and later send it (a {role: "system"} message after the user's first; the
-// shape below is 2.1.314's, captured), is told that the last environment
-// given is where its tools run, in both modes: the named-folder note
-// pointed at instructions that describe none, while the gateway's Claude
-// Code gave its own environment before them (packinggoods on Discord: a
-// Mac client of a Windows gateway had its commands wrapped in
+// shape below is 2.1.314's, captured), is told its environment is the one
+// whose working directory it names, in both modes. The run's own Claude
+// Code gives its environment the same way, after the run's first message
+// (2.1.316 with claude-opus-5-5, captured), so after the caller's: the
+// earlier "the last one given" pointed the model at the gateway's computer
+// (packinggoods on Discord: a Mac client of a Windows gateway told to use
 // PowerShell). A caller naming its folder in its instructions is told the
 // note it was before.
-func TestClaudeCallerEnvironmentInAMessageIsTheLastGiven(t *testing.T) {
+func TestClaudeCallerEnvironmentInAMessageIsNamedByItsFolder(t *testing.T) {
 	const env = `# Environment\nYou have been invoked in the following environment: \n - Primary working directory: /Users/someone/proj\n - Is a git repository: false\n - Platform: darwin\n - Shell: zsh\n - OS Version: Darwin 25.2.0`
 	body := func(say string) string {
 		return `{"model":"claude-sonnet-5","max_tokens":100,` +
@@ -204,7 +205,7 @@ func TestClaudeCallerEnvironmentInAMessageIsTheLastGiven(t *testing.T) {
 			`{"role":"system","content":[{"type":"text","text":"` + env + `"}]}],` +
 			`"tools":[{"name":"Bash","description":"Run a command.","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}]}`
 	}
-	const last = "the last one given is the one every tool runs in"
+	const last = "the one whose working directory is /Users/someone/proj is the one every tool runs in"
 	for _, lean := range []bool{false, true} {
 		h, runs := newLeanHarness(t)
 		leanSetting(t, lean)
@@ -214,7 +215,7 @@ func TestClaudeCallerEnvironmentInAMessageIsTheLastGiven(t *testing.T) {
 
 		one, two := told(t, runs(), "turn-one"), told(t, runs(), "turn-two")
 		if lean {
-			if !strings.HasSuffix(one.system, envTurnsNote) {
+			if !strings.HasSuffix(one.system, envTurnsNote("/Users/someone/proj")) || !strings.Contains(one.system, last) || strings.Contains(one.system, "the last one given") {
 				t.Fatalf("lean, environment in a message: system %q", one.system)
 			}
 			if !strings.HasSuffix(two.system, envElsewhereLeanNote) {
@@ -224,7 +225,7 @@ func TestClaudeCallerEnvironmentInAMessageIsTheLastGiven(t *testing.T) {
 		}
 		i := strings.Index(one.log, "\ntold ")
 		msg := one.log[i:]
-		if n, at, end := strings.Count(msg, last), strings.Index(msg, last), strings.Index(msg, "/external_system_instructions"); n != 1 || at > end || strings.Contains(msg, "every tool runs in. Where an environment given before") {
+		if n, at, end := strings.Count(msg, last), strings.Index(msg, last), strings.Index(msg, "/external_system_instructions"); n != 1 || at > end || strings.Contains(msg, "every tool runs in. Where an environment given before") || strings.Contains(msg, "the last one given") {
 			t.Fatalf("environment in a message: told the note %d times, at %d (instructions end at %d): %s", n, at, end, msg)
 		}
 		if strings.Index(msg, "Platform: darwin") < strings.Index(msg, last) {

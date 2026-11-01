@@ -228,9 +228,9 @@ func Config() string {
 		return p
 	}
 	if x := os.Getenv("XDG_CONFIG_HOME"); rooted(x) {
-		return filepath.Join(x, "magpie")
+		return Join(x, "magpie")
 	}
-	return filepath.Join(mustHome(), ".config", "magpie")
+	return Join(Join(mustHome(), ".config"), "magpie")
 }
 
 // Redirected is the folder magpie keeps its files in when it is opened
@@ -257,12 +257,43 @@ func Redirected() string {
 // catalog, exchange rates, market lists).
 func Cache() string {
 	if p := Portable(); p != "" {
-		return filepath.Join(p, "cache")
+		return Join(p, "cache")
 	}
 	if x := os.Getenv("XDG_CACHE_HOME"); rooted(x) {
+		return Join(x, "magpie")
+	}
+	return Join(Join(mustHome(), ".cache"), "magpie")
+}
+
+// Logs is the folder the desktop app writes its log in, where each system
+// keeps an app's logs: ~/Library/Logs/magpie on a Mac (beside the launch
+// agent's serve.log, `magpie daemon install`), %LOCALAPPDATA%\magpie\logs
+// on Windows, and $XDG_STATE_HOME/magpie (~/.local/state/magpie) elsewhere;
+// portable, data/logs. A user asked for magpie's log finds it there
+// (rayem1w on X: the app opened from the Finder had written none).
+func Logs() string {
+	return logsOn(runtime.GOOS)
+}
+
+// logsOn is Logs as it is on goos, for tests of every system's folder.
+func logsOn(goos string) string {
+	if p := Portable(); p != "" {
+		return filepath.Join(p, "logs")
+	}
+	switch goos {
+	case "darwin":
+		return filepath.Join(mustHome(), "Library", "Logs", "magpie")
+	case "windows":
+		local := os.Getenv("LOCALAPPDATA")
+		if !rooted(local) {
+			local = filepath.Join(mustHome(), "AppData", "Local")
+		}
+		return filepath.Join(local, "magpie", "logs")
+	}
+	if x := os.Getenv("XDG_STATE_HOME"); rooted(x) {
 		return filepath.Join(x, "magpie")
 	}
-	return filepath.Join(mustHome(), ".cache", "magpie")
+	return filepath.Join(mustHome(), ".local", "state", "magpie")
 }
 
 // WebView is the folder the Windows webview (WebView2) keeps its profile

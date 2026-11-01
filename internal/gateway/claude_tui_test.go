@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"log"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/claudetui"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/wslrun"
 )
@@ -37,7 +40,8 @@ func TestClaudeTUIChosen(t *testing.T) {
 	}{
 		{"a plain turn", &Request{Messages: text("hi")}, here, prompt, false, on, ""},
 		{"turned off", &Request{Messages: text("hi")}, here, prompt, true, false, "the interactive mode is turned off"},
-		{"in WSL", &Request{Messages: text("hi")}, claudeCLI{path: "claude", wsl: &wslrun.Tool{}}, prompt, false, false, "Claude Code in WSL"},
+		{"in WSL", &Request{Messages: text("hi")}, claudeCLI{path: "claude", wsl: &wslrun.Tool{Distro: "Ubuntu", Home: "/home/me"}}, prompt, false, on, ""},
+		{"in WSL, its home unknown", &Request{Messages: text("hi")}, claudeCLI{path: "claude", wsl: &wslrun.Tool{Distro: "Ubuntu"}}, prompt, false, false, "Claude Code in WSL, its home unknown"},
 		{"safeguards", &Request{Messages: text("hi"), Safeguards: json.RawMessage(`{"a":1}`)}, here, prompt, false, false, "safeguards"},
 		{"client cache marks", &Request{Messages: text("hi"), clientCache: &clientCache{}}, here, prompt, false, false, "the client's cache marks"},
 		{"a schema", &Request{Messages: text("hi"), Format: &Format{Type: "json_schema", Schema: json.RawMessage(`{"type":"object"}`)}}, here, prompt, false, false, "a JSON schema"},
@@ -53,7 +57,7 @@ func TestClaudeTUIChosen(t *testing.T) {
 		if err := settings.Save(st); err != nil {
 			t.Fatal(err)
 		}
-		if got := claudeTUI(c.req, c.binary, c.prompt); got != c.want {
+		if got, _ := claudeTUI(c.req, c.binary, c.prompt); got != c.want {
 			t.Errorf("%s: claudeTUI = %v, want %v", c.name, got, c.want)
 		}
 		if got := claudePrintWhy(c.req, c.binary, c.prompt); on && got != c.why {
@@ -78,5 +82,94 @@ func TestClaudeTUIFallbackLogged(t *testing.T) {
 	}
 	if !strings.Contains(w.run.stderr.String(), "something else") {
 		t.Fatalf("stderr kept %q", w.run.stderr.String())
+	}
+}
+
+// A Claude Code in WSL is run by the helper through wsl.exe, its
+// transcripts read from Windows: the distro's own folder through \\wsl$,
+// or the account's config directory, a Windows folder.
+func TestClaudeTUIWSL(t *testing.T) {
+	c := claudeCLI{path: "claude", wsl: &wslrun.Tool{Distro: "Ubuntu", Path: "/home/me/.local/bin/claude", Home: "/home/me", Mount: "/mnt/"}}
+	for _, tc := range []struct{ configDir, projects string }{
+		{"", `\\wsl$\Ubuntu\home\me\.claude\projects`},
+		{filepath.Join("acct", "1"), filepath.Join("acct", "1", "projects")},
+	} {
+		var w claudetui.WSL
+		if err := json.Unmarshal([]byte(c.tuiWSL(tc.configDir)), &w); err != nil {
+			t.Fatal(err)
+		}
+		if w.Projects != tc.projects || w.Mount != "/mnt/" {
+			t.Fatalf("config %q: %+v", tc.configDir, w)
+		}
+		if len(w.Args) < 2 || w.Args[0] != "-d" || w.Args[1] != "Ubuntu" || w.Args[len(w.Args)-1] != c.wsl.Path {
+			t.Fatalf("args %q", w.Args)
+		}
+	}
+}
+
+// The distro's own folder, read through \\wsl$, is a -p run's when
+// Windows can't read it (no 9P redirector, as over ssh); an account's
+// config directory is a Windows folder, never asked about.
+func TestClaudeTUIWSLUnread(t *testing.T) {
+	c := claudeCLI{wsl: &wslrun.Tool{Distro: "Ubuntu", Home: "/home/me"}}
+	var asked []string
+	readable := false
+	old := wslStat
+	wslStat = func(p string) (os.FileInfo, error) {
+		asked = append(asked, p)
+		if readable {
+			return nil, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	t.Cleanup(func() { wslStat = old })
+	if got := c.tuiWSLUnread(""); got != `\\wsl$\Ubuntu\home\me` {
+		t.Fatalf("unread %q", got)
+	}
+	readable = true
+	if got := c.tuiWSLUnread(""); got != "" {
+		t.Fatalf("read, yet %q", got)
+	}
+	readable = false
+	if got := c.tuiWSLUnread("acct"); got != "" || len(asked) != 2 {
+		t.Fatalf("the account's folder: %q, asked %q", got, asked)
+	}
+}
+
+// The provider page's codes for why every run is -p: the setting, a
+// WSL Claude Code whose home is unknown, none found; "" for the TUI.
+func TestClaudeMachineWhy(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		t.Skip("no interactive mode on " + runtime.GOOS)
+	}
+	was := settings.Load()
+	t.Cleanup(func() { _ = settings.Save(was) })
+	claudeTUIRuns = true
+	t.Cleanup(func() { claudeTUIRuns = false })
+	here := claudeCLI{path: "/usr/local/bin/claude"}
+	for _, c := range []struct {
+		name   string
+		binary claudeCLI
+		print  bool
+		code   string
+	}{
+		{"here", here, false, ""},
+		{"in WSL", claudeCLI{wsl: &wslrun.Tool{Distro: "Ubuntu", Home: "/home/me"}}, false, ""},
+		{"turned off", here, true, "off"},
+		{"in WSL, its home unknown", claudeCLI{wsl: &wslrun.Tool{Distro: "Ubuntu"}}, false, "wsl-home"},
+		{"none", claudeCLI{}, false, "missing"},
+	} {
+		st := settings.Load()
+		st.ClaudePrintMode = c.print
+		if err := settings.Save(st); err != nil {
+			t.Fatal(err)
+		}
+		if code, why := claudeMachineWhy(c.binary); code != c.code || (code == "") != (why == "") {
+			t.Errorf("%s: %q %q, want code %q", c.name, code, why, c.code)
+		}
+	}
+	claudeTUIRuns = false
+	if code, _ := claudeMachineWhy(here); code != "no-shim" {
+		t.Errorf("no shim: %q", code)
 	}
 }

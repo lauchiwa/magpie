@@ -5,6 +5,7 @@
 package gui
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"context"
@@ -14,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"mime"
@@ -31,6 +33,7 @@ import (
 
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/applog"
 	"github.com/yetone/magpie/internal/autostart"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/filememo"
@@ -400,6 +403,9 @@ type settingsJSON struct {
 	OnNetwork       bool     `json:"onNetwork,omitempty"`
 	// Dir is the data folder beside a portable magpie (#508)
 	Portable bool `json:"portable,omitempty"`
+	// Log is the log the desktop app writes (applog), as shown; "" for a
+	// magpie writing none (magpie web)
+	Log string `json:"log,omitempty"`
 	// WSL is whether there is WSL to look in for agents (Windows), for
 	// Settings' Detect agents in WSL (#1264)
 	WSL bool `json:"wsl,omitempty"`
@@ -712,6 +718,7 @@ func codexWindowUnder(st settings.Settings, model string) *codexRunWindow {
 func settingsState() settingsJSON {
 	s := settingsJSON{Settings: settings.Load(), Version: Version, Dir: tilde(settings.Dir()), Portable: settings.Portable() != "", Gateway: gateway.URL()}
 	s.AddrEnv = os.Getenv("MAGPIE_ADDR")
+	s.Log = tilde(applog.Current())
 	s.Releases = update.Downloads() // fork: About's Releases row
 	s.Builtins = builtinsState()
 	s.PanelKeys = panelKeysState()
@@ -1054,8 +1061,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			return
 		}
 		s := state()
-		writeJSON(rw, s)
-		keepState(s)
+		if sum, ok := writeStateJSON(rw, s); ok {
+			keepStateSummed(s, sum)
+		}
 	})
 	mux.HandleFunc("POST /api/set", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ Agent, Field, Value string }
@@ -1522,6 +1530,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		in.CodexResetLead = cur.CodexResetLead         // and how early before one expires (codex-reset-lead)
 		// and which of them spend their credits, set there too
 		in.CodexNoCredits = cur.CodexNoCredits
+		in.CodexCreditsLast = cur.CodexCreditsLast // and which only after everything else
 		// and each Codex account's own daily warm-up (codex-warm-at below)
 		in.CodexWarmAtOf = cur.CodexWarmAtOf
 		// and the text size, which the keyboard changes too (text-size below)
@@ -2047,11 +2056,13 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		writeJSON(rw, settingsState())
 	})
 	// whether a Codex account spends its credits once its allowance is
-	// used up, the Usage card's toggle, set on its own
+	// used up, the Usage card's toggle, set on its own, and with Last
+	// whether only after everything else (left as it is when not sent)
 	mux.HandleFunc("POST /api/settings/codex-credits", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
 			User string
 			On   bool
+			Last *bool
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
@@ -2061,7 +2072,14 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, fmt.Errorf("which Codex account?"))
 			return
 		}
-		if err := provider.SetCodexCredits(in.User, in.On); err != nil {
+		mode := provider.CreditsOff
+		if in.On {
+			mode = provider.CreditsOn
+			if (in.Last == nil && provider.CodexCreditsLast(in.User)) || (in.Last != nil && *in.Last) {
+				mode = provider.CreditsLast
+			}
+		}
+		if err := provider.SetCodexCreditsMode(in.User, mode); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -2650,6 +2668,20 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		rw.WriteHeader(http.StatusNoContent)
 	})
+	// the app's log folder (applog), from Settings › About's Log row; the
+	// page names no path here either
+	mux.HandleFunc("POST /api/settings/log/reveal", func(rw http.ResponseWriter, r *http.Request) {
+		path := applog.Current()
+		if path == "" {
+			fail(rw, errors.New("this magpie writes no log file"))
+			return
+		}
+		if err := w.OpenFolder(filepath.Dir(path)); err != nil {
+			fail(rw, err)
+			return
+		}
+		rw.WriteHeader(http.StatusNoContent)
+	})
 	// the folder of the reports saved of requests held too long before
 	// routing (gateway.HeldDir), from such a request's row on Routing
 	mux.HandleFunc("POST /api/gateway/held/reveal", func(rw http.ResponseWriter, r *http.Request) {
@@ -2884,20 +2916,21 @@ func writeJSON(rw http.ResponseWriter, v any) {
 // WebView2 is sent no If-None-Match, and Wails turns its 304 into a 505.
 // It returns the tag, or "" when v could not be written.
 func writeJSONSame(rw http.ResponseWriter, r *http.Request, v any) string {
-	return writeSame(rw, r, func(b *bytes.Buffer) error { return json.NewEncoder(b).Encode(v) })
+	return writeSame(rw, r, func(w io.Writer) error { return json.NewEncoder(w).Encode(v) })
 }
 
-// writeSame is writeJSONSame of the answer write puts in b, a kept buffer
-// (answerBuffer).
-func writeSame(rw http.ResponseWriter, r *http.Request, write func(b *bytes.Buffer) error) string {
-	b := answerBuffer()
-	defer keepAnswer(b)
-	if err := write(b); err != nil {
+// writeSame is writeJSONSame of the answer write writes to the writer it
+// is given, called twice: once into the hash, for the tag, and once
+// straight to rw when the page hasn't got it. The answer is never held
+// whole: the stats' ~6 MB each, in buffers kept between polls, were
+// 12.5 MB of a warm start's 169 MB live heap over a full history (#2278).
+func writeSame(rw http.ResponseWriter, r *http.Request, write func(w io.Writer) error) string {
+	h := sha256.New()
+	if err := write(h); err != nil {
 		fail(rw, err)
 		return ""
 	}
-	sum := sha256.Sum256(b.Bytes())
-	tag := hex.EncodeToString(sum[:16])
+	tag := hex.EncodeToString(h.Sum(nil)[:16])
 	rw.Header().Set("X-Magpie-Tag", tag)
 	if r.Header.Get("X-Magpie-Had") == tag {
 		rw.Header().Set("X-Magpie-Same", "1")
@@ -2905,7 +2938,9 @@ func writeSame(rw http.ResponseWriter, r *http.Request, write func(b *bytes.Buff
 		return tag
 	}
 	rw.Header().Set("Content-Type", "application/json")
-	_, _ = rw.Write(b.Bytes())
+	out := bufio.NewWriterSize(rw, 32<<10)
+	_ = write(out) // as the first time: it was written without a fault
+	_ = out.Flush()
 	return tag
 }
 
@@ -2920,56 +2955,6 @@ var sentRows struct {
 
 const sentRowsKept = 4
 
-// answerBuffers are the buffers a long answer is written in, kept between
-// polls: grown from nothing for each, the Sessions tab's list and its
-// stats, ~6 MB each, were ~110 MB of 90 s of polls while an agent worked
-// (#2278). They go answerLinger after the last answer.
-var answerBuffers struct {
-	sync.Mutex
-	free []*bytes.Buffer
-	t    *time.Timer
-}
-
-const answerBuffersKept = 2
-
-var answerLinger = 30 * time.Second
-
-// answerBuffer is a kept buffer, empty, or a new one
-func answerBuffer() *bytes.Buffer {
-	answerBuffers.Lock()
-	defer answerBuffers.Unlock()
-	if n := len(answerBuffers.free); n > 0 {
-		b := answerBuffers.free[n-1]
-		answerBuffers.free = answerBuffers.free[:n-1]
-		return b
-	}
-	return new(bytes.Buffer)
-}
-
-// keepAnswer puts b back once its answer is written: nothing reads it
-// after, a ResponseWriter copies what it is given.
-func keepAnswer(b *bytes.Buffer) {
-	b.Reset()
-	answerBuffers.Lock()
-	defer answerBuffers.Unlock()
-	if len(answerBuffers.free) < answerBuffersKept {
-		answerBuffers.free = append(answerBuffers.free, b)
-	}
-	if answerBuffers.t == nil {
-		answerBuffers.t = time.AfterFunc(answerLinger, func() {
-			answerBuffers.Lock()
-			answerBuffers.free = nil
-			answerBuffers.Unlock()
-		})
-		return
-	}
-	answerBuffers.t.Reset(answerLinger)
-}
-
-// rowsSize is the size of the last answer writeJSONRows wrote of each key,
-// what the next one's buffer is made for.
-var rowsSize sync.Map
-
 // writeJSONRows is writeJSONSame for an answer that is a long list, key,
 // beside the fields of rest: one asked with the tag of a list sent before
 // that changed since gets X-Magpie-Delta: key, and its list holds only the
@@ -2977,6 +2962,13 @@ var rowsSize sync.Map
 // [from, count] of the list the page has. While an agent works, its
 // session's row changes every poll, and the Sessions tab read all ~5000
 // rows (~8 MB) again for it.
+//
+// The answer is never held whole. A first pass encodes each row into one
+// small buffer, for its hash and the answer's tag; what is sent is
+// encoded again, straight to rw, and in a delta only the rows the page
+// hasn't got. The whole answer, built in a buffer to hash and send, was
+// 25 MB of a warm start's 183 MB live heap over a full history (16,600
+// sessions), kept between polls and grown again by each (#2278).
 func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, rows []T, rest any) {
 	tail, err := json.Marshal(rest)
 	if err != nil {
@@ -2984,63 +2976,42 @@ func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, r
 		return
 	}
 	k, _ := json.Marshal(key)
-	// the rows are written once, into the answer itself: each row's
-	// Marshal, their Join and the answer's buffer were three copies of the
-	// ~8 MB list a poll, and the buffer grew to it from nothing
-	whole := answerBuffer()
-	defer keepAnswer(whole)
-	if n, ok := rowsSize.Load(key); ok {
-		whole.Grow(n.(int) + n.(int)/8)
+	head := append(append([]byte{'{'}, k...), ":["...)
+	end := []byte{']'}
+	if len(tail) > 2 {
+		end = append(append(end, ','), tail[1:]...)
+	} else {
+		end = append(end, '}')
 	}
-	whole.WriteByte('{')
-	whole.Write(k)
-	whole.WriteString(":[")
-	enc := json.NewEncoder(whole)
-	ends := make([]int, len(rows)+1)
-	ends[0] = whole.Len()
-	for i := range rows {
+	end = append(end, '\n')
+	var row bytes.Buffer
+	enc := json.NewEncoder(&row)
+	// encode is row i as Marshal gives it: Encode ends it with a newline
+	encode := func(i int) ([]byte, error) {
+		row.Reset()
 		if err := enc.Encode(rows[i]); err != nil {
+			return nil, err
+		}
+		return row.Bytes()[:row.Len()-1], nil
+	}
+	whole := sha256.New()
+	whole.Write(head)
+	sums := make([][16]byte, len(rows))
+	for i := range rows {
+		b, err := encode(i)
+		if err != nil {
 			fail(rw, err)
 			return
 		}
-		// Encode ends the row with a newline: it is the comma after it
-		whole.Bytes()[whole.Len()-1] = ','
-		ends[i+1] = whole.Len()
-	}
-	if len(rows) > 0 {
-		whole.Truncate(whole.Len() - 1)
-	}
-	end := func(b *bytes.Buffer) {
-		b.WriteByte(']')
-		if len(tail) > 2 {
-			b.WriteByte(',')
-			b.Write(tail[1:])
-		} else {
-			b.WriteByte('}')
+		if i > 0 {
+			whole.Write([]byte{','})
 		}
-		b.WriteByte('\n')
-	}
-	end(whole)
-	rowsSize.Store(key, whole.Len())
-	all := whole.Bytes()
-	raw := make([][]byte, len(rows))
-	sums := make([][16]byte, len(rows))
-	for i := range rows {
-		raw[i] = all[ends[i] : ends[i+1]-1]
-		sum := sha256.Sum256(raw[i])
+		whole.Write(b)
+		sum := sha256.Sum256(b)
 		sums[i] = [16]byte(sum[:16])
 	}
-	body := func(items [][]byte) []byte {
-		var b bytes.Buffer
-		b.WriteByte('{')
-		b.Write(k)
-		b.WriteString(":[")
-		b.Write(bytes.Join(items, []byte(",")))
-		end(&b)
-		return b.Bytes()
-	}
-	sum := sha256.Sum256(all)
-	tag := hex.EncodeToString(sum[:16])
+	whole.Write(end)
+	tag := hex.EncodeToString(whole.Sum(nil)[:16])
 	rw.Header().Set("X-Magpie-Tag", tag)
 	had := r.Header.Get("X-Magpie-Had")
 	if had == tag {
@@ -3063,19 +3034,38 @@ func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, r
 	}
 	sentRows.Unlock()
 	rw.Header().Set("Content-Type", "application/json")
+	out := bufio.NewWriterSize(rw, 32<<10)
+	defer out.Flush()
+	out.Write(head)
+	first := true
+	item := func(b []byte) {
+		if !first {
+			out.WriteByte(',')
+		}
+		first = false
+		out.Write(b)
+	}
 	if !ok || had == "" {
-		_, _ = rw.Write(all)
+		for i := range rows {
+			b, err := encode(i)
+			if err != nil {
+				// the first pass encoded it: nothing else changes a row
+				return
+			}
+			item(b)
+		}
+		out.Write(end)
 		return
 	}
 	at := make(map[[16]byte][]int, len(was))
 	for j, s := range was {
 		at[s] = append(at[s], j)
 	}
-	var items [][]byte
+	rw.Header().Set("X-Magpie-Delta", key)
 	from, n := 0, 0
 	run := func() {
 		if n > 0 {
-			items = append(items, []byte("["+strconv.Itoa(from)+","+strconv.Itoa(n)+"]"))
+			item([]byte("[" + strconv.Itoa(from) + "," + strconv.Itoa(n) + "]"))
 		}
 		n = 0
 	}
@@ -3083,7 +3073,11 @@ func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, r
 		js := at[s]
 		if len(js) == 0 {
 			run()
-			items = append(items, raw[i])
+			b, err := encode(i)
+			if err != nil {
+				return
+			}
+			item(b)
 			continue
 		}
 		j := js[0]
@@ -3096,8 +3090,7 @@ func writeJSONRows[T any](rw http.ResponseWriter, r *http.Request, key string, r
 		from, n = j, 1
 	}
 	run()
-	rw.Header().Set("X-Magpie-Delta", key)
-	_, _ = rw.Write(body(items))
+	out.Write(end)
 }
 
 func fail(rw http.ResponseWriter, err error) {
@@ -3137,6 +3130,9 @@ func fail(rw http.ResponseWriter, err error) {
 	var signedIn *provider.SignedInError
 	if errors.As(err, &signedIn) {
 		out["code"], out["agent"], out["user"] = "signed_in", signedIn.Agent, signedIn.User
+		if signedIn.Only {
+			out["code"] = "signed_in_only"
+		}
 	}
 	// a text that isn't a group to import (laincatx on X), said in the
 	// reader's language

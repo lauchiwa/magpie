@@ -34,17 +34,17 @@ func restartSandbox(t *testing.T) string {
 	os.MkdirAll(filepath.Join(home, ".workbuddy"), 0o755)
 	os.WriteFile(filepath.Join(home, ".workbuddy", "models.json"), []byte(`[]`), 0o600)
 	notOnMac(t)
-	wasWin, wasMac, wasFolders, wasRunning := restartOnWindows, restartOnMac, appFolders, running
+	wasWin, wasMac, wasLinux, wasFolders, wasRunning := restartOnWindows, restartOnMac, restartOnLinux, appFolders, running
 	wasQuit, wasOpen, wasQuitWait := appQuit, appOpen, appQuitWait
 	wasProcs, wasClose, wasEnd, wasLaunch, wasCloseWait, wasBackWait, wasPoll := winProcs, winClose, winEnd, winLaunch, appCloseWait, appBackWait, appPoll
 	wasShown, wasGrace := winShown, appTrayGrace
 	t.Cleanup(func() {
-		restartOnWindows, restartOnMac, appFolders, running = wasWin, wasMac, wasFolders, wasRunning
+		restartOnWindows, restartOnMac, restartOnLinux, appFolders, running = wasWin, wasMac, wasLinux, wasFolders, wasRunning
 		appQuit, appOpen, appQuitWait = wasQuit, wasOpen, wasQuitWait
 		winProcs, winClose, winEnd, winLaunch, appCloseWait, appBackWait, appPoll = wasProcs, wasClose, wasEnd, wasLaunch, wasCloseWait, wasBackWait, wasPoll
 		winShown, appTrayGrace = wasShown, wasGrace
 	})
-	restartOnWindows, restartOnMac = false, false
+	restartOnWindows, restartOnMac, restartOnLinux = false, false, false
 	appPoll = 5 * time.Millisecond
 	winShown = func([]int) bool { return true }
 	return home
@@ -373,6 +373,9 @@ func TestChangedAtWithoutAWrite(t *testing.T) {
 func TestWorkBuddyOwnSaveAfterStartIsNoChange(t *testing.T) {
 	for _, osName := range []string{"darwin", "windows"} {
 		t.Run(osName, func(t *testing.T) {
+			if osName == "darwin" && runtime.GOOS == "windows" { // fork: as TestWorkBuddyRestartOnMac
+				t.Skip("a Mac bundle's path, on Windows")
+			}
 			home := restartSandbox(t)
 			start := time.Now().Add(-time.Hour)
 			if osName == "windows" {

@@ -31,6 +31,20 @@ import (
 const traceKeep = 60
 
 // Route is one request's way through routing.
+// ModelMove is a stand-in that put a request on another model than the one
+// it named: To, the model it went on (before a routing group's pick), and
+// Why, a word the Routing page says it by. A Desktop's own call (desktopMove's
+// reasons), Claude Code's tiers (movedClaudeTier, movedClassifier), an
+// agent's configured stand-in (movedStandIn), Codex's last turn's model
+// (movedCodexTurn) and Privacy's unmasked route (movedPrivacy). Without it
+// a row read "asked for chatflowsai/claude-opus-5-5 → agentrouter" with
+// nothing to say a title, not the user's turn, was put on the chat's model
+// (Neo on Discord).
+type ModelMove struct {
+	To  string `json:"to"`
+	Why string `json:"why"`
+}
+
 type Route struct {
 	// callerKey: the gateway key the request came with, so a key held to
 	// a budget, models or accounts is told the routes of its own requests
@@ -71,6 +85,10 @@ type Route struct {
 	// Subagent is a Codex or Claude Desktop subagent's request put on
 	// the model set for its subagents, or kept on the one asked for and why
 	Subagent *SubagentPick `json:"subagent,omitempty"`
+	// Moved: the request was served on another model than Model names,
+	// by one of magpie's stand-ins, and why (ModelMove); nil when it went
+	// where it asked, or to a routing group by its name
+	Moved *ModelMove `json:"moved,omitempty"`
 	// Sub: the Claude Code subagent the request is of (subagentOf), whose
 	// session header is its conversation's; "" for the conversation's own
 	Sub string `json:"sub,omitempty"`
@@ -323,6 +341,10 @@ type Weighed struct {
 	// credits, and is let spend them: all but used up, it still answers,
 	// and goes before those used up with nothing to go on with
 	Credits bool `json:"credits,omitempty"`
+	// CreditsLast: such an account, on its credits now, that the user set
+	// to spend them only after everything else: tried after every
+	// candidate not on its credits (restLast)
+	CreditsLast bool `json:"creditsLast,omitempty"`
 	// Rank: its place in its provider's own list of accounts or keys, the
 	// order the provider's page shows and a drag sets (#217); routing may
 	// weigh them in another
@@ -330,6 +352,10 @@ type Weighed struct {
 	// Aside: a key made for another protocol than the keys routed over,
 	// tried only after them
 	Aside bool `json:"aside,omitempty"`
+	// Reserve: an account or key held back, its provider's accounts at
+	// once (provider.AtOnce, this many) taken by those before it in the
+	// user's order: tried, aside, only after they all failed
+	Reserve int `json:"reserve,omitempty"`
 	// NoURL: its keys are all set to this protocol, which its provider has
 	// no URL for, so it was tried on the URLs it has (#1702)
 	NoURL provider.Protocol `json:"noURL,omitempty"`
@@ -461,7 +487,7 @@ type planned struct {
 
 func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from provider.Protocol) Weighed {
 	w := Weighed{ID: c.rest, Provider: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Model: c.model, Fixed: c.effort, Fast: c.fast,
-		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID, Rank: c.rank, NoURL: c.noURL}
+		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID, Rank: c.rank, NoURL: c.noURL, Reserve: c.reserve}
 	switch {
 	case c.p.Account != nil:
 		w.Kind, w.Who, w.Agent, w.Plan = "account", c.p.Account.User, c.p.Account.Agent, c.p.Account.Plan

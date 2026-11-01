@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -248,6 +249,9 @@ func loopbackHost(h string) bool {
 // the ones Lody 0.108.1 writes: its AppImage's, with the path quoted and
 // --no-sandbox kept, and its .deb's.
 func TestOpenLodyRunsItsDesktopEntry(t *testing.T) {
+	if runtime.GOOS == "windows" { // fork: a Linux .desktop entry's file names, which NTFS refuses
+		t.Skip("a Linux desktop entry, on Windows")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	data := filepath.Join(home, "data")
@@ -348,6 +352,9 @@ func TestOpenLodyRunsItsDesktopEntry(t *testing.T) {
 }
 
 func TestDesktopExec(t *testing.T) {
+	if runtime.GOOS == "windows" { // fork: /bin/sh, a Linux .desktop entry's program
+		t.Skip("a Linux desktop entry, on Windows")
+	}
 	sh := "/bin/sh"
 	for _, c := range []struct {
 		entry string

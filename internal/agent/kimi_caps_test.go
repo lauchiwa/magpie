@@ -67,6 +67,14 @@ func TestKimiCodePlanCapabilities(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// jiabubu again: one Kimi model put in a group so it lists first keeps
+	// what its list says; a group with another vendor's model has none
+	if err := provider.SaveGroup(provider.Group{ID: "top", Name: "Top", Members: []string{"kimi-code-cn/kimi-for-coding"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{ID: "mix", Name: "Mix", Members: []string{"kimi-code-cn/kimi-for-coding", "relay/gemini-3-pro"}}); err != nil {
+		t.Fatal(err)
+	}
 
 	type model struct {
 		Capabilities   []string `toml:"capabilities"`
@@ -99,6 +107,9 @@ func TestKimiCodePlanCapabilities(t *testing.T) {
 			[]string{"low", "high", "max"}, "high"},
 		// another vendor's model, video and all, as it was
 		"magpie/relay/gemini-3-pro": {[]string{"thinking", "image_in", "tool_use"}, []string{"low", "high"}, "high"},
+		"magpie/group/top": {[]string{"thinking", "always_thinking", "image_in", "tool_use", "dynamically_loaded_tools"},
+			[]string{"low", "high", "max"}, "max"},
+		"magpie/group/mix": {[]string{"thinking", "image_in", "tool_use"}, []string{"low", "high"}, "high"},
 	}
 	got := read(path)
 	for k, w := range want {

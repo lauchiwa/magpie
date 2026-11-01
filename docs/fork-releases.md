@@ -224,11 +224,10 @@ step went red in `TestHubMCPOff`. Drop the file when upstream's
 `readOnlyRefused`: `TestReadOnlyKeyEveryRoute` asks every route to be
 classified, and those routes are the fork's.
 
-v0.1.2310 was red on upstream's own CI, so the sync carries `fork:` lines in
-upstream files that are fixes, not fork features. Drop each one when upstream
-fixes the same thing, and take upstream's version:
-- `internal/claudetui/child_unix.go` starts Claude Code with `proc.Command`
-  (`TestNoCommandBypassesProc`).
+v0.1.2310 and v0.1.2519 were red on upstream's own CI or on Windows, so the
+sync carries lines in upstream files that are fixes, not fork features. Drop
+each one when upstream fixes the same thing, and take upstream's version
+(v0.1.2519 fixed `child_unix.go`'s `proc.Command`, so that one is gone):
 - `settings_keep_test.go` sets `SearchAll`, which upstream added and left out
   of the test.
 - `warm_turns_test.go`: the page asks only once the warm-up step has its turn
@@ -241,6 +240,30 @@ fixes the same thing, and take upstream's version:
   `Connection: close`, and the client leaving ended the wait the report was
   meant to show (`TestUnroutedHeldReportSaved`). This is the one fix in
   production code.
+- `packaged_test.go`'s `TestPackagedByDpkg` writes `magpie.list` on Windows,
+  where NTFS reads `magpie:amd64.list` as a file `magpie` with a stream.
+- `routing-save.test.cjs`'s `open()` waits for the accounts' allowance
+  (`loginUsage`) before it holds the editor: its arrival redraws the editor,
+  and a late one landed among the clicks that must not redraw it.
+- `apprestart_test.go`'s `TestWorkBuddyOwnSaveAfterStartIsNoChange` skips
+  its darwin subtest on Windows, as `TestWorkBuddyRestartOnMac` does: the
+  path is a Mac bundle's.
+- `hermes_test.go` sets `LOCALAPPDATA` beside each `USERPROFILE`. Hermes's
+  root on Windows is under it, and the real one leaked in only in the full
+  package run.
+- `lody_test.go`'s `TestOpenLodyRunsItsDesktopEntry` and `TestDesktopExec`
+  skip on Windows: they run a Linux `.desktop` entry.
+- `t3code_codex_test.go`'s `TestT3CodeCodexInstance` names its folder
+  without `"` on Windows, where NTFS refuses it, and expects the escaped
+  backslashes instead.
+- `rest_resets_read_test.go`'s two tests keep `used` in an `atomic.Int64`:
+  the gateway reads it while the test changes it (macOS `-race`).
+- `gateway-caller-keys.test.cjs` and `gateway-key-models.test.cjs` wait for
+  the page to be laid out at 560px before measuring its width (red 2 of 4
+  on the upstream tag).
+- `request_page_test.go`'s `pageHome` waits for `requestDiskSaves` before
+  its cleanup: a page's chunk file was still being written when `TempDir`
+  removed the folder (`TestRequestChunksFromDisk`, macOS).
 
 The sync PR records each item below as checked, with what was run:
 

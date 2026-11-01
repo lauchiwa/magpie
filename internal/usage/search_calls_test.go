@@ -74,3 +74,23 @@ func TestSearchAPIRowsListedNotCounted(t *testing.T) {
 		t.Fatalf("hosts %v", hosts)
 	}
 }
+
+// cybercaius on Discord: the Requests page's purposes were All, Connection
+// check and the unmarked purpose while the log held searches. A search row,
+// a search API's or one a provider's model ran with its own tool, gives the
+// purpose list Web search, and that purpose picks it.
+func TestSearchRowsListTheirPurpose(t *testing.T) {
+	reportedHome(t)
+	now := time.Now().Add(-time.Hour)
+	Append(Record{Time: now, Agent: "claude", Provider: "deepseek", Host: "api.deepseek.com", Model: "deepseek-flash", Requested: "deepseek-flash", Status: 200, Millis: 3000})
+	Append(Record{Time: now, Agent: "claude", Provider: "deepseek", Host: "api.deepseek.com", Model: "deepseek-flash", Requested: "deepseek-flash",
+		Status: 200, Kind: "web_search", Source: SourceSearch})
+	page := QueryPage(All, Filter{}, 0, 50)
+	if !slices.Contains(page.Purposes, PurposeOf("web_search")) {
+		t.Fatalf("purposes %v", page.Purposes)
+	}
+	p := QueryPage(All, Filter{Purpose: PurposeOf("web_search")}, 0, 50)
+	if p.Total != 1 || p.Rows[0].Source != SourceSearch || p.Sum.Calls != 0 {
+		t.Fatalf("purpose filter: total %d rows %+v sum %+v", p.Total, p.Rows, p.Sum)
+	}
+}

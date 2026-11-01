@@ -55,7 +55,7 @@ function serve(lang, posts, off = []) {
 }
 
 const ROUTINGS = [
-  ["", "Smart", "智能"], ["order", "In order", "按顺序"], ["rotate", "In turn", "轮流"],
+  ["", "Smart", "智能"], ["order", "In order", "按顺序"], ["drain", "Until used up", "用完再换"], ["rotate", "In turn", "轮流"],
   ["usage", "Least used first", "用量少的优先"], ["pace", "Weekly pace", "重置前用完"],
 ];
 const STAYS = [["", "Auto", "自动"], ["session", "Session", "整个会话"], ["turn", "Within a turn", "一轮之内"], ["off", "Off", "关闭"]];
@@ -77,6 +77,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.goto("http://magpie.test/?view=providers");
         const open = async () => {
           await page.locator(".row.provider", { hasText: p.name }).first().click();
+          await page.locator(".editor .accts").first().waitFor();
+          // the editor is drawn again when the accounts' allowance comes in
+          // (loginUsageOf), so what the clicks below redraw is judged after it
+          await page.waitForFunction(() => Object.values(loginUsage).every((u) => u.at && !u.loading));
           await page.locator(".editor .accts").first().waitFor();
         };
         // the field under a label: the label's next sibling
@@ -170,7 +174,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           // on again, every routing is back
           await page.evaluate(() => applyFeatures([{ id: "rotation", on: true }]));
           const back = (await shownOf()).length;
-          assert.equal(back, p.account ? 7 : 8, `${where}: every routing back`);
+          // By weight is offered for accounts as for keys (rubbzha on X)
+          assert.equal(back, 9, `${where}: every routing back`);
           assert.deepEqual(errors, [], where);
           await page.context().close();
         }

@@ -193,7 +193,7 @@ func logSearch(ctx context.Context, rec usage.Record, query string, start time.T
 		rec.Agent = f.Agent
 	}
 	who := access.Caller(ctx)
-	rec.CallerKeyID, rec.CallerKeyName = who.KeyID, who.KeyName
+	rec.CallerKeyID, rec.CallerKeyName, rec.CallerIssuerID = who.KeyID, who.KeyName, who.IssuerID()
 	switch {
 	case err != nil && found == 0 && errors.Is(err, errFoundNothing):
 		rec.Error = "found nothing"

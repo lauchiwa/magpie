@@ -5,12 +5,15 @@ import (
 	"cmp"
 	"encoding/json"
 	"errors"
+	"io"
 	"maps"
+	"math"
 	"net/http"
 	"os"
 	"reflect"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"slices"
 	"strconv"
 	"strings"
@@ -190,7 +193,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			rw.WriteHeader(http.StatusOK)
 			return
 		}
-		tag := writeSame(rw, r, func(b *bytes.Buffer) error { return statsAnswer(b, st, agents) })
+		tag := writeSame(rw, r, func(w io.Writer) error { return statsAnswer(w, st, agents) })
 		if tag != "" {
 			statsTags.Lock()
 			if statsTags.m == nil || len(statsTags.m) >= statsMemoMost {
@@ -365,7 +368,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, errors.New("no such session"))
 			return
 		}
-		if err := openTerminal(run, settings.Load().SessionTerminal); err != nil {
+		if err := openTerminal(run, s.Title, settings.Load().SessionTerminal); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -384,17 +387,17 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, errors.New("opening Terminal is only for the Mac app"))
 			return
 		}
-		run := ""
+		run, name := "", ""
 		for _, a := range agent.Detected() {
 			if a.ID == in.Agent {
-				run = agentCommand(a)
+				run, name = agentCommand(a), a.Name
 			}
 		}
 		if run == "" {
 			fail(rw, errors.New("no command starts this agent"))
 			return
 		}
-		if err := agentTerminal(run, settings.Load().SessionTerminal); err != nil {
+		if err := agentTerminal(run, name, settings.Load().SessionTerminal); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -429,7 +432,7 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		if in.Open {
-			if err := openTerminal(c.Command, settings.Load().SessionTerminal); err != nil {
+			if err := openTerminal(c.Command, s.Title, settings.Load().SessionTerminal); err != nil {
 				fail(rw, err)
 				return
 			}
@@ -663,6 +666,7 @@ func warmSessions() {
 var warmOnce sync.Once
 
 func warmStart() {
+	steadyGCStart()
 	go func() {
 		// a fresh install reads no agent's sessions until asked; one
 		// that read them before keeps reading them (decided once)
@@ -761,8 +765,9 @@ func coldTurn(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// underTightGC runs fn letting the heap grow by a tenth of what it holds
-// before a collection, not Go's default of all of it, and then puts back
+// underTightGC runs fn letting the heap grow by a tenth of what it holds,
+// or by tightGCRoom when that is more (tightPercent), before a
+// collection, not Go's default of all of it, and then puts back
 // what was set; a GOGC the user set lower, or off, is kept. The usage
 // page's read of the whole history holds every row of it at once (~270 MB
 // live for 390k calls), and a cold start that rests at ~200 MB peaked at
@@ -788,8 +793,10 @@ func underTightGC(fn func()) {
 // when the first to begin ended before the second.
 var tightGC struct {
 	sync.Mutex
-	n   int // reads under it
-	was int // GOGC before the first
+	n      int  // reads under it
+	was    int  // GOGC before the first
+	hooked bool // a retightenGC is waiting for the next collection
+	steady bool // steadyGCStart has run: retightenGC sets steadyPercent between reads
 }
 
 // tightenGC begins a read under a tight GC; undo ends it.
@@ -802,6 +809,10 @@ func tightenGC() (undo func()) {
 			debug.SetGCPercent(was)
 		}
 		tightGC.was = was
+		if tightGCRoom > 0 && !tightGC.hooked {
+			tightGC.hooked = true
+			afterNextGC(retightenGC)
+		}
 	}
 	tightGC.n++
 	return sync.OnceFunc(func() {
@@ -820,6 +831,104 @@ func tightenGC() (undo func()) {
 // MB and 271–275 MB, for ~20% more CPU in the first start's minute and
 // ~2 s a minute of polls asking ten answers every 5 s (#2278).
 const tightGCPercent = 10
+
+// tightGCRoom is the least a tight GC lets the heap grow by before a
+// collection. A tenth of a small heap is a few MB: a first start's reads
+// began on a ~50 MB heap and allocate ~400 MB a second, so it collected
+// ~28 times a second, 2,205 times in its first 78 s, and the collections
+// were 69–72 s of its ~4:10 of CPU (#2278). With this room a heap of
+// over 320 MB is held to a tenth still; one below grows by 32 MB. 0 in
+// tests, whose GOGC is read as tightGCPercent while a read is under it.
+var tightGCRoom = func() int64 {
+	if testing.Testing() {
+		return 0
+	}
+	return 32 << 20
+}()
+
+// tightPercent is the GOGC a tight GC sets on a live heap of live bytes:
+// tightGCPercent, or enough for tightGCRoom, never above was, what was
+// set before (off stays off).
+func tightPercent(live int64, was int) int {
+	p := tightGCPercent
+	if live > 0 && tightGCRoom > 0 {
+		p = max(p, int(min(tightGCRoom*100/live, math.MaxInt32)))
+	}
+	if was < p {
+		return was
+	}
+	return p
+}
+
+// retightenGC sets the GOGC for the heap the collection just left, while
+// a read is under a tight GC, and waits for the next one.
+func retightenGC() {
+	tightGC.Lock()
+	defer tightGC.Unlock()
+	if tightGC.n == 0 && !tightGC.steady {
+		tightGC.hooked = false
+		return
+	}
+	s := []metrics.Sample{{Name: "/gc/heap/live:bytes"}}
+	metrics.Read(s)
+	if s[0].Value.Kind() == metrics.KindUint64 {
+		live := int64(s[0].Value.Uint64())
+		if tightGC.n > 0 {
+			debug.SetGCPercent(tightPercent(live, tightGC.was))
+		} else {
+			debug.SetGCPercent(steadyPercent(live))
+		}
+	}
+	afterNextGC(retightenGC)
+}
+
+// steadyGCStart has the heap grow by half of what it holds before a
+// collection, or by steadyGCRoom when that is more, not Go's default of
+// all of it, for the life of the process; a GOGC the user set is kept.
+// A window resting on ~60 MB live polls /api/state, /api/drift and
+// /api/providers, ~10 MB thrown away a round, so at the default its
+// footprint peaked at 138 MB; under half, 107-108 MB, for ~9% more CPU in
+// the polls. Reads under a tight GC still set their tenth while they run.
+func steadyGCStart() {
+	if os.Getenv("GOGC") != "" {
+		return
+	}
+	tightGC.Lock()
+	defer tightGC.Unlock()
+	tightGC.steady = true
+	if tightGC.n == 0 {
+		debug.SetGCPercent(steadyPercent(0))
+	}
+	if !tightGC.hooked {
+		tightGC.hooked = true
+		afterNextGC(retightenGC)
+	}
+}
+
+// steadyGCPercent is the half steadyGCStart lets the heap grow by.
+const steadyGCPercent = 50
+
+// steadyGCRoom is the least it grows by: half of a small heap is a few
+// MB, and a heap under 64 MB grows by 32 MB, never by more than Go's
+// default.
+const steadyGCRoom = 32 << 20
+
+// steadyPercent is the GOGC steadyGCStart sets on a live heap of live
+// bytes (0 before the first collection: steadyGCPercent).
+func steadyPercent(live int64) int {
+	p := steadyGCPercent
+	if live > 0 {
+		p = max(p, int(min(steadyGCRoom*100/live, 100)))
+	}
+	return p
+}
+
+// afterNextGC runs fn on the finalizer goroutine once the next collection
+// has finished.
+func afterNextGC(fn func()) {
+	type tick struct{ _ *byte } // a pointer keeps it off the tiny allocator
+	runtime.SetFinalizer(&tick{}, func(*tick) { go fn() })
+}
 
 // agentCommand is the shell line that starts a: its Launch where it has
 // one (agy, Claude Science, Cursor Private Inference), else its own
@@ -846,15 +955,23 @@ var agentTerminal = openTerminal
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // openTerminal runs a command in the chosen Mac terminal through a .command
-// file, as it would open from Finder: no Automation consent.
+// file, as it would open from Finder: no Automation consent; in Rex,
+// through its CLI, in a tab labelled label (terminal_rex.go).
 // The shell is left open when the agent quits.
-func openTerminal(command, choice string) error {
+func openTerminal(command, label, choice string) error {
 	var found terminalDiscovery
 	if choice != terminalBundleID {
 		var err error
 		// the system default falls back to Terminal when nothing is found
 		if found, err = discoverTerminals(); err != nil && choice != "" && choice != "system" {
 			return err
+		}
+	}
+	if choice == rexBundleID {
+		for _, app := range found.Apps {
+			if app.ID == rexBundleID {
+				return openInRex(app.Path, command, label)
+			}
 		}
 	}
 	args, err := terminalOpenArgs(choice, found)
@@ -898,52 +1015,75 @@ func viaOf(x usage.ViaIndex, s sessions.Session) []usage.Via {
 	return nil
 }
 
-// statsAnswer writes the stats answer into b as an Encoder of
-// struct{ sessions.Stats; Agents } does, its days one at a time: encoded
-// whole, the Encoder's own buffer grew to the ~6 MB answer from nothing
-// after each collection, ~200 MB of 90 s of polls while an agent worked
-// (#2278).
-func statsAnswer(b *bytes.Buffer, st sessions.Stats, agents map[string]string) error {
-	enc := json.NewEncoder(b)
+// statsAnswer writes the stats answer to w as an Encoder of
+// struct{ sessions.Stats; Agents } does, a part at a time: encoded whole,
+// the Encoder's own buffer grew to the ~6 MB answer from nothing after
+// each collection, ~200 MB of 90 s of polls while an agent worked, and a
+// buffer kept for the next held it between polls (#2278).
+func statsAnswer(w io.Writer, st sessions.Stats, agents map[string]string) error {
+	var part bytes.Buffer
+	enc := json.NewEncoder(&part)
 	// v as Marshal writes it: Encode ends it with a newline
 	put := func(v any) error {
+		part.Reset()
 		if err := enc.Encode(v); err != nil {
 			return err
 		}
-		b.Truncate(b.Len() - 1)
-		return nil
+		_, err := w.Write(part.Bytes()[:part.Len()-1])
+		return err
 	}
-	b.WriteString(`{"from":`)
+	text := func(s string) error {
+		_, err := io.WriteString(w, s)
+		return err
+	}
+	if err := text(`{"from":`); err != nil {
+		return err
+	}
 	if err := put(st.From); err != nil {
 		return err
 	}
-	b.WriteString(`,"to":`)
+	if err := text(`,"to":`); err != nil {
+		return err
+	}
 	if err := put(st.To); err != nil {
 		return err
 	}
-	b.WriteString(`,"days":`)
+	if err := text(`,"days":`); err != nil {
+		return err
+	}
 	if st.Days == nil {
-		b.WriteString("null")
+		if err := text("null"); err != nil {
+			return err
+		}
 	} else {
-		b.WriteByte('[')
+		if err := text("["); err != nil {
+			return err
+		}
 		for i := range st.Days {
 			if i > 0 {
-				b.WriteByte(',')
+				if err := text(","); err != nil {
+					return err
+				}
 			}
 			if err := put(&st.Days[i]); err != nil {
 				return err
 			}
 		}
-		b.WriteByte(']')
+		if err := text("]"); err != nil {
+			return err
+		}
 	}
-	b.WriteString(`,"keys":`)
+	if err := text(`,"keys":`); err != nil {
+		return err
+	}
 	if err := put(st.Keys); err != nil {
 		return err
 	}
-	b.WriteString(`,"agents":`)
+	if err := text(`,"agents":`); err != nil {
+		return err
+	}
 	if err := put(agents); err != nil {
 		return err
 	}
-	b.WriteString("}\n")
-	return nil
+	return text("}\n")
 }

@@ -160,14 +160,19 @@ function renderSearch(s, keep) {
     r.id = "searchFirstRow";
   }
   // a model whose provider searches the web by itself is given magpie's
-  // search instead, as every other model is (cybercaius on Discord); only
-  // while magpie has a search to give it
-  if (s.searchProvider || asked.length) {
-    const r = row(t("Models that search by themselves"), t("Search with their provider's own search, or with magpie's, as every other model does"),
-      segs([["own", t("Their own")], ["magpie", t("magpie's")]], s.searchAll ? "magpie" : "own",
-        (v) => writingPrefs(api("settings/search-all", { on: v === "magpie" }))
-          .then((ns) => { prefs = state.settings = ns; renderSettings(); }).catch(settingsErr)));
+  // search instead, as every other model is (cybercaius on Discord). The
+  // row is always there: with nothing magpie can search with it can't be
+  // chosen, and says why and where to add a search ("开关在哪个位置")
+  {
+    const can = !!(s.searchProvider || asked.length);
+    const sw = segs([["own", t("Their own")], ["magpie", t("magpie's")]], s.searchAll ? "magpie" : "own",
+      (v) => writingPrefs(api("settings/search-all", { on: v === "magpie" }))
+        .then((ns) => { prefs = state.settings = ns; renderSettings(); }).catch(settingsErr));
+    if (!can) for (const b of sw.querySelectorAll("button")) b.disabled = true;
+    const r = row(t("Models that search by themselves"), can ? t("Search with their provider's own search, or with magpie's, as every other model does")
+      : t("magpie has nothing to search with: add a Search API above, or pick a provider under Searches for other models"), sw);
     r.id = "searchAllRow";
+    r.classList.add("search-all-row", ...(can ? [] : ["off"]));
   }
   // the same search as an MCP server of the gateway's (Kayphoon on
   // Discord), for an agent to mount as its web_search and web_fetch tools

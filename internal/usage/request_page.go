@@ -179,13 +179,13 @@ type rowChunk struct {
 // rowMsg is the Text of a row's Claude message id, after rowText's, and
 // rowError its error's
 const (
-	rowMsg   = 34
+	rowMsg   = 35
 	rowError = 9
 	// rowClient is the Text of the client's own name, when the user counts
 	// it as another agent (Row.Client, #1958)
 	rowClient = 33
 	// rowTexts is how many strings a row has: rowText's and the message id
-	rowTexts = 35
+	rowTexts = 36
 )
 
 // rowVaried are the strings that differ call by call: the error, the
@@ -251,8 +251,8 @@ func (c *rowChunk) shape(t [rowTexts]uint32) uint32 {
 // reason ("Upstream stop reason", #1927) and the service tiers (#1784)
 // among them: a string left out comes back empty from the cache, in the
 // page and in /v1/magpie/usage/requests (TestRowTextHoldsEveryString)
-func rowText(r *Row) [34]*string {
-	return [34]*string{&r.Agent, &r.Provider, &r.Host, &r.SessionProvider, &r.SessionAccount, &r.Model, &r.Requested, &r.Served, &r.Effort, &r.Error, &r.ErrType, &r.RequestID, &r.Endpoint, &r.Session, &r.NativeSession, &r.Kind, &r.Source, &r.Via, &r.ProviderKeyID, &r.ProviderKeyName, &r.CallerKeyID, &r.CallerKeyName, &r.Archive, &r.Operation, &r.ProviderAccount, &r.ResponseID, &r.Upstream, &r.Subagent, &r.ParentAgent, &r.Stop, &r.TierAsked, &r.TierSent, &r.TierServed, &r.Client}
+func rowText(r *Row) [35]*string {
+	return [35]*string{&r.Agent, &r.Provider, &r.Host, &r.SessionProvider, &r.SessionAccount, &r.Model, &r.Requested, &r.Served, &r.Effort, &r.Error, &r.ErrType, &r.RequestID, &r.Endpoint, &r.Session, &r.NativeSession, &r.Kind, &r.Source, &r.Via, &r.ProviderKeyID, &r.ProviderKeyName, &r.CallerKeyID, &r.CallerKeyName, &r.Archive, &r.Operation, &r.ProviderAccount, &r.ResponseID, &r.Upstream, &r.Subagent, &r.ParentAgent, &r.Stop, &r.TierAsked, &r.TierSent, &r.TierServed, &r.Client, &r.CallerIssuerID}
 }
 func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 	if c.dict == nil {
@@ -356,8 +356,8 @@ func (c *rowChunk) row(i int) Row {
 	for i, s := range rowText(&r) {
 		*s = c.Strings[t[i]]
 	}
-	if r.Swapped && p.Flags&swapKnown == 0 && (SameSpelled(r.Model, r.Served) || ServingName(r.Model, r.Served) || RelayRenamed(r.Model, r.Served)) {
-		r.Swapped = false // kept before a name spelled otherwise, a vendor's serving name or a relay's rename was the same
+	if r.Swapped && p.Flags&swapKnown == 0 && (SameSpelled(r.Model, r.Served) || ServingName(r.Model, r.Served) || RelayRenamed(r.Model, r.Served) || VendorAlias(r.Model, r.Served)) {
+		r.Swapped = false // kept before a name spelled otherwise, a vendor's serving name, a relay's rename or the vendor's own alias was the same
 	} else if r.Swapped && ListedAs(r.Provider, r.Model, r.Served) {
 		r.Swapped = false // the name the provider's list gives the model asked for
 	}
@@ -750,7 +750,7 @@ func readRequestState(now time.Time) requestState {
 	renamed := provider.UsageRenames().Key()
 	cfg := settings.Load()
 	prices, _ := json.Marshal(cfg.ModelPrices)
-	wires, _ := json.Marshal(cfg.ModelWires)
+	wires, _ := json.Marshal(cfg.Wires())
 	meta := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s", ids, renamed, prices, wires, statKey(provider.Path()), statKey(catalog.CachePath()), clientAgentsKey(), clearedKey())
 	h := sha256.New()
 	for _, current := range provider.All() {
@@ -1056,7 +1056,7 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now, settle
 		return func(r Record, source string) Row {
 			sent := r.Model
 			if source == "" {
-				sent = provider.SentNameIn(cfg.ModelWires, r.priceID(), r.Model, r.Effort)
+				sent = provider.SentNameIn(cfg.Wires(), r.priceID(), r.Model, r.Effort)
 			}
 			row := Row{Record: r, Source: source, Routed: GroupRouted(sent, r.Served)}
 			if r.Served != "" {
@@ -1088,7 +1088,7 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now, settle
 	// cache budget every query priced the whole history again.
 	var gateways []*rowChunk
 	renames := provider.UsageRenames()
-	priced := newBlockPricer(renames, cfg.ModelWires, price)
+	priced := newBlockPricer(renames, cfg.Wires(), price)
 	meta := sha256.Sum256([]byte(st.root + "|" + st.meta))
 	priced.share(meta)
 	for _, packed := range snapshot.blocks {

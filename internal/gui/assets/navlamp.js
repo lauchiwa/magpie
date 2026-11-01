@@ -1,16 +1,19 @@
-// The sidebar's sub-lists light the row under the pointer as a torch would:
+// The sidebar lights the row under the pointer as a torch would, in its
+// pages (Providers, Routing…, Settings), their sub-lists and the
+// gateway's address at its foot alike:
 // brightest where it points, the rest of that row a step up from the
-// others, which keep their own ink (app.css, .nav-s > span.lit). The light
+// others, which keep their own ink (app.css, span.lit). The light
 // follows the pointer with a little lag and fades out as it moves on; with
 // reduced motion it is where the pointer is at once. Imported by app.js
-// when a sub-list is first drawn; a touch never lights a row.
+// when the pointer first comes over the sidebar (layoutNav), not at start,
+// where it held up the open page's row; a touch never lights a row.
 document.documentElement.classList.add("navlamp");
 const lit = new Map(); // a row's word -> how lit it is, 0 to 1
 let at = null, tx = 0, x = 0, raf = 0;
 
 function frame() {
   raf = 0;
-  const still = calm(), row = at && at.isConnected && !at.parentElement.classList.contains("cur") ? at : null;
+  const still = calm(), row = at && at.isConnected && !at.parentElement.matches(".cur, .on") ? at : null;
   if (row && !lit.has(row)) lit.set(row, 0);
   x = still ? tx : x + (tx - x) * 0.22;
   let busy = Math.abs(tx - x) > 0.3;
@@ -34,8 +37,8 @@ function frame() {
 const go = () => { if (!raf) raf = requestAnimationFrame(frame); };
 
 document.addEventListener("pointermove", (e) => {
-  const row = e.pointerType === "touch" || !e.target.closest ? null : e.target.closest(".nav-sub > .nav-s");
-  const word = row && row.querySelector("span");
+  const row = e.pointerType === "touch" || !e.target.closest ? null : e.target.closest(".nav-sub > .nav-s, body.side-nav :is(#nav > button[data-view], #prefs, #sideGw)");
+  const word = row && row.querySelector(":scope > span");
   if (word && !at) x = e.clientX;
   tx = e.clientX;
   if (word !== at) at = word;

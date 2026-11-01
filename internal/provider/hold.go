@@ -182,6 +182,10 @@ func StampNow() Stamp {
 		roots: [3]rootStamp{stampOf(Path()), stampOf(settings.Path()), stampOf(catalog.CachePath())}}
 }
 
+// Held is what build gives, built once while a request holds it (Hold),
+// for what each row of a page looks up: shared by them, so read only.
+func Held[T any](key string, build func() T) T { return heldOf(key, build) }
+
 // heldOf is what build gives, built once while a request holds it.
 func heldOf[T any](key string, build func() T) T {
 	held.Lock()

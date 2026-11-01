@@ -1,8 +1,10 @@
 package usage
 
 import (
+	"strings"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 // A first start, with no sums kept on disk, built the page's cells, the
@@ -26,8 +28,9 @@ var coldSpanning func(chunks int)
 // coldSpans calls fn for each span of days from since, or the day of the
 // oldest row of sets, to cut, with the chunks of sets a pairing of that
 // span reaches: those with a row from heatReach before it to heatReach
-// after. A gateway block not priced yet is priced for its span alone, and
-// let go after it. False: coldSpan is zero, and fn was not called.
+// after, of a chunk reaching past that its rows within it alone
+// (within). A gateway block not priced yet is priced for its span alone,
+// and let go after it. False: coldSpan is zero, and fn was not called.
 func coldSpans(since, cut time.Time, sets [3][]*rowChunk, fn func(from, to time.Time, span [3][]*rowChunk)) bool {
 	if coldSpan <= 0 {
 		return false
@@ -70,6 +73,10 @@ func coldSpans(since, cut time.Time, sets [3][]*rowChunk, fn func(from, to time.
 					copy := *c
 					copy.lazy = alone[b]
 					c = &copy
+				} else if c.raw == nil && (at.Before(lo) || !c.Latest.Before(hi)) {
+					if c = c.within(lo, hi); c == nil {
+						continue
+					}
 				}
 				span[k] = append(span[k], c)
 			}
@@ -84,6 +91,73 @@ func coldSpans(since, cut time.Time, sets [3][]*rowChunk, fn func(from, to time.
 		from = to
 	}
 	return true
+}
+
+// within is c's rows from lo to before hi, and those of no time, as a
+// chunk of its own; nil for none. A session written over weeks was
+// paired whole in each span it reached: the last spans of a long
+// history paired ~340k rows each, ~230k of them a few hundred such
+// files' (#2278). Its rows past a span's reach pair with none of it.
+// It has the strings its rows name alone, copied into one block of its
+// own: a copy of the whole table held the whole file's decoded strings
+// through each span it reached, 5–12 MB of a first start's most live
+// heap (241–245 MB from 250–253).
+func (c *rowChunk) within(lo, hi time.Time) *rowChunk {
+	var rows chunkRows
+	defer rows.release()
+	open := rows.of(c)
+	out := &rowChunk{Source: c.Source, Computer: c.Computer}
+	var actors codexActors
+	// ids is each string's id in out, plus one, and order out's strings
+	// by their id in c; the first is "" in both
+	ids := make([]uint32, len(open.Strings))
+	order := []uint32{}
+	if len(ids) > 0 {
+		ids[0], order = 1, append(order, 0)
+	}
+	size := 0
+	for i := range open.Rows {
+		p := &open.Rows[i]
+		if t := p.Time(); !t.IsZero() && (t.Before(lo) || !t.Before(hi)) {
+			continue
+		}
+		t := open.texts(p)
+		for k, id := range t {
+			if ids[id] == 0 {
+				order = append(order, id)
+				ids[id] = uint32(len(order))
+				size += len(open.Strings[id])
+			}
+			t[k] = ids[id] - 1
+		}
+		row := *p
+		out.setTexts(&row, t)
+		out.Rows = append(out.Rows, row)
+		if c.codexActors.ids != nil {
+			actors.add(c.codexActors.at(i))
+		}
+		if t := p.Time(); t.After(out.Latest) {
+			out.Latest = t
+		}
+	}
+	if len(out.Rows) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.Grow(size)
+	for _, id := range order {
+		b.WriteString(open.Strings[id])
+	}
+	text := b.String()
+	out.Strings = make([]string, len(order))
+	for i, id := range order {
+		n := len(open.Strings[id])
+		out.Strings[i], text = text[:n], text[n:]
+	}
+	out.shapeIDs, out.codexActors = nil, actors
+	out.Count = len(out.Rows)
+	out.Bytes = int64(len(out.Rows)) * int64(unsafe.Sizeof(packedRow{}))
+	return out
 }
 
 // alone is a pricer of b's prices that keeps the blocks it prices to

@@ -433,22 +433,27 @@ body.side-nav #nav button.has-dot::after { top: 50%; right: 10px; margin-top: -3
    before the selection slides there */
 .nav-s:hover:not(.cur) { color: var(--fg); }
 .nav-s.cur { color: var(--fg); font-weight: 500; }
-/* the row under the pointer is lit as by a torch (navlamp.js): --lx is the
-   pointer's place in the word, --si how lit the row is. Its heart is a step
-   past the text's ink (--fg taken to white in dark, black in light), the
-   rest of the row 15% of the way to it, and the plain hover above stands
-   down. Where color-mix is missing (Safari 15) the plain hover stays. */
+/* the row under the pointer is lit as by a torch (navlamp.js), a page's
+   row, a sub-list's and the gateway's address alike: --lx is the pointer's place in the word, --si
+   how lit the row is, --lo the row's own ink. Its heart is a step past the
+   text's ink (--fg taken to white in dark, black in light), the rest of the
+   row 15% of the way to it, and the plain hover above stands down. Where
+   color-mix is missing (Safari 15) the plain hover stays. */
 @supports (color: color-mix(in oklab, red, blue)) {
   .navlamp .nav-s:hover:not(.cur) { color: var(--ctl-fg); }
-  .nav-s > span.lit {
+  .navlamp body.side-nav :is(#nav button[data-view], #prefs):hover:not(.on) { color: var(--fg-2); }
+  .navlamp body.side-nav :is(#nav button[data-view], #prefs) > span { --lo: var(--fg-2); }
+  .navlamp .side-gw:hover { color: var(--muted); }
+  .side-gw > span { --lo: var(--muted); }
+  :is(.nav-s, #nav button, #prefs, .side-gw) > span.lit {
     --hi: var(--fg);
-    --hot: color-mix(in oklab, var(--hi) calc(var(--si) * 100%), var(--ctl-fg));
-    --far: color-mix(in oklab, var(--fg) calc(var(--si) * 15%), var(--ctl-fg));
+    --hot: color-mix(in oklab, var(--hi) calc(var(--si) * 100%), var(--lo, var(--ctl-fg)));
+    --far: color-mix(in oklab, var(--fg) calc(var(--si) * 15%), var(--lo, var(--ctl-fg)));
     background: radial-gradient(36px 400px at var(--lx) 50%, var(--hot) 0%, var(--hot) 12%, color-mix(in oklab, var(--hot) 45%, var(--far)) 45%, var(--far) 100%);
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
 }
-@supports (color: oklch(from red round(l) c h)) { .nav-s > span.lit { --hi: oklch(from var(--fg) round(l) 0 h); } }
+@supports (color: oklch(from red round(l) c h)) { :is(.nav-s, #nav button, #prefs, .side-gw) > span.lit { --hi: oklch(from var(--fg) round(l) 0 h); } }
 /* a row pressed darkens, as a Mac sidebar's does: it never shrinks the way a
    button does (.seg button:active, .icon:active below) */
 body.side-nav #side button:active { transform: none; }
@@ -1063,6 +1068,10 @@ body.window .field.solo { grid-column: auto; }
 .quota-own .own-badge { margin-left: 0; }
 .subscription-card.several .quota-keyline + .subscription-account { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line); }
 .reset-ask .reset-idle { color: var(--amber); }
+/* which of an account's resets is used, the soonest unless another is picked */
+.reset-ask .reset-pick { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 2px 0 10px; font-size: 12px; color: var(--muted); }
+.reset-ask .reset-pick .sess-pick { max-width: 100%; }
+.reset-ask .reset-sooner { color: var(--amber); }
 /* a WorkBuddy account's daily check-in on its Usage card (#694) */
 .wb-checkin { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .wb-checkin .ci-say { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
@@ -1989,6 +1998,10 @@ body.panel .profiles #save { height: 25px; } /* the field's: the line keeps its 
 .subscription-card.several .quota-credits + .subscription-account { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line); }
 .pq-autoreset, .pq-credits { grid-column: 1 / -1; margin-top: 5px; padding-top: 7px; border-top: 1px solid var(--line-2); font-size: 11px; }
 .pq-resets + .pq-autoreset, .pq-autoreset + .pq-credits { margin-top: 5px; padding-top: 0; border-top: 0; }
+/* spending them only after everything else, a line of its own under the
+   say while the credits are spent at all, its switch at the line's end */
+.quota-credits, .pq-credits { flex-wrap: wrap; row-gap: 3px; }
+.ar-credits-last { flex-basis: 100%; }
 .ar-say { flex: 1; min-width: 0; line-height: 1.35; }
 .ar-say b { font-weight: 500; color: var(--fg-2); }
 .ar-used { display: block; margin-top: 2px; color: var(--faint); }
@@ -2421,7 +2434,14 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 /* Providers' search (#1614): a toolbar field over the list, at its right
    edge as Settings' is; across the page when the window is narrow. While
    searching, the Turned off fold stays open on the ones that match. */
-#view-providers .pv-head { display: flex; justify-content: flex-end; margin: 0 0 10px; flex: none; }
+#view-providers .pv-head { display: flex; justify-content: flex-end; gap: 8px; margin: 0 0 10px; flex: none; }
+/* Hide accounts, on Routing, Usage and (its own switch) Providers. On, it
+   says so in its struck eye and its words, a shade darker: a page tool,
+   not a banner */
+.rt-mask { display: inline-flex; align-items: center; gap: 5px; }
+#view-providers .pv-head > .rt-mask { flex: none; }
+.rt-mask svg { width: 13px; height: 13px; flex: none; }
+.rt-mask[aria-pressed="true"] { color: var(--fg-2); }
 #view-providers .pv-q { flex: 0 1 220px; min-width: 120px; }
 #view-providers .pv-none { margin: 18px 2px; }
 #view-providers .off-head .fold:disabled { cursor: default; opacity: 1; }
@@ -2595,7 +2615,9 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .row.model .minfo, .rt-gedit .fbrow .minfo { display: inline-flex; align-items: center; gap: 4px; flex: none; margin-left: 8px; cursor: help; }
 .row.model .minfo .badge, .rt-gedit .fbrow .minfo .badge { display: inline-flex; align-items: center; padding: 0 5px; font: var(--ui-style, normal) 600 9.5px/16px var(--ui-font, var(--font)); font-stretch: var(--ui-stretch, 100%); letter-spacing: .02em; text-transform: none; background: var(--pill); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); vertical-align: 0; }
 .row.model .minfo .mi-ctx, .rt-gedit .fbrow .minfo .mi-ctx { font-variant-numeric: tabular-nums; }
-.row.model .minfo .mi-img, .rt-gedit .fbrow .minfo .mi-img { padding: 0 4px; }
+/* the image chip holds a glyph, not a line of text: it is given the text
+   chips' 16px line as its height, so it stands as tall as they do (nb5p) */
+.row.model .minfo .mi-img, .rt-gedit .fbrow .minfo .mi-img { padding: 0 4px; height: 16px; box-sizing: border-box; }
 .row.model .minfo .mi-img svg, .rt-gedit .fbrow .minfo .mi-img svg { display: block; }
 .provider .pswitch { margin-left: 8px; }
 .editor .off-note { grid-column: 1 / -1; }
@@ -2634,6 +2656,25 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .accts > :is(.keep-login, .switch-only, .pool-ends) + .acc { border-top: 1px solid var(--line-2); }
 .editor .accts .keep-login, .editor .accts .switch-only, .editor .accts .pool-ends { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 34px; padding: 6px 11px; font-size: 12px; border-top: 1px solid var(--line-2); }
 .editor .accts .keep-login .keep-as { max-width: 240px; }
+/* Claude Code's interactive mode or -p, with why (claudeModeRow) */
+.claude-mode { display: contents; }
+.cc-run { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 26px; }
+.cc-pill { display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px 0 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); font-size: 12px; color: var(--fg); cursor: default; }
+.cc-pill:hover { border-color: var(--muted); }
+.cc-pill:focus-visible { border-color: var(--muted); }
+.cc-pill i { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.cc-pill.tui i { background: var(--green); }
+.cc-said { font-size: 12px; color: var(--muted); }
+.cc-tip { position: fixed; z-index: 1000; width: min(400px, calc(100vw - 16px)); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line-2); background: var(--card); box-shadow: 0 12px 32px rgba(0, 0, 0, .18); font-size: 12px; line-height: 1.5; color: var(--fg); pointer-events: none; animation: mask-tip .16s var(--ease); }
+.cc-m + .cc-m { margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line-2); }
+.cc-m .h { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.cc-m .now { padding: 0 6px; border-radius: 5px; background: var(--green-soft); color: var(--green); font-size: 11px; line-height: 17px; }
+.cc-m p { margin: 2px 0 0; color: var(--muted); }
+.cc-m p.good, .cc-m p.bad { padding-left: 14px; text-indent: -14px; color: var(--fg-2); }
+.cc-m p.good::before, .cc-m p.bad::before { display: inline-block; width: 14px; text-indent: 0; content: "+"; color: var(--green); font-weight: 600; }
+.cc-m p.bad::before { content: "−"; color: var(--muted); }
+.cc-tip .foot { margin-top: 9px; padding-top: 7px; border-top: 1px solid var(--line-2); font-size: 11px; color: var(--faint); }
+@media (prefers-reduced-motion: reduce) { .cc-tip { animation: none; } }
 .editor .accts .pool-ends .note { flex-basis: 100%; color: var(--fg-2); }
 .acc .n { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acc .plan { color: var(--muted); font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--pill); white-space: nowrap; }
@@ -2642,7 +2683,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .acc.in-use .dot { background: var(--fg); box-shadow: none; color: var(--card); }
 .acc .using { font-size: 11px; color: var(--fg-2); padding: 2px 8px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line); }
 .acc .text.quiet { opacity: 0; transition: opacity .15s; }
-.acc:hover .text.quiet { opacity: 1; }
+.acc:hover .text.quiet, .acc.held .text.quiet { opacity: 1; }
 .acc .text.quiet:focus-visible { opacity: 1; }
 /* an account signed out (#1363) shows its Remove without a hover: it is
    one of the two ways out of that state, beside Sign in again */
@@ -2707,7 +2748,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .acc .proto svg { opacity: .7; transition: transform .15s var(--ease); }
 .acc .proto.open svg { transform: rotate(180deg); }
 .acc .proto:not(.set) { opacity: 0; background: none; box-shadow: inset 0 0 0 1px var(--line); }
-.acc:hover .proto, .acc .proto.open, .acc.adding .proto { opacity: 1; }
+.acc:hover .proto, .acc.held .proto, .acc .proto.open, .acc.adding .proto { opacity: 1; }
 .acc .proto:focus-visible { opacity: 1; }
 .acc .proto.set { color: var(--fg-2); }
 .acc .proto:hover, .acc .proto.open { color: var(--fg); background: var(--pill-hover); }
@@ -2715,7 +2756,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
    shown always once it keeps some only, and its picker under the row */
 .acc .amodels { flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 7px; font: inherit; font-size: 11px; color: var(--muted); border: 0; border-radius: 5px; background: var(--pill); white-space: nowrap; cursor: default; transition: opacity .15s, background .12s, color .12s; }
 .acc .amodels:not(.set) { opacity: 0; background: none; box-shadow: inset 0 0 0 1px var(--line); }
-.acc:hover .amodels, .acc .amodels.open { opacity: 1; }
+.acc:hover .amodels, .acc.held .amodels, .acc .amodels.open { opacity: 1; }
 .acc .amodels:focus-visible { opacity: 1; }
 .acc .amodels.set { color: var(--accent); background: var(--accent-soft); font-weight: 500; }
 .acc .amodels:hover, .acc .amodels.open { color: var(--fg); background: var(--pill-hover); }
@@ -2730,7 +2771,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 /* an account's or key's limit on requests at once (#892), and how many
    run and wait under it: shown on hover unless a limit applies */
 .acc .alane { flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 7px; font: inherit; font-size: 11px; color: var(--muted); border: 0; border-radius: 5px; background: none; box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; cursor: default; opacity: 0; transition: opacity .15s, background .12s, color .12s; font-variant-numeric: tabular-nums; }
-.acc:hover .alane, .acc .alane.open, .acc .alane.set { opacity: 1; }
+.acc:hover .alane, .acc.held .alane, .acc .alane.open, .acc .alane.set { opacity: 1; }
 /* apart: Safari before 15.4 drops a whole selector list with :focus-visible in it */
 .acc .alane:focus-visible { opacity: 1; }
 .acc .alane.set { color: var(--fg); background: var(--pill-hover); box-shadow: none; }
@@ -2787,33 +2828,46 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 /* Remove ends the line, and where the line wraps it ends the next */
 .acc .acc-tools > .text.quiet { margin-left: auto; }
 /* a key's row (#841): what shows only on hover takes no room till then,
-   so a key's weight never squeezes its name away; the room it takes on
-   hover is the row's free room, else the masked key's, and the models
-   badge gives its own up first. First and Make first stay one line */
-.accts.keys .acc .plan { flex: 0 1 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; }
-.accts.keys .acc > :is(.amodels:not(.set), .proto:not(.set), .alane:not(.set), .text.quiet) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.accts.keys .acc:not(:hover) > :is(.amodels:not(.set), .proto:not(.set), .alane:not(.set), .text.quiet):not(.open):not(:focus-visible) { max-width: 0; padding-left: 0; padding-right: 0; box-shadow: none; }
-.accts.keys .acc > :is(.amodels, .alane):not(.set):not(.open):not(:focus-visible) { flex-shrink: 10000; }
+   so a key's weight never squeezes its name away. Shown, a chip keeps
+   its whole text (young02036: 全部模型 was cut to 全): the name and the
+   masked key give way, down to a few letters each, and what doesn't fit
+   beside them then goes under the row's first line. What ends the row
+   (key-acts) goes as one, still at the right end, each on one line. A
+   press there keeps its row open (held) through the redraw it brings,
+   till the pointer moves off: else the row, one line again, slips out
+   from under the pointer and what was pressed hides */
+.accts.keys .acc[data-account-id] { flex-wrap: wrap; row-gap: 3px; }
+.accts.keys .acc > .n { flex: 1000 1 4.5em; max-width: max-content; min-width: 0; }
+.accts.keys .acc .plan { flex: 1000 1 3em; max-width: max-content; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.accts.keys .acc > :is(.amodels, .proto, .alane), .accts.keys .key-acts > .text.quiet { flex-shrink: 0; white-space: nowrap; }
+.accts.keys .acc > :is(.amodels:not(.set), .proto:not(.set), .alane:not(.set)), .accts.keys .key-acts > .text.quiet { overflow: hidden; }
+.accts.keys .acc:not(:hover):not(.held) > :is(.amodels:not(.set), .proto:not(.set), .alane:not(.set)):not(.open):not(:focus-visible),
+.accts.keys .acc:not(:hover):not(.held) .key-acts > .text.quiet:not(:focus-visible) { min-width: 0; max-width: 0; padding-left: 0; padding-right: 0; box-shadow: none; }
+/* and hidden, the gap beside it too */
+.accts.keys .acc:not(:hover):not(.held) > :is(.amodels:not(.set), .proto:not(.set)):not(.open):not(:focus-visible) { margin-left: -9px; }
+.accts.keys .acc:not(:hover):not(.held) .key-acts > .text.quiet:not(:focus-visible) { margin-right: -9px; }
 /* the limit pill unset on a key's row is quiet text, as the row's other
    hover-only controls: no padding to keep, and hidden it takes back the
    gap before it too (#892) */
 .accts.keys .acc > .alane:not(.set):not(.open):not(:focus-visible) { padding: 0; box-shadow: none; background: none; }
-.accts.keys .acc:not(:hover) > .alane:not(.set):not(.open):not(:focus-visible) { margin-left: -9px; }
-.accts.keys .acc > :is(.proto, .text.quiet) { flex-shrink: 0; }
+.accts.keys .acc:not(:hover):not(.held) > .alane:not(.set):not(.open):not(:focus-visible) { margin-left: -9px; }
 /* Safari before 15.4 has no :focus-visible and drops the rules above
    whole: there a focused control stays out on :focus instead */
 @supports not selector(:focus-visible) {
-  .accts.keys .acc:not(:hover) > :is(.amodels:not(.set), .proto:not(.set), .alane:not(.set), .text.quiet):not(.open):not(:focus) { max-width: 0; padding-left: 0; padding-right: 0; box-shadow: none; }
-  .accts.keys .acc > :is(.amodels, .alane):not(.set):not(.open):not(:focus) { flex-shrink: 10000; }
+  .accts.keys .acc:not(:hover):not(.held) > :is(.amodels:not(.set), .proto:not(.set), .alane:not(.set)):not(.open):not(:focus),
+  .accts.keys .acc:not(:hover):not(.held) .key-acts > .text.quiet:not(:focus) { min-width: 0; max-width: 0; padding-left: 0; padding-right: 0; box-shadow: none; }
+  .accts.keys .acc:not(:hover):not(.held) > :is(.amodels:not(.set), .proto:not(.set)):not(.open):not(:focus) { margin-left: -9px; }
+  .accts.keys .acc:not(:hover):not(.held) .key-acts > .text.quiet:not(:focus) { margin-right: -9px; }
   .accts.keys .acc > .alane:not(.set):not(.open):not(:focus) { padding: 0; box-shadow: none; background: none; }
-  .accts.keys .acc:not(:hover) > .alane:not(.set):not(.open):not(:focus) { margin-left: -9px; }
+  .accts.keys .acc:not(:hover):not(.held) > .alane:not(.set):not(.open):not(:focus) { margin-left: -9px; }
 }
-.accts.keys .acc .using, .accts.keys .acc > .text:not(.quiet) { flex: none; white-space: nowrap; }
+.accts.keys .acc > .key-acts { flex: none; display: flex; align-items: center; gap: 9px; margin-left: auto; }
+.accts.keys .acc .using, .accts.keys .key-acts > .text:not(.quiet) { flex: none; white-space: nowrap; }
 /* Switch off on hover, beside Remove (wei_VC on X): in a narrow weighted
    list the weight pill and Make first leave no room for it, and the name
    went to nothing; there the tick dot alone switches an on key off */
 .accts.keys { container-type: inline-size; }
-@container (max-width: 520px) { .accts.keys.weighted .acc > .key-switch.quiet { display: none; } }
+@container (max-width: 520px) { .accts.keys.weighted .key-acts > .key-switch.quiet { display: none; } }
 #gatewayKeys .acc { min-width: 0; }
 #gatewayKeys .acc .plan { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* a gateway key's own limit (#585): the badge, what it used under the
@@ -2904,6 +2958,8 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 /* a subscription's allowance, under its name */
 .accts .acc.with-aq { flex-wrap: wrap; row-gap: 3px; padding-top: 7px; padding-bottom: 8px; }
 .acc .aq { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; padding-left: 25px; font-size: 10.5px; color: var(--muted); min-height: 14px; }
+/* its refresh always shown, after its plan on the line that never wraps: on the readings' line it added a line where the meters filled it (the owner asked for a button here) */
+.acc-line > .quota-refresh { width: 14px; margin: 0 0 0 -5px; opacity: 1; }
 .acc .aq-w { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .acc .aq-track { width: 54px; height: 4px; border-radius: 2px; background: var(--pill); overflow: hidden; }
 .acc .aq-track i { display: block; height: 100%; border-radius: inherit; background: var(--fg-2); }
@@ -3132,6 +3188,13 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .editor .acct-proxy-tools .acct-proxy-filter { flex: 1 1 auto; min-width: 0; }
 .editor .acct-proxy-tools .text { flex: none; }
 .editor .acct-proxies > .acct-proxy-more { justify-self: start; }
+/* the login of a SOCKS proxy in the rows outside Settings (#3382): the
+   fields Settings' own row has, stacked under, so an account line is no
+   wider; off keeps its room as the address beside the options does */
+.editor .proxy-auth.proxy-login { justify-content: flex-start; }
+.editor .proxy-auth.proxy-login input.proxy-credential { width: 140px; max-width: 100%; min-width: 0; }
+.editor .proxy-auth.proxy-login.off { visibility: hidden; }
+.signing .callback-form .proxy-login { flex-basis: 100%; }
 /* what a balance token's URL wants instead, and a balance checked in the form */
 .editor .bal-fix { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; font-size: 12px; line-height: 1.45; color: var(--muted); }
 .editor .bal-fix:empty { display: none; }
@@ -3194,7 +3257,7 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .opt { position: relative; z-index: 1; white-space: nowrap; height: 22px; padding: 0 10px; border-radius: 5px; font-size: 12px; color: var(--muted); transition: color .18s var(--ease), transform .14s var(--ease); }
 .opt.on { color: var(--fg); }
 /* how often magpie checks for updates, while it doesn't by itself */
-.update-every-row.off .segs, .update-restart-row.off .segs { opacity: .55; }
+.update-every-row.off .segs, .update-restart-row.off .segs, .search-all-row.off .segs { opacity: .55; }
 /* Command line: each shell's `magpie`, a dot for whether it runs this app */
 .cli-row .sub { overflow-wrap: anywhere; }
 .cli-shells { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
@@ -3244,18 +3307,18 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 .link { font-size: 12px; color: var(--accent); padding: 3px 4px; white-space: nowrap; }
 .link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .editor .more { grid-column: 1 / -1; }
-.editor .more summary { font-size: 12px; color: var(--muted); list-style: none; display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; margin-left: 86px; }
+.editor .more summary { font-size: 12px; color: var(--muted); list-style: none; display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; margin-left: var(--ed-at, 86px); }
 .editor .more summary::-webkit-details-marker { display: none; }
-.editor .more summary::before { content: "▸"; font-size: 10px; color: var(--faint); display: inline-block; transition: transform .42s cubic-bezier(.32, .72, 0, 1); }
+.editor .more summary::before { content: "▸"; font-size: 11px; color: var(--muted); display: inline-block; transition: transform .42s cubic-bezier(.32, .72, 0, 1); }
 .editor .more[open]:not(.closing) summary::before { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .editor .more summary::before { transition: none; } }
 .editor .more summary:hover { color: var(--fg); }
 /* its labels are longer (Anthropic 地址, Responses-URL): their column takes
    the longest, on one line, rather than wrap a last 址 under it (#875) */
-.editor .more .inner { display: grid; grid-template-columns: minmax(72px, max-content) minmax(0, 1fr); gap: 10px 14px; align-items: start; padding-top: 8px; }
+.editor .more .inner { display: grid; grid-template-columns: minmax(var(--ed-lab, 72px), max-content) minmax(0, 1fr); gap: 10px 14px; align-items: start; padding-top: 8px; }
 .editor .more .inner label { white-space: nowrap; }
 .editor .warnbox { grid-column: 1 / -1; font-size: 12px; line-height: 1.5; color: var(--fg); background: color-mix(in srgb, var(--amber) 12%, transparent); border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); border-radius: 8px; padding: 8px 10px; }
-.editor .warnbox.soft { background: none; color: var(--amber); border: 0; padding: 0 0 0 86px; }
+.editor .warnbox.soft { background: none; color: var(--amber); border: 0; padding: 0 0 0 var(--ed-at, 86px); }
 .editor.import .mchips .mchip { cursor: default; }
 .editor .bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; padding-top: 10px; border-top: 1px solid var(--line-2); margin-top: 2px; }
 .editor .bar .danger { margin-left: -7px; }
@@ -3955,6 +4018,7 @@ body.panel .modal { padding: 16px 12px; }
   body.web .usage-head > .segs { max-width: 100%; flex-wrap: wrap; }
   body.web .usage-head > .grow, body.web .sess-tools > .grow { display: none; }
   body.web .sess-filter { order: 1; flex: 1 1 100%; width: 100%; }
+  body.web .pv-head > .rt-mask { order: 2; }
   body.web .sess-pick { min-height: 44px; max-width: 100%; font-size: 14px; }
   body.web .stats, body.web .stats.six { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   body.web .kpi small { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
@@ -4010,8 +4074,9 @@ body.panel .modal { padding: 16px 12px; }
      key's row gives it back the room it folds away till a hover (#841) */
   body.web .acc :is(.text.quiet, .proto, .amodels, .alane) { opacity: 1; }
   body.web .acc .acc-more { opacity: 1; }
-  body.web .accts.keys .acc > :is(.amodels, .proto, .alane, .text.quiet) { max-width: none !important; padding: 0 7px !important; flex-shrink: 0 !important; }
-  body.web .accts.keys .acc > .alane:not(.set) { margin-left: 0 !important; }
+  body.web .accts.keys .acc > :is(.amodels, .proto, .alane), body.web .accts.keys .key-acts > .text.quiet { max-width: none !important; padding: 0 7px !important; flex-shrink: 0 !important; }
+  body.web .accts.keys .acc > :is(.amodels, .proto, .alane):not(.set) { margin-left: 0 !important; }
+  body.web .accts.keys .key-acts > .text.quiet { margin-right: 0 !important; }
   body.web #gatewayKeys .acc > .key-quotas { max-width: none !important; padding: 0 7px !important; margin-left: 0 !important; flex-shrink: 0; }
   body.web #gatewayKeys .acc > .key-quotas:not(.set) { box-shadow: inset 0 0 0 1px var(--line) !important; }
 }

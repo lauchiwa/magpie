@@ -2119,6 +2119,9 @@ function renderLedger() {
   sessPick($("#ledAgent"), "All agents", ledAgent, l.agents.map((a) => ({ v: a.id, name: a.name, note: "" })), "Agent", (v) => { ledAgent = v; ledOwn("agent"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   sessPick($("#ledProvider"), "All providers", ledProvider, providers.map((p) => ({ v: p.id, name: t(p.name), note: p.deleted ? t("Deleted {date}", { date: new Date(p.deleted).toLocaleDateString(intlLang(), { year: "numeric", month: "short", day: "numeric" }) }) : "" })), "Provider", (v) => { ledProvider = v; ledOwn("provider"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   ledProviderMore(providers.find((p) => p.id === ledProvider));
+  // a model beside the provider (OHHHHHH05 on X): the models the other filters keep, by tokens;
+  // the page's totals, cells and chart are then that model's, gateway and session-log calls alike
+  sessPick($("#ledModel"), "All models", ledModel, (l.by?.model || []).filter((s) => s.id).map((s) => ({ v: s.id, name: s.id, note: t("{n} tokens", { n: fmtN(allTokens(s)) }) })), "Model", (v) => { ledModel = v; ledQuery = ""; $("#ledQ").value = ""; ledOwn("model"); ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   sessPick($("#ledAccount"), "All accounts", ledAccount, accounts.map((a) => ({ v: a.id, name: a.name || a.id, note: [a.name && a.id, ...(a.providers || []).map((p) => t(p))].filter(Boolean).join(" · ") })), "Account", (v) => { ledAccount = v; ledOffset = 0; loadLedger().catch((e) => status(e.message, "err")); });
   sessPick($("#ledKey"), "All gateway keys", ledCallerKey, callers.map((k) => ({
     v: k.id, name: k.name, note: "",

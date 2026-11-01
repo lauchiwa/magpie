@@ -105,13 +105,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator(".row.provider", { hasText: "ZCode" }).first().click();
         const row = (id) => page.locator(`.editor .accts .acc[data-account-id="${id}"]`);
         await row(TEAM).locator(".acct-who").waitFor();
+        // the pointer off the rows: the click that opened the editor left it
+        // on ME's name at 360px
+        await page.mouse.move(0, 0);
         const eye = (id) => row(id).locator(".acct-eye");
 
         // Hide accounts off: no eye at all
         assert.equal(await eye(ME).count(), 1);
         assert.equal(await opacity(eye(ME)), "none", "no eye while Hide accounts is off");
 
-        await page.evaluate(() => hideAccounts.set(true));
+        await page.evaluate(() => hideAccounts.set(true, true));
         await sample(page);
         await page.waitForFunction(() => document.querySelectorAll("#sample .pii").length === 3);
         await page.waitForFunction((me) => document.querySelector(`.editor .acc[data-account-id="${me}"] .acct-user .pii`), ME);
@@ -182,7 +185,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await eye(ME).getAttribute("aria-pressed"), "false");
 
         // and Hide accounts off: the eyes go
-        await page.evaluate(() => hideAccounts.set(false));
+        await page.evaluate(() => hideAccounts.set(false, true));
         assert.equal(await opacity(eye(ME)), "none");
 
         assert.equal(await page.locator("select").count(), 0, "no native select");
