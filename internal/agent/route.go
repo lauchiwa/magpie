@@ -94,7 +94,8 @@ func sameOption(a, b Option) bool {
 		a.Context == b.Context && a.Takes == b.Takes && a.Direct == b.Direct && a.Via == b.Via &&
 		a.Same == b.Same && a.Served == b.Served && a.Alias == b.Alias && a.FastFor == b.FastFor &&
 		a.Fast == b.Fast && a.OwnFast == b.OwnFast && a.UltraOK == b.UltraOK && a.Ultra == b.Ultra &&
-		a.own == b.own && a.sub == b.sub
+		a.own == b.own && a.sub == b.sub &&
+		a.Priced == b.Priced // fork: the badge's word (provider.FreeBy)
 }
 
 // builtOptions is what viaMagpie built last, per agent and prefix. Each
