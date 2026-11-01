@@ -22,7 +22,10 @@ func pageHome(t *testing.T) {
 	sessionHome(t)
 	sessions.Reset()
 	catalog.Reset()
-	t.Cleanup(func() { sessions.Reset(); catalog.Reset() })
+	// fork: a page read last starts a write of its chunks file, which would
+	// land in the folder TempDir is removing (macOS CI: directory not empty)
+	// or in the next test's; it ends first
+	t.Cleanup(func() { requestDiskSaves.Wait(); sessions.Reset(); catalog.Reset() })
 	os.MkdirAll(filepath.Dir(catalog.CachePath()), 0700)
 	os.WriteFile(catalog.CachePath(), []byte(`{"openai":{"id":"openai","models":{"m":{"id":"m","cost":{"input":2,"output":8,"cache_read":0.5,"cache_write":2.5}}}}}`), 0600)
 }
