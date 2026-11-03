@@ -261,6 +261,9 @@ each one when upstream fixes the same thing, and take upstream's version
   `Connection: close`, and the client leaving ended the wait the report was
   meant to show (`TestUnroutedHeldReportSaved`). This is the one fix in
   production code.
+- `unrouted_test.go`'s `TestUnroutedRequestShownThenAnswered` waits for
+  `heldSaved` before checking the completed route: the 504 can reach the
+  client before the final trace and report are published.
 - `packaged_test.go`'s `TestPackagedByDpkg` writes `magpie.list` on Windows,
   where NTFS reads `magpie:amd64.list` as a file `magpie` with a stream.
 - `routing-save.test.cjs`'s `open()` waits for the accounts' allowance
