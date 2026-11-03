@@ -171,6 +171,21 @@ own their nested data; transitions are not a durable delivery log. Future
 Usage must save the full call-time stamp, not look up current quota to price
 past calls.
 
+[`CloneQuotaSnapshot`](../../internal/provider/quota_snapshot_fork.go) checks
+and detaches a materialized scope snapshot together with the complete supplied
+coverage and saved evaluation time. The dormant [Usage accounting
+component](usage-accounting.md) uses this pure helper, not `QuotaStore`.
+The helper cannot authenticate the supplied coverage, reconstruct omitted
+store history or certify that a later request consumed included capacity.
+Absent and unavailable context must remain explicit, not fabricated windows.
+
+The store shares syntax and shape checking with
+[`strictjson`](../../internal/strictjson/strictjson_fork.go). Quota still owns
+its version, domain validation and error ordering; billing's envelope size
+limit does not apply to the quota file. Ambiguous syntax is corrupt even for
+an unknown version; a syntactically valid unsupported version is rejected
+before the supported-version shape is checked.
+
 This file is not in backup, sync or a historical migration. Component delivery
 does not enable live quota billing. Activation still needs certified vendor
 adapters, authoritative account/key incarnation binding and synchronization,

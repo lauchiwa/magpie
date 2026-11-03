@@ -184,10 +184,18 @@ func ValidateQuotaObservation(observation QuotaObservation, now time.Time) error
 }
 
 func validateQuotaWindow(window quotaWindow, revision uint64) error {
+	if !validQuotaTime(window.UpdatedAt) || window.UpdatedAt.Before(window.ObservedAt) {
+		return quotaInvalid("invalid stored evidence metadata")
+	}
+	return validateQuotaRetained(quotaWindowSnapshot(window), revision)
+}
+
+// validateQuotaRetained checks the evidence and its unprojected state without
+// inventing storage metadata that snapshots do not retain.
+func validateQuotaRetained(window QuotaWindowSnapshot, revision uint64) error {
 	if window.Revision == 0 || window.Revision > revision ||
 		!validQuotaID(window.ObservationID) || !validQuotaID(window.Source) ||
-		window.ObservedAt.IsZero() || !validQuotaTime(window.ObservedAt) ||
-		!validQuotaTime(window.UpdatedAt) || window.UpdatedAt.Before(window.ObservedAt) {
+		window.ObservedAt.IsZero() || !validQuotaTime(window.ObservedAt) {
 		return quotaInvalid("invalid stored evidence metadata")
 	}
 	fact := QuotaFact{
@@ -257,51 +265,67 @@ func validateQuotaRecord(record quotaRecord) error {
 		coverage[entry.Window] = true
 	}
 	windows := make(map[string]bool, len(record.Windows))
-	operations := make(map[uint64]quotaWindow)
-	evidence := make(map[uint64]map[string]string)
-	ids := map[uint64]string{record.Revision: record.LastID}
-	rememberID := func(revision uint64, id string) bool {
-		if prior, ok := ids[revision]; ok && prior != id {
-			return false
-		}
-		ids[revision] = id
-		return true
-	}
-	// Latest facts and retained anchors from one operation must agree. The
-	// confirmed-refusal fact and its own anchor may repeat the same evidence.
-	remember := func(window quotaWindow) bool {
-		if !rememberID(window.Revision, window.ObservationID) {
-			return false
-		}
-		if prior, ok := operations[window.Revision]; ok {
-			if prior.Source != window.Source || !prior.ObservedAt.Equal(window.ObservedAt) {
-				return false
-			}
-		} else {
-			operations[window.Revision] = window
-			evidence[window.Revision] = make(map[string]string)
-		}
-		if other, ok := evidence[window.Revision][window.EvidenceID]; ok && other != window.Window {
-			return false
-		}
-		evidence[window.Revision][window.EvidenceID] = window.Window
-		return true
-	}
+	operations := newQuotaOperations()
+	operations.ids[record.Revision] = record.LastID
 	for _, window := range record.Windows {
 		if !coverage[window.Window] || windows[window.Window] || validateQuotaWindow(window, record.Revision) != nil ||
-			window.Revision == record.Revision && !window.UpdatedAt.Equal(window.ObservedAt) || !remember(window) {
+			window.Revision == record.Revision && !window.UpdatedAt.Equal(window.ObservedAt) || !operations.remember(quotaWindowSnapshot(window)) {
 			return invalid()
 		}
-		if b := window.Blocker; b != nil && !remember(quotaWindow{
+		if b := window.Blocker; b != nil && !operations.remember(QuotaWindowSnapshot{
 			Window: window.Window, ObservationID: b.ID, Revision: b.Revision,
 			Source: b.Source, EvidenceID: b.EvidenceID, ObservedAt: b.ObservedAt,
 		}) {
 			return invalid()
 		}
-		if r := window.Recovery; r != nil && !rememberID(r.BlockerRevision, r.BlockerID) {
+		if r := window.Recovery; r != nil && !operations.rememberID(r.BlockerRevision, r.BlockerID) {
 			return invalid()
 		}
 		windows[window.Window] = true
 	}
 	return nil
+}
+
+// Latest facts and retained anchors from one operation must agree. The
+// confirmed-refusal fact and its own anchor may repeat the same evidence.
+// Recovery references constrain retained IDs, not the unretained prior history.
+type quotaOperations struct {
+	facts    map[uint64]QuotaWindowSnapshot
+	evidence map[uint64]map[string]string
+	ids      map[uint64]string
+}
+
+func newQuotaOperations() quotaOperations {
+	return quotaOperations{
+		facts:    make(map[uint64]QuotaWindowSnapshot),
+		evidence: make(map[uint64]map[string]string),
+		ids:      make(map[uint64]string),
+	}
+}
+
+func (o quotaOperations) rememberID(revision uint64, id string) bool {
+	if prior, ok := o.ids[revision]; ok && prior != id {
+		return false
+	}
+	o.ids[revision] = id
+	return true
+}
+
+func (o quotaOperations) remember(w QuotaWindowSnapshot) bool {
+	if !o.rememberID(w.Revision, w.ObservationID) {
+		return false
+	}
+	if prior, ok := o.facts[w.Revision]; ok {
+		if prior.Source != w.Source || !prior.ObservedAt.Equal(w.ObservedAt) {
+			return false
+		}
+	} else {
+		o.facts[w.Revision] = w
+		o.evidence[w.Revision] = make(map[string]string)
+	}
+	if other, ok := o.evidence[w.Revision][w.EvidenceID]; ok && other != w.Window {
+		return false
+	}
+	o.evidence[w.Revision][w.EvidenceID] = w.Window
+	return true
 }

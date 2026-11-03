@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"math"
 	"os"
@@ -20,11 +19,11 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filelock"
 	"github.com/yetone/magpie/internal/steady"
+	"github.com/yetone/magpie/internal/strictjson"
 )
 
 // QuotaStore is dormant until explicitly initialized or used. It has no default
@@ -202,15 +201,7 @@ func readQuotaFile(target string) (quotaFile, error) {
 
 func decodeQuotaFile(b []byte) (quotaFile, error) {
 	bad := func() (quotaFile, error) { return quotaFile{}, ErrQuotaCorrupt }
-	if !utf8.Valid(b) {
-		return bad()
-	}
-	decoder := json.NewDecoder(bytes.NewReader(b))
-	decoder.UseNumber()
-	if err := quotaJSONMembers(decoder, 0); err != nil {
-		return bad()
-	}
-	if _, err := decoder.Token(); err != io.EOF {
+	if strictjson.Validate(b) != nil {
 		return bad()
 	}
 	var header map[string]json.RawMessage
@@ -224,7 +215,7 @@ func decodeQuotaFile(b []byte) (quotaFile, error) {
 	if version != 1 {
 		return quotaFile{}, ErrQuotaUnsupported
 	}
-	if !quotaJSONShape(b, reflect.TypeFor[quotaFile]()) {
+	if !strictjson.Shape(b, reflect.TypeFor[quotaFile]()) {
 		return bad()
 	}
 	var data quotaFile
@@ -247,102 +238,6 @@ func decodeQuotaFile(b []byte) (quotaFile, error) {
 		return bad()
 	}
 	return data, nil
-}
-
-// encoding/json otherwise accepts duplicate keys and case-insensitive aliases.
-// Check all object members before interpreting a schema or exposing any record.
-func quotaJSONMembers(d *json.Decoder, depth int) error {
-	if depth > 64 {
-		return ErrQuotaCorrupt
-	}
-	token, err := d.Token()
-	if err != nil {
-		return err
-	}
-	delim, composite := token.(json.Delim)
-	if !composite {
-		return nil
-	}
-	switch delim {
-	case '{':
-		seen := make(map[string]bool)
-		for d.More() {
-			key, err := d.Token()
-			if err != nil {
-				return err
-			}
-			name, ok := key.(string)
-			if !ok || seen[name] {
-				return ErrQuotaCorrupt
-			}
-			seen[name] = true
-			if err := quotaJSONMembers(d, depth+1); err != nil {
-				return err
-			}
-		}
-	case '[':
-		for d.More() {
-			if err := quotaJSONMembers(d, depth+1); err != nil {
-				return err
-			}
-		}
-	default:
-		return ErrQuotaCorrupt
-	}
-	end, err := d.Token()
-	if err != nil || (delim == '{' && end != json.Delim('}')) || (delim == '[' && end != json.Delim(']')) {
-		return ErrQuotaCorrupt
-	}
-	return nil
-}
-
-// Require canonical field spelling and presence, including explicit zeroes.
-// Optional pointer fields may be absent, but JSON null is not a stored value.
-func quotaJSONShape(b []byte, typ reflect.Type) bool {
-	if bytes.Equal(bytes.TrimSpace(b), []byte("null")) {
-		return false
-	}
-	if typ.Kind() == reflect.Pointer {
-		return quotaJSONShape(b, typ.Elem())
-	}
-	if typ == reflect.TypeFor[time.Time]() {
-		var value time.Time
-		return json.Unmarshal(b, &value) == nil
-	}
-	switch typ.Kind() {
-	case reflect.Struct:
-		var object map[string]json.RawMessage
-		if json.Unmarshal(b, &object) != nil || object == nil {
-			return false
-		}
-		for i := 0; i < typ.NumField(); i++ {
-			field := typ.Field(i)
-			name, options, _ := strings.Cut(field.Tag.Get("json"), ",")
-			raw, ok := object[name]
-			if !ok {
-				if options == "omitempty" {
-					continue
-				}
-				return false
-			}
-			if !quotaJSONShape(raw, field.Type) {
-				return false
-			}
-			delete(object, name)
-		}
-		return len(object) == 0
-	case reflect.Slice:
-		var values []json.RawMessage
-		if json.Unmarshal(b, &values) != nil {
-			return false
-		}
-		for _, value := range values {
-			if !quotaJSONShape(value, typ.Elem()) {
-				return false
-			}
-		}
-	}
-	return true // The final typed decode checks primitive types and ranges.
 }
 
 func quotaDigest(o QuotaObservation) (string, error) {
