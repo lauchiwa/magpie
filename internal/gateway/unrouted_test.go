@@ -387,11 +387,11 @@ func TestUnroutedRequestShownThenAnswered(t *testing.T) {
 	if r.err != nil || r.code != http.StatusGatewayTimeout || !strings.Contains(r.body, "without routing it to any provider") {
 		t.Fatalf("held request answered %d %q %v", r.code, r.body, r.err)
 	}
+	heldSaved(t, s)
 	rs := routesOf(s, "probe/text")
 	if len(rs) != 1 || !rs[0].Done || rs[0].Status != http.StatusGatewayTimeout || !strings.Contains(rs[0].Error, "without routing") {
 		t.Fatalf("the held request's route: %+v", rs)
 	}
-	heldSaved(t, s)
 }
 
 // One shown while it waited gives way to its own route once routed: the
