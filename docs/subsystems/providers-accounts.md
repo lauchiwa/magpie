@@ -76,6 +76,38 @@ keys and accounts per request is in [Gateway routing and fallback](gateway-routi
 | Protocol detection | Works out which of Chat, Responses, Anthropic Messages and Gemini generateContent a base URL speaks when a provider is added. Each is asked at the URL as it takes it (`DetectBase`); Gemini's at the `…/v1beta` beside a typed `…/v1` or bare host, a Gemini model from the list picked for it, with the key in `x-goog-api-key` (#1346). Detection, endpoint tests and model tests share `probe`, which adds `anthropic-version` only for Anthropic Messages; OpenAI probes omit that default so a relay that refuses it can answer. A model's test that the vendor turns away with its word that the model is served on another API (`catalog.WrongEndpoint`, the gateway's words) asks the next API the provider has a URL for, as the gateway's `usable` takes it (the model's picked or listed API, else each API it isn't named-only on), with a key that sees the model there (`keySeeing`); that API's answer is the model's, and with none left, or every one saying it, the first stays. As Codex the next API is asked with Codex's headers, as the gateway sends them on Responses and Chat; as Claude Code it isn't, since the gateway sends Claude Code's on Messages alone (#3766, `TestTestModelsMovesToTheAPIServingIt`, `TestTestModelsKeepsAModelOnItsAPI`, `TestTestModelsAsAClientMovesAsTheGatewayDoes`). User-supplied headers still apply through `Sign`. The editor asks with the form as it stands, before any Save (#1545): the URL, key and models typed (`picked`, else the saved picks, else the vendor list); a key not typed again is the saved provider's, or for an unsaved copy the copied one's (`copyOf`). The probe writes nothing and adds no provider, and the route stays behind `magpie web`'s key. An endpoint or model test fails fast and can be stopped (RIck on Discord: 测试模型 took long to fail and couldn't be cancelled): a probe on magpie's own client that has no connection in `connectWait` (10s) fails then (`connecting`, an httptrace `GotConn`), and a host that couldn't be reached (no connection, DNS, refused, a bad certificate) fails the run's other models at once (`withUnreached`, `TestTestModelsUnreachedHostFailsOnce`); a stream that breaks off before an answer is a failure. While a test runs its Test models and endpoints' Test read Stop, which aborts the window's request and posts `provider/teststop` with the test's `run`, ending the vendor's request on the server too (`testRuns` in [`providers.go`](../../internal/gui/providers.go), since WebView2 doesn't end the request when a fetch is aborted; `TestProviderTestStops`, `model-test-stop.test.cjs`). | [`detect.go`](../../internal/provider/detect.go), [`test.go`](../../internal/provider/test.go) |
 | A pasted curl command | A curl command from a vendor's docs pasted into a custom provider's Base URL or API key fills the editor in (@mark_li21 on X). `curlOf` reads it as a shell would (lines joined by `\`, cmd's `^` or PowerShell's backtick; `curl.exe`; quotes and escapes), and takes: the API its URL's endpoint names (`…/chat/completions` Chat, `…/messages` Anthropic Messages, `…/responses` Responses) with the base URL before it, spelled as that API wants it (`respellURL`: Anthropic at its root, `/v1` after a bare host); the key from `Authorization: Bearer`, `x-api-key` or `api-key`, unless it only stands for one (`$OPENAI_API_KEY`, `${X}`, `%X%`, `<token>`, `YOUR_API_KEY`), when the key's box is left empty and focused; and the `model` of its JSON body, added to a new provider's models (a saved one's picks are left alone, since adding to none would narrow what it serves). A preset's editor takes only the key. A note (`editorError`, kind `note`) says what was taken, a placeholder like `{WorkspaceId}` left in the URL, and a URL with no known endpoint. Text that isn't a curl command pastes as before, several keys included. Tested on the docs' own examples (`fixtures/curl`). | [`app.js`](../../internal/gui/assets/app.js) (`curlOf`, `fromCurl`), [`provider-curl-paste.test.cjs`](../../internal/gui/tests/provider-curl-paste.test.cjs) |
 
+## Dormant billing metadata (fork)
+
+`Provider.Billing` (`billing`: `list`, `free`, or `quota`) and
+`Provider.QuotaExhausted` (`quotaExhausted`: `stop` or `paid`) are stored
+metadata for the billing foundation, not active settings. Empty values keep
+the legacy representation; they are not written back as explicit defaults.
+The pure helpers in [`billing_fork.go`](../../internal/provider/billing_fork.go)
+validate and resolve a supplied provider, settings snapshot and model. They
+do not read files, change prices, or supply the live routing/usage paths.
+Their classification distinguishes zero cost from evidence that a model
+does not consume an allowance.
+
+Save, subscription inheritance and reconstruction, copy, rename, restore
+and sync preserve the metadata. A new copy inherits omitted fields; an
+explicit internal value wins. Invalid nonempty enum values are refused on
+provider writes, and restore/sync validate incoming batches before applying
+them. Older peers can discard unknown fields; this is not a lossless
+mixed-version billing migration.
+
+The GUI does not expose these fields. Its save handler preserves stored
+metadata when the old form omits it and refuses explicitly supplied billing
+fields, including null or empty values, before applying the request. There
+is no new billing CLI option. The existing `CountFree`, model prices,
+controls, badges, routing, rest rules, budgets and Usage keep their current
+meaning. Storing `paid` does not authorize a paid retry.
+
+Activating billing is a separate integration change: current budget
+reservations and accumulated costs, historical pricing, quota handling and
+editor controls must agree before routing consumes the new policy. Reading
+the current mode when pricing old records is not a substitute for that
+integration.
+
 ## Coordinated provider writes
 
 `store` delegates to `commit` in
