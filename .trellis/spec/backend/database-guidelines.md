@@ -277,6 +277,88 @@ only the Usage display.
 - Wrong: add stored fields to an embedded request and call the new resolver from routing immediately.
 - Correct: gate request exposure explicitly, retain the old runtime, and activate routing, accounting/history and controls together in a later reviewed change.
 
+## Scenario: inactive durable quota observations
+
+### 1. Scope / trigger
+The fork quota component accepts explicit normalized evidence without live
+collectors or routing consumers. Its source-backed contract and activation
+gates are in [dormant quota state](../../../docs/subsystems/providers-accounts.md#dormant-quota-state-fork).
+Keep production changes in provider-owned `quota*_fork.go` files.
+
+### 2. Signatures
+- `NewQuotaStore(path string) *QuotaStore` performs no I/O.
+- `(*QuotaStore).Initialize(context.Context) (string, error)` explicitly
+  creates an absent versioned store and returns its epoch.
+- `(*QuotaStore).Read(QuotaSubject, string, time.Time) (QuotaSnapshot, error)`
+  evaluates the named scope with no creation, repair or lock.
+- `(*QuotaStore).Apply(context.Context, QuotaObservation, time.Time)
+  (QuotaCommit, error)` is a locked whole-file transaction.
+- `ValidateQuotaObservation(QuotaObservation, time.Time) error` validates
+  normalized structure/freshness, not source authenticity or vendor behavior.
+
+### 3. Contracts
+The complete `QuotaSubject` tuple and immutable coverage define identity and
+applicable windows. CAS uses `QuotaVersion.StoreEpoch` and per-subject
+`Revision`; acquisition precedes commit and a conflict requires fresh evidence.
+Unresolved confirmed-refusal anchors survive weaker reports, hints and restart.
+Cross-check retained operation IDs/source/time and per-operation evidence IDs
+across latest facts, refusal anchors and recovery references, not just peers
+in the latest telemetry slice.
+Stored validation is independent of today's wall time. Returned snapshots
+deep-copy nested values; Usage must eventually persist a call-time copy.
+
+Initialize and Apply require cancellable process AND OS ownership, keyed to a
+canonical data target's stable sibling lock; never proceed after lock errors.
+Use `filelock.TryLock`, not the fail-open/discarded-error convenience wrappers.
+Use `edit.Target` plus missing-target ancestor resolution, then private
+`steady.WriteFile` writes. Resolve an existing directory link before cleaning
+`..`; lexical `Abs`/`Dir` first can select a different absent target and lock.
+Strict JSON rejects duplicate/unknown fields,
+trailing values and invalid relationships anywhere in the file; no `.bak`
+fallback, automatic initialization or inclusion in backup/sync.
+
+Replay checks the retained last operation ID and canonical semantic digest
+before ordinary revision/freshness validation. Identical retry returns its
+committed revision with `Replayed=true`, `Transition=nil` and no write;
+`Read` provides a time-current view. Only the last operation is retained.
+
+### 4. Validation / error matrix
+| Condition | Result |
+| --- | --- |
+| Missing file on Read/Apply | `ErrQuotaMissing`, unknown view, no state creation |
+| Ambiguous JSON or any invalid stored record | `ErrQuotaCorrupt`, preserve bytes, no partial result |
+| Unsupported schema | `ErrQuotaUnsupported`, no overwrite |
+| Filesystem or OS-lock failure | `ErrQuotaIO`, no unlocked write |
+| Ownership wait cancelled or bounded wait elapsed | `ErrQuotaBusy`, no write |
+| Wrong epoch/revision or changed last-operation retry | `ErrQuotaConflict`, no rebase |
+| Missing identity/evidence, paid capacity or invalid numeric/time facts | `ErrQuotaInvalid`, no permissive state |
+| Exhausted window's reset passed | Exhausted with `RecheckDue`, never available by time alone |
+| Positive evidence no longer fresh | Unknown view; held exhaustion still blocks |
+
+### 5. Good / base / bad cases
+- Base: empty initialized store exposes its epoch with revision zero and unknown state.
+- Good: recovery names the current refusal and proves positive included capacity
+  for one window, leaving another exhausted window blocking the scope.
+- Bad: `reported_full` replaces a confirmed refusal, allowing a later lower
+  usage reading to erase the stronger blocker after restart.
+
+### 6. Tests required
+Provider `TestQuota*`: state/time/reset boundaries, immutable complete coverage,
+distinct generations, strongest anchors, structural rejection, copied snapshots,
+CAS and replay after restart/expiry, concurrent/process/alias ownership,
+initialization races and pre-rename failure preserving bytes. Inactivity AST
+guards cover bare references, selectors/method values and startup side effects
+inside library files. Gateway `TestQuotaInactive*` keeps legacy routing/rests
+with populated state. Run quota tests with `-race` on a supported runner;
+the dedicated CI step supplements the existing account-usage race selection.
+
+### 7. Wrong vs correct
+- Wrong: assume reset expiry, `elapsed`-projected usage, paid wallet capacity
+  or a caller's `trusted` flag proves free recovery.
+- Correct: retain exhaustion until admissible superseding positive included
+  evidence is supplied. Real vendor certification, live incarnation ownership
+  and trustworthy production clocks remain separate activation requirements.
+
 ## Naming and safety
 
 External SQL names follow the source application's schema (`threads`, `model_provider`, `custom_providers`, etc.); do not rename columns to fit Magpie style. For Magpie JSON, preserve existing field names and stable IDs; migrations live in the owning package (`internal/provider/migrate*.go`, `internal/settings`). Never treat a missing, unreadable, or invalid file as an empty database/config if doing so could overwrite user state.

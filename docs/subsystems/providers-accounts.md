@@ -108,6 +108,82 @@ editor controls must agree before routing consumes the new policy. Reading
 the current mode when pricing old records is not a substitute for that
 integration.
 
+## Dormant quota state (fork)
+
+The second billing component is an explicit local library, not a live quota
+collector or routing rule. [`quota_types_fork.go`](../../internal/provider/quota_types_fork.go)
+defines its observations and detached snapshots;
+[`quota_fork.go`](../../internal/provider/quota_fork.go) reduces and evaluates
+them, [`quota_evidence_fork.go`](../../internal/provider/quota_evidence_fork.go)
+validates normalized inputs, and
+[`quota_store_fork.go`](../../internal/provider/quota_store_fork.go) owns persistence.
+Nothing calls this library at startup, from allowance refreshes or on request
+errors. There are no model probes, scheduled collectors, new controls, or
+changes to legacy rests, budgets, prices, Usage or `QuotaPaid` behavior.
+
+- A subject is the explicit tuple of authority, provider incarnation,
+  principal incarnation and evidence generation. Names, login IDs and short
+  key fingerprints are not an identity adapter. Each generation fixes the
+  complete window-to-scope coverage; a read cannot select away a daily,
+  weekly or shared-pool blocker. A new generation starts unknown.
+- `unknown`, `available` and `exhausted` describe evidence, not permission to
+  pay. An elapsed reset only marks exhausted state as due for rechecking.
+  A confirmed refusal retains its own blocker ID, revision and provenance
+  even when weaker telemetry follows or the store is reopened. Recovery
+  must supersede the current blocker for that window and show positive
+  included capacity; one recovered window cannot clear another.
+- Availability is a view at the supplied `now`: acquisition time inclusive,
+  freshness end and any known reset exclusive. Future or expired positive
+  evidence is unknown; exhaustion is sticky. Reads never renew freshness.
+  A pure read cannot detect clock rollback into a previously valid interval, including
+  across restart. A trustworthy production clock remains an activation gate.
+- Validation checks structure, coverage, ordering and transition evidence;
+  it cannot authenticate a caller's assertions. There is deliberately no
+  `Allowance`/`SubscriptionQuota` adapter: their cached or projected values
+  do not prove recovery. Neither paid balances, configured zero prices,
+  a successful HTTP status nor a reset timestamp alone prove free capacity.
+
+`NewQuotaStore(path)` performs no I/O. Only `Initialize(ctx)` creates an
+absent store; `Read(subject, scope, now)` never creates, repairs or locks it.
+`Apply(ctx, observation, now)` requires both cancellable process ownership
+and an OS lock on a stable sibling of the canonical target. Initialization
+uses the same protocol. Direct, symlink and dangling-target spellings share
+ownership; hard-link aliases and concurrent external retargeting are not
+supported. The persistent lock file is never removed.
+
+The intended private file is `quota-state.json`, with a schema version,
+random store epoch, commit sequence, per-subject revisions, immutable
+coverage and unresolved refusal anchors. Private atomic writes use
+`steady.WriteFile`; no stronger filesystem durability is promised. Whole-file
+strict decoding rejects ambiguous JSON or any invalid record before exposing
+availability. Missing, corrupt, unsupported, I/O, busy, conflict and invalid
+input errors remain distinguishable. Bad bytes are preserved, never replaced
+by an empty store or silently rolled back from `.bak`.
+
+Observations capture their expected epoch/revision before acquisition.
+Conflicts require re-observation, not rebasing old facts. The last accepted
+operation ID plus canonical semantic digest supports an identical retry
+before ordinary CAS/freshness checks: the original revision is acknowledged
+without a write or another transition. A changed retry conflicts; older
+same-subject operations are not retained as replay history. The optional
+current view is obtained with `Read`, so it may now be unknown. Snapshots
+own their nested data; transitions are not a durable delivery log. Future
+Usage must save the full call-time stamp, not look up current quota to price
+past calls.
+
+This file is not in backup, sync or a historical migration. Component delivery
+does not enable live quota billing. Activation still needs certified vendor
+adapters, authoritative account/key incarnation binding and synchronization,
+clock and storage-failure policy, and consistent routing, accounting and
+editor integration. A verified allowance is not a guarantee against a vendor
+automatically charging for the next request. Periodic inference probes remain
+out of scope unless separately requested.
+
+Verification: provider `TestQuota*` covers transitions, evidence, persistence
+and production-reference guards; gateway `TestQuotaInactive*` checks the
+legacy path with a populated dormant file. Foundation billing inactivity
+tests continue to cover monetary budgets, historical Usage and CLI options.
+
 ## Coordinated provider writes
 
 `store` delegates to `commit` in

@@ -163,6 +163,16 @@ reconstruction, copy or save must not drop the metadata. The existing
 the integrated billing feature is activated. See
 [the inactive contract](subsystems/providers-accounts.md#dormant-billing-metadata-fork).
 
+The next component stays in provider-owned `quota*_fork.go` files: normalized
+evidence, pure state reduction and an explicitly initialized private store.
+Keep its refusal anchors, complete coverage, CAS/replay and strict locked
+persistence together when syncing upstream. Its tests reject production
+consumers and startup side effects. Do not hook it into upstream allowance
+refreshes, rest renewal, routing, backup or Usage as a merge resolution.
+There are no scheduled model probes. This component alone is not the live
+quota-billing feature and does not warrant an intermediate release; see
+[the state contract and activation gate](subsystems/providers-accounts.md#dormant-quota-state-fork).
+
 `Provider.FreeModel` (`internal/provider/models.go`) asks `userFree`
 (`freemodel_fork.go`) right after upstream's `CountFree` (the user's word
 that the whole provider costs nothing outranks a price they set on one of

@@ -106,6 +106,11 @@ jobs:
         if: runner.os != 'Windows'
         run: go test -race -tags "${{ steps.tags.outputs.tags }}" ./internal/provider/ -run '^Test(LoginUsage|SubscriptionUsageEachAccount)'
 
+      # The dormant quota store serializes process and OS ownership separately.
+      - name: Race quota state
+        if: runner.os != 'Windows'
+        run: go test -race -tags "${{ steps.tags.outputs.tags }}" ./internal/provider/ -run '^TestQuota' -count=1 -timeout=180s
+
       # Some tests fake a home through $HOME, which Windows doesn't read
       # (USERPROFILE), or assume Unix file modes. Compile the full suite
       # on Windows and run the isolated native checks below.
