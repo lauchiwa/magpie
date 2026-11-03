@@ -235,6 +235,10 @@ type Provider struct {
 	// weighs it at nothing). Prices and the costs Usage counts stay as
 	// listed: it says what to spend first, not what a call cost.
 	CountFree bool `json:"countFree,omitempty"`
+	// Fork: dormant billing metadata (billing_fork.go). Neither field changes
+	// today's routing, pricing or quota handling; omission keeps legacy policy.
+	Billing        BillingMode     `json:"billing,omitempty"`
+	QuotaExhausted QuotaExhaustion `json:"quotaExhausted,omitempty"`
 	// RateWindows are the time-of-day windows it bills at its own rate
 	// (#2463): a peak at 2× or 3×, a discount off peak. The first window
 	// that holds a call's time multiplies the price again, on top of
@@ -857,6 +861,7 @@ func withPicks(a, pk Provider) Provider {
 	a.PriceRate = pk.PriceRate
 	// counted free by the user's word, every account alike
 	a.CountFree = pk.CountFree
+	a.Billing, a.QuotaExhausted = pk.Billing, pk.QuotaExhausted // fork: dormant metadata
 	// the hours the provider bills at its own rate (#2463), as the editor
 	// keeps them for the account like the rest of these
 	a.RateWindows = pk.RateWindows
@@ -952,6 +957,9 @@ func Slug(name string) string {
 
 // Save adds or replaces a provider.
 func Save(p Provider, opts ...WriteOption) error {
+	if err := p.CheckBilling(); err != nil { // fork: reject before any side effects
+		return err
+	}
 	// a key given a Vertex AI provider is refused here, before normalize
 	// drops it: it would never be sent
 	if p.IsVertex() && (strings.TrimSpace(p.Key) != "" || len(p.Keys) > 0) {
@@ -987,7 +995,8 @@ func Save(p Provider, opts ...WriteOption) error {
 	if p.Name == "" {
 		p.Name = p.ID
 	}
-	l, account := p.life, false // fork: its marker, before an account's literal drops it (lifecycle_api.go)
+	l, account := p.life, false                       // fork: its marker, before an account's literal drops it (lifecycle_api.go)
+	billing, exhausted := p.Billing, p.QuotaExhausted // fork: carry across the account literal
 	if _, ok := find(Accounts(), p.ID); ok || p.ID == "kiro" && (p.Key != "" || stored(p.ID)) {
 		account = true
 		// an account keeps only the user's model picks; the rest is the
@@ -1026,6 +1035,7 @@ func Save(p Provider, opts ...WriteOption) error {
 			return fmt.Errorf("%s needs an API key", p.Name)
 		}
 	}
+	p.Billing, p.QuotaExhausted = billing, exhausted // fork: the account literal carries these too
 	f, err := read()
 	if err != nil {
 		return err
@@ -1143,6 +1153,9 @@ func Add(p Provider) (string, error) {
 }
 
 func add(p Provider, once bool, opts ...WriteOption) (string, error) {
+	if err := p.CheckBilling(); err != nil { // fork: validate before account discovery
+		return "", err
+	}
 	p.ID = strings.ToLower(strings.TrimSpace(p.ID))
 	if p.ID == "" {
 		p.ID = Slug(p.Name)
@@ -1180,6 +1193,9 @@ func add(p Provider, once bool, opts ...WriteOption) (string, error) {
 // asked for (another model list, another endpoint). A signed-in account is
 // never copied: its sign-in is the agent's.
 func AddCopy(p Provider, from string, opts ...WriteOption) (string, error) {
+	if err := p.CheckBilling(); err != nil { // fork: validate before discovering the source
+		return "", err
+	}
 	src, err := Find(from)
 	if err != nil {
 		return "", err
@@ -1217,6 +1233,13 @@ func AddCopy(p Provider, from string, opts ...WriteOption) (string, error) {
 	p.Searches = p.Searches || src.Searches
 	p.Unredacted = p.Unredacted || src.Unredacted
 	p.CountFree = p.CountFree || src.CountFree
+	// Fork: old copy forms omit dormant metadata; explicit values stand.
+	if p.Billing == "" {
+		p.Billing = src.Billing
+	}
+	if p.QuotaExhausted == "" {
+		p.QuotaExhausted = src.QuotaExhausted
+	}
 	p.NativeCompaction = p.NativeCompaction || src.NativeCompaction
 	p.PassUserAgent = p.PassUserAgent || src.PassUserAgent
 	if p.Website == "" {

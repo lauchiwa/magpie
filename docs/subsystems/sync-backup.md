@@ -31,6 +31,14 @@ clone a working tree or synchronize arbitrary files.
   [`app.js`](../../internal/gui/assets/app.js) and
   [`webdav_cli.go`](../../internal/cli/webdav_cli.go) reach the same sync operations.
 
+Provider snapshots also carry the fork's dormant `billing` and
+`quotaExhausted` metadata. Restore and Mirror validate incoming policy
+values before applying their provider batch; they do not derive and write
+new defaults during a read or change the legacy price settings. The fields
+are provider data, not machine-local preferences. An older peer can drop
+them. Their inactive meaning and GUI preservation contract are described
+in [providers and accounts](providers-accounts.md#dormant-billing-metadata-fork).
+
 ## What stays on each computer
 
 The settings part carries the user's preferences, but not what is only about

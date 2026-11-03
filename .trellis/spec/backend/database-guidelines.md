@@ -230,6 +230,53 @@ Changes to `internal/provider/{backup,lifecycle_sync}.go` (Mirror, Restore, `Fil
 - Wrong: retry a Mirror conflict in a loop, or drop the base so the write goes through.
 - Correct: collect again and decide again, at most once per round. Surface the second conflict.
 
+## Scenario: storage-only provider policy fields
+
+### 1. Scope / trigger
+Adding provider metadata before its runtime consumers are ready. The billing
+foundation stores fields without activating pricing or selection semantics;
+see [the subsystem contract](../../../docs/subsystems/providers-accounts.md#dormant-billing-metadata-fork).
+
+### 2. Signatures
+- `Provider.Billing BillingMode`, JSON `billing,omitempty`.
+- `Provider.QuotaExhausted QuotaExhaustion`, JSON `quotaExhausted,omitempty`.
+- `Provider.CheckBilling() error` validates stored enum values.
+- `Provider.BillingPolicy(settings.Settings)` and
+  `Provider.ResolveBilling(settings.Settings, catalog.Model)` are pure,
+  currently unused by production selection/accounting consumers.
+
+### 3. Contracts
+Storage support is not setter support. Embedding `Provider` in an HTTP
+request must not accidentally expose inactive fields. Preserve stored
+metadata on omission; reject an explicitly supplied inactive setting before
+any save side effects. Carry fields across subscription reconstruction and
+copy, and keep instance/revision checks on writes.
+
+### 4. Validation / error matrix
+| Input | Result |
+| --- | --- |
+| Empty stored policy | Legacy representation; no write-on-read defaults |
+| Known stored enum | Preserve metadata, without changing live behavior |
+| Invalid enum in provider mutation or incoming provider batch | Error before the provider write |
+| New billing field in GUI payload, even null or empty | Inactive-setting error before side effects |
+| Old GUI payload omits both fields | Preserve stored metadata |
+
+### 5. Good / base / bad cases
+- Base: an old provider has neither field and keeps existing free/price behavior.
+- Good: editing its name preserves dormant policy, while the old free controls still work as before.
+- Bad: a new current-mode check in historical pricing makes old calls change cost.
+
+### 6. Tests required
+Pure decision precedence/input-purity tests; provider persistence and invalid
+batch tests; GUI omission/rejection tests; inactive-runtime regressions for
+selection, monetary budgets and Usage. Activation must separately cover
+budget reservations, append-time spending and restart reconstruction, not
+only the Usage display.
+
+### 7. Wrong vs correct
+- Wrong: add stored fields to an embedded request and call the new resolver from routing immediately.
+- Correct: gate request exposure explicitly, retain the old runtime, and activate routing, accounting/history and controls together in a later reviewed change.
+
 ## Naming and safety
 
 External SQL names follow the source application's schema (`threads`, `model_provider`, `custom_providers`, etc.); do not rename columns to fit Magpie style. For Magpie JSON, preserve existing field names and stable IDs; migrations live in the owning package (`internal/provider/migrate*.go`, `internal/settings`). Never treat a missing, unreadable, or invalid file as an empty database/config if doing so could overwrite user state.

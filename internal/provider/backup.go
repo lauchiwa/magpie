@@ -25,6 +25,9 @@ func Stored() ([]Provider, error) {
 // restoreOnce is Restore's one read and write (fork: Restore is in
 // lifecycle_sync.go).
 func restoreOnce(ps []Provider) (added, replaced int, err error) {
+	if err := checkBillingBatch(ps); err != nil { // fork: refuse the whole incoming batch
+		return 0, 0, err
+	}
 	f, err := read()
 	if err != nil {
 		return 0, 0, err
@@ -95,6 +98,9 @@ func RestoreGroups(gs []Group) error {
 // the office, and sync set each computer to the other's every day. opts
 // check the write (fork: OnBase, lifecycle_sync.go).
 func Mirror(ps []Provider, gs []Group, opts ...WriteOption) error {
+	if err := checkBillingBatch(ps); err != nil { // fork: no partial sync for invalid metadata
+		return err
+	}
 	f, err := read()
 	if err != nil {
 		return err

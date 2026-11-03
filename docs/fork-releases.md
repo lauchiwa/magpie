@@ -152,6 +152,17 @@ provider it read, never to one deleted and added again under the same id
 meanwhile. `TestAScheduledFetchDropsPicksOnlyOfTheProviderItRead`
 (`autolist_fork_test.go`) fails without it.
 
+The billing foundation is storage-only. `billing_fork.go` owns typed
+`billing` / `quotaExhausted` metadata and pure decision helpers; no routing,
+budget, Usage or badge path consumes those helpers yet. Keep the fields,
+validation and inheritance hooks in `provider.go`, batch validation in
+`backup.go`, and the GUI save hooks that preserve omitted metadata and
+reject explicit inactive fields. An upstream rewrite of subscription
+reconstruction, copy or save must not drop the metadata. The existing
+`CountFree` and wildcard-price behavior below remains authoritative until
+the integrated billing feature is activated. See
+[the inactive contract](subsystems/providers-accounts.md#dormant-billing-metadata-fork).
+
 `Provider.FreeModel` (`internal/provider/models.go`) asks `userFree`
 (`freemodel_fork.go`) right after upstream's `CountFree` (the user's word
 that the whole provider costs nothing outranks a price they set on one of

@@ -1332,6 +1332,9 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 	mux.HandleFunc("POST /api/provider/{action}", func(rw http.ResponseWriter, r *http.Request) {
 		var req struct {
 			provider.Provider
+			// fork: dormant storage fields are not editor controls (billing_fork.go).
+			Billing        json.RawMessage `json:"billing"`
+			QuotaExhausted json.RawMessage `json:"quotaExhausted"`
 			// Proxy is the proxy its requests go through (#237), "" to
 			// follow the global one; a save that leaves it out keeps it
 			Proxy *string `json:"proxy"`
@@ -1481,6 +1484,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			BestInFamily *bool `json:"bestInFamily"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := inactiveBilling(req.Billing, req.QuotaExhausted); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -1736,6 +1743,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 					in.ID = req.From
 				}
 				old, _ = provider.Find(in.ID)
+				keepDormantBilling(&in, old) // fork: old editors omit this metadata
 				if req.Proxy != nil {
 					in.Proxy = *req.Proxy
 				} else if old != nil {
