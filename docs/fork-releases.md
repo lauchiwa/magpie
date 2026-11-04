@@ -269,7 +269,7 @@ each one when upstream fixes the same thing, and take upstream's version
   red.
 - `unrouted.go`'s `giveUp` takes the held report before the 504. The 504 says
   `Connection: close`, and the client leaving ended the wait the report was
-  meant to show (`TestUnroutedHeldReportSaved`). This is the one fix in
+  meant to show (`TestUnroutedHeldReportSaved`). This is a fix in
   production code.
 - `unrouted_test.go`'s `TestUnroutedRequestShownThenAnswered` waits for
   `heldSaved` before checking the completed route: the 504 can reach the
@@ -298,6 +298,12 @@ each one when upstream fixes the same thing, and take upstream's version
 - `request_page_test.go`'s `pageHome` waits for `requestDiskSaves` before
   its cleanup: a page's chunk file was still being written when `TempDir`
   removed the folder (`TestRequestChunksFromDisk`, macOS).
+- `cache_decode.go`'s `share` hands each `unique` handle back to
+  `decodeCache`, which holds them while the files are read, and shares the
+  names its models, days, tools and skills are held by too. `unique` lets a
+  string go once no handle to it lives, so a GC between two files gave the
+  later one a copy of its own (`TestDecodeCacheSharesRepeats`, ubuntu CI at
+  a42d048c1). This is a fix in production code too.
 
 The sync PR records each item below as checked, with what was run:
 

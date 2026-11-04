@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -62,7 +63,8 @@ func TestDecodeCacheIsUnmarshal(t *testing.T) {
 
 // A title, cwd or model that many kept files repeat is held once, not
 // once a file: 23.7k sessions a script ran with one prompt held 11 MB of
-// copies of it.
+// copies of it. So are the names its models, days and tools are held by,
+// and a GC while the files are read (as one ran on ubuntu CI) frees none.
 func TestDecodeCacheSharesRepeats(t *testing.T) {
 	var b strings.Builder
 	fmt.Fprintf(&b, `{"version":%d,"zone":"z","files":{`, cacheVersion)
@@ -70,29 +72,43 @@ func TestDecodeCacheSharesRepeats(t *testing.T) {
 		if i > 0 {
 			b.WriteString(",")
 		}
-		fmt.Fprintf(&b, `"/s/%d.jsonl":{"size":%d,"title":"重要执行方式 %d","cwd":"/w/p","model":"gpt-5.5","codex_identity":{"id":"c%d","role":"subagent"}}`, i, i, i%2, i)
+		fmt.Fprintf(&b, `"/s/%d.jsonl":{"size":%d,"title":"重要执行方式 %d","cwd":"/w/p","model":"gpt-5.5","codex_identity":{"id":"c%d","role":"subagent"},"models":{"claude-x":{"input":%d}},"days":{"2026-10-24":{"m":{"o3":{"input":1}},"t":{"exec_command":%d},"k":{"review":1}}}}`, i, i, i%2, i, i+2, i)
 	}
 	b.WriteString(`}}`)
-	files, ok := decodeCache([]byte(b.String()), "z")
-	if !ok || len(files) != 2000 {
-		t.Fatalf("decoded %d files, %v", len(files), ok)
+	decodeHook = func(i int) {
+		if i%500 == 0 {
+			runtime.GC()
+		}
 	}
-	held := map[string]map[*byte]bool{}
-	for _, st := range files {
-		for name, s := range map[string]string{"title": st.Title, "cwd": st.Cwd, "model": st.Model, "role": st.CodexIdentity.Role} {
-			if held[name] == nil {
-				held[name] = map[*byte]bool{}
+	t.Cleanup(func() { decodeHook = nil })
+	// one proc reads the files in turn, more on a few goroutines
+	was := runtime.GOMAXPROCS(0)
+	t.Cleanup(func() { runtime.GOMAXPROCS(was) })
+	for _, procs := range []int{1, max(4, was)} {
+		runtime.GOMAXPROCS(procs)
+		files, ok := decodeCache([]byte(b.String()), "z")
+		if !ok || len(files) != 2000 {
+			t.Fatalf("%d procs: decoded %d files, %v", procs, len(files), ok)
+		}
+		held := map[string]map[*byte]bool{}
+		for _, st := range files {
+			d := st.Days[0]
+			for name, s := range map[string]string{"title": st.Title, "cwd": st.Cwd, "model": st.Model, "role": st.CodexIdentity.Role,
+				"models' name": st.Models[0].name, "day": d.name, "day's model": d.v.Models[0].name, "tool": d.v.Tools[0].name, "skill": d.v.Skills[0].name} {
+				if held[name] == nil {
+					held[name] = map[*byte]bool{}
+				}
+				held[name][unsafe.StringData(s)] = true
 			}
-			held[name][unsafe.StringData(s)] = true
 		}
-	}
-	for name, want := range map[string]int{"title": 2, "cwd": 1, "model": 1, "role": 1} {
-		if len(held[name]) != want {
-			t.Errorf("%s: %d copies held, want %d", name, len(held[name]), want)
+		for name, want := range map[string]int{"title": 2, "cwd": 1, "model": 1, "role": 1, "models' name": 1, "day": 1, "day's model": 1, "tool": 1, "skill": 1} {
+			if len(held[name]) != want {
+				t.Errorf("%d procs: %s: %d copies held, want %d", procs, name, len(held[name]), want)
+			}
 		}
-	}
-	if st := files["/s/3.jsonl"]; st.Title != "重要执行方式 1" || st.CodexIdentity.ID != "c3" {
-		t.Fatalf("file 3: %+v", st)
+		if st := files["/s/3.jsonl"]; st.Title != "重要执行方式 1" || st.CodexIdentity.ID != "c3" {
+			t.Fatalf("%d procs: file 3: %+v", procs, st)
+		}
 	}
 }
 

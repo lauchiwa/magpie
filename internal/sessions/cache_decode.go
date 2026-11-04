@@ -51,21 +51,30 @@ func decodeCache(b []byte, zone string) (map[string]*state, bool) {
 	})
 	parsed := make([]*state, len(raws))
 	var bad atomic.Bool
-	one := func(i int) {
+	one := func(i int, held *[]unique.Handle[string]) {
 		if json.Unmarshal(unsafe.Slice(unsafe.StringData(raws[i]), len(raws[i])), &parsed[i]) != nil {
 			bad.Store(true)
 		} else if parsed[i] != nil {
-			parsed[i].share()
+			parsed[i].share(held)
+		}
+		if decodeHook != nil {
+			decodeHook(i)
 		}
 	}
+	// unique holds a string only while a handle to it lives: a GC between
+	// two files gave the later one a copy of its own (ubuntu CI's Test run
+	// 41743223611). Each worker holds its handles while the files are read.
+	var helds [][]unique.Handle[string]
 	if workers := min(runtime.GOMAXPROCS(0), 8, len(raws)/256); workers < 2 {
+		helds = make([][]unique.Handle[string], 1)
 		for i := range raws {
-			one(i)
+			one(i, &helds[0])
 		}
 	} else {
+		helds = make([][]unique.Handle[string], workers)
 		var next atomic.Int64
 		var wg sync.WaitGroup
-		for range workers {
+		for w := range workers {
 			wg.Go(func() {
 				for {
 					i := int(next.Add(64)) - 64
@@ -73,7 +82,7 @@ func decodeCache(b []byte, zone string) (map[string]*state, bool) {
 						return
 					}
 					for j := i; j < min(i+64, len(raws)); j++ {
-						one(j)
+						one(j, &helds[w])
 					}
 				}
 			})
@@ -95,6 +104,10 @@ func decodeCache(b []byte, zone string) (map[string]*state, bool) {
 	}
 	return files, true
 }
+
+// decodeHook, when a test sets it, is told each time decodeCache has read
+// a file.
+var decodeHook func(i int)
 
 // encodeCache writes c as json.Marshal does, a file's parse at a time: one
 // Marshal of a long history's 23MB grew its buffer to twice that, ~85MB a
@@ -151,17 +164,40 @@ func encodeCache(w io.Writer, c cacheFile) error {
 // share has st's strings that many files repeat held once: an agent run
 // by a script gives each of its sessions the same prompt, and a long
 // history's 23.7k copies of one ~420-byte title, with its cwds and model
-// names, were 11 of the 54 MB its kept parses held.
-func (st *state) share() {
-	for _, s := range []*string{&st.Title, &st.Cwd, &st.First, &st.Named, &st.Model, &st.Provider, &st.MsgModel, &st.MsgDay, &st.CodexNickname} {
+// names, were 11 of the 54 MB its kept parses held. The handles go on
+// held, which the caller keeps until every file shares them.
+func (st *state) share(held *[]unique.Handle[string]) {
+	one := func(s *string) {
 		if *s != "" {
-			*s = unique.Make(*s).Value()
+			h := unique.Make(*s)
+			*held = append(*held, h)
+			*s = h.Value()
 		}
+	}
+	for _, s := range []*string{&st.Title, &st.Cwd, &st.First, &st.Named, &st.Model, &st.Provider, &st.MsgModel, &st.MsgDay, &st.CodexNickname} {
+		one(s)
 	}
 	if id := st.CodexIdentity; id != nil {
 		for _, s := range []*string{&id.Role, &id.ParentSession, &id.RootSession} {
-			if *s != "" {
-				*s = unique.Make(*s).Value()
+			one(s)
+		}
+	}
+	// the names a parse's models, days and tools are held by (named's
+	// UnmarshalJSON made them unique, with no handle kept)
+	for i := range st.Models {
+		one(&st.Models[i].name)
+	}
+	for i := range st.Days {
+		one(&st.Days[i].name)
+		if d := st.Days[i].v; d != nil {
+			for j := range d.Models {
+				one(&d.Models[j].name)
+			}
+			for j := range d.Tools {
+				one(&d.Tools[j].name)
+			}
+			for j := range d.Skills {
+				one(&d.Skills[j].name)
 			}
 		}
 	}
