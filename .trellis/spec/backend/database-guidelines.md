@@ -307,6 +307,17 @@ in the latest telemetry slice.
 Stored validation is independent of today's wall time. Returned snapshots
 deep-copy nested values; Usage must eventually persist a call-time copy.
 
+`CloneQuotaSnapshot(snapshot, coverage, at)` checks and detaches a materialized
+positive-revision scope view at the supplied saved time. Keep full declared
+coverage, including unknown placeholders and sticky blockers. It cannot
+recreate missing update timestamps, cleared anchors or other-scope history;
+do not invent store records to call the full persistence validator. The
+dormant Usage library may call this helper but may not use `QuotaStore`.
+When the scope covers every declared window, a positive-revision snapshot
+cannot consist solely of no-evidence placeholders: a materialized record has
+at least one retained fact. A narrower scope can have only placeholders when
+another declared scope holds that fact; do not reject that representable view.
+
 Initialize and Apply require cancellable process AND OS ownership, keyed to a
 canonical data target's stable sibling lock; never proceed after lock errors.
 Use `filelock.TryLock`, not the fail-open/discarded-error convenience wrappers.
@@ -358,6 +369,39 @@ the dedicated CI step supplements the existing account-usage race selection.
 - Correct: retain exhaustion until admissible superseding positive included
   evidence is supplied. Real vendor certification, live incarnation ownership
   and trustworthy production clocks remain separate activation requirements.
+
+## Scenario: dormant accounting envelopes
+
+The [Usage accounting contract](../../../docs/subsystems/usage-accounting.md)
+owns frozen new-call facts, separately labelled legacy estimates and unknown
+coverage. Keep the core pure: explicit timestamps and supplied decisions,
+detached input ownership, no settings/store reads, writers or runtime hooks.
+Repeated construction is not durable idempotence or attempt deduplication.
+
+Use method-free wire types for catalogue prices and public quota snapshots.
+Validate the complete original-to-effective-to-selected tariff chain and
+amounts, not only a selected rate and a matching sum. Known zero is not
+unknown, reports are not invoices, and paired reference-minus-charge is not
+the difference between sums over unrelated populations. Accumulate sealed
+binary64 values exactly internally; project/round only at the public boundary.
+
+Share only JSON mechanics in `internal/strictjson`; owners retain schema,
+size limits and typed domain errors. Quota order stays UTF-8 and unambiguous
+syntax, exact version, unsupported-version rejection, then supported shape
+and domain. Billing applies its own size bound first. Do not add billing's
+size bound or new surrogate rules to the quota decoder. Unsupported or
+corrupt new envelopes must never silently fall back to legacy projection.
+
+Tests must cover codec reconstruction without current prices/calendar/state,
+mutation isolation, strict error ordering, unknown versus zero, report
+conflicts, exact fold/merge and transitive inactivity. Domain sharing uses a
+closed file set, not a package-wide exemption or a route through private
+wrappers. Component tests do not establish live durability, budget admission,
+vendor recovery or complete historical coverage; those are activation gates.
+Guard fixtures must include import-only files, blank/dot imports, callbacks
+nested under pointers or containers, and same-spelled names from different
+packages. Scan imports independently of declarations and inspect whole types;
+checking only named functions or a top-level `func` type leaves bypasses.
 
 ## Naming and safety
 

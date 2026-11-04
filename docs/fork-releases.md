@@ -173,6 +173,16 @@ There are no scheduled model probes. This component alone is not the live
 quota-billing feature and does not warrant an intermediate release; see
 [the state contract and activation gate](subsystems/providers-accounts.md#dormant-quota-state-fork).
 
+The dormant Usage core is isolated in `internal/usage/billing*_fork.go`.
+It freezes explicitly supplied call-time facts and monetary estimates, with
+strict versioned envelopes, separately labelled legacy projections and exact
+intermediate totals. It does not change `Record`, `Append`, pricing, budgets
+or consumers. Only the pure provider `CloneQuotaSnapshot` and shared
+`internal/strictjson` mechanics cross the component boundary; the Usage core
+must not read the quota store. Preserve the exact-file inactivity guards and
+quota decoder error precedence when syncing upstream. This is not activation
+or an intermediate release; see [Usage accounting](subsystems/usage-accounting.md).
+
 `Provider.FreeModel` (`internal/provider/models.go`) asks `userFree`
 (`freemodel_fork.go`) right after upstream's `CountFree` (the user's word
 that the whole provider costs nothing outranks a price they set on one of

@@ -111,16 +111,7 @@ func quotaView(record *quotaRecord, subject QuotaSubject, scope string, version 
 		window := QuotaWindowSnapshot{Window: coverage.Window, State: QuotaStateUnknown}
 		if i := slices.IndexFunc(record.Windows, func(w quotaWindow) bool { return w.Window == coverage.Window }); i >= 0 {
 			w := cloneQuotaWindow(record.Windows[i])
-			window = QuotaWindowSnapshot{
-				Window: w.Window, State: w.State, Kind: w.Kind, ObservedAt: w.ObservedAt,
-				ObservationID: w.ObservationID, Revision: w.Revision, Source: w.Source,
-				EvidenceID: w.EvidenceID, Cycle: w.Cycle, Recovery: w.Recovery,
-				FreshUntil: w.FreshUntil, ResetAt: w.ResetAt, Capacity: w.Capacity, Blocker: w.Blocker,
-				RecheckDue: !w.ResetAt.IsZero() && !now.Before(w.ResetAt),
-			}
-			if w.State == QuotaStateAvailable && (now.Before(w.ObservedAt) || !now.Before(w.FreshUntil) || window.RecheckDue) {
-				window.State = QuotaStateUnknown
-			}
+			window = projectQuotaWindow(quotaWindowSnapshot(w), now)
 		}
 		if window.State == QuotaStateExhausted {
 			v.State = QuotaStateExhausted
@@ -188,6 +179,25 @@ func cloneQuotaWindow(w quotaWindow) quotaWindow {
 	if w.Blocker != nil {
 		blocker := *w.Blocker
 		w.Blocker = &blocker
+	}
+	return w
+}
+
+// quotaWindowSnapshot copies retained fields only. UpdatedAt belongs to storage,
+// not a historical snapshot, and must not be inferred from ObservedAt.
+func quotaWindowSnapshot(w quotaWindow) QuotaWindowSnapshot {
+	return QuotaWindowSnapshot{
+		Window: w.Window, State: w.State, Kind: w.Kind, ObservedAt: w.ObservedAt,
+		ObservationID: w.ObservationID, Revision: w.Revision, Source: w.Source,
+		EvidenceID: w.EvidenceID, Cycle: w.Cycle, Recovery: w.Recovery,
+		FreshUntil: w.FreshUntil, ResetAt: w.ResetAt, Capacity: w.Capacity, Blocker: w.Blocker,
+	}
+}
+
+func projectQuotaWindow(w QuotaWindowSnapshot, at time.Time) QuotaWindowSnapshot {
+	w.RecheckDue = !w.ResetAt.IsZero() && !at.Before(w.ResetAt)
+	if w.State == QuotaStateAvailable && (at.Before(w.ObservedAt) || !at.Before(w.FreshUntil) || w.RecheckDue) {
+		w.State = QuotaStateUnknown
 	}
 	return w
 }
