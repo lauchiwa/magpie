@@ -2,14 +2,17 @@ package gateway
 
 import (
 	"io"
+	"math"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // freeByPrice is the case the user's own price is for: two relays serve
@@ -105,5 +108,136 @@ func TestFreeFirstFallsToThePaidOneWhenTheFreeOneIsSpent(t *testing.T) {
 	}
 	if !rested {
 		t.Errorf("freev should rest out of credit: %v", restingUntil.note)
+	}
+}
+
+// relays serves model m on each of ids, each priced $3/$15 by the user,
+// and saves group G of their m in that order under routing. A relay in
+// free is priced at nothing instead; one in broke answers 402 out of
+// balance.
+// It returns the server and who was asked, in order.
+func relays(t *testing.T, routing string, ids, free, broke []string) (*Server, func() []string) {
+	t.Helper()
+	fresh(t)
+	var mu sync.Mutex
+	var asked []string
+	members := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out := slices.Contains(broke, id)
+		serveOn(t, id, "sk-"+id, []string{"m"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			asked = append(asked, id)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			if out {
+				w.WriteHeader(http.StatusPaymentRequired)
+				io.WriteString(w, `{"error":{"message":"insufficient balance","type":"insufficient_quota"}}`)
+				return
+			}
+			io.WriteString(w, `{"id":"ok","choices":[{"message":{"role":"assistant","content":"hi"}}],"usage":{"prompt_tokens":1000,"completion_tokens":100}}`)
+		}))
+		liveModels(t, id, `{"models":[{"id":"m"}]}`)
+		price := &catalog.Price{Input: 3, Output: 15}
+		if slices.Contains(free, id) {
+			price = &catalog.Price{}
+		}
+		if err := provider.SetModelPrice(id+"/*", price); err != nil {
+			t.Fatal(err)
+		}
+		members = append(members, id+"/m")
+	}
+	if err := provider.SaveGroup(provider.Group{Name: "G", Members: members, Routing: routing}); err != nil {
+		t.Fatal(err)
+	}
+	return New(), func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(asked)
+	}
+}
+
+// paidServed checks that the one that answered, id, is billed as paid:
+// not free, at its price, and recorded as the call's provider with its
+// 1,000 tokens in and 100 out costing $0.0045 at that price.
+func paidServed(t *testing.T, id string) {
+	t.Helper()
+	p, err := provider.Find(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.FreeModel("m") {
+		t.Errorf("%s/m counts as free", id)
+	}
+	pr, ok := p.PriceAt(settings.Load(), "m", time.Now())
+	if !ok || pr.Input != 3 || pr.Output != 15 {
+		t.Errorf("%s/m is priced %+v (known %v), want its $3/$15", id, pr, ok)
+	}
+	r := lastUsage(t)
+	if r.Provider != id || r.Status != 200 {
+		t.Errorf("the answer is recorded as %q (status %d), want %s", r.Provider, r.Status, id)
+	}
+	if c := r.CostAt(pr); r.Input != 1000 || r.Output != 100 || math.Abs(c-0.0045) > 1e-9 {
+		t.Errorf("the answer is recorded at %d in, %d out, costing $%v; want 1000, 100, $0.0045", r.Input, r.Output, c)
+	}
+}
+
+// Member order is the preference among the paid members under Free
+// first (B7): the free one goes first wherever it is listed, and when it
+// is out of balance the paid member listed first answers, priced as it
+// was. Reordering the paid members changes which one; nothing else does.
+func TestFreeFirstPaidMembersKeepTheirListedOrder(t *testing.T) {
+	for _, c := range []struct {
+		ids  []string
+		want []string
+	}{
+		{[]string{"paidb", "freev", "paida"}, []string{"freev", "paidb"}},
+		{[]string{"paida", "freev", "paidb"}, []string{"freev", "paida"}},
+	} {
+		t.Run(strings.Join(c.ids, ","), func(t *testing.T) {
+			s, asked := relays(t, provider.FreeFirst, c.ids, []string{"freev"}, []string{"freev"})
+			code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"x"}]}`)
+			if code != 200 {
+				t.Fatalf("code %d: %s", code, body)
+			}
+			if got := asked(); !slices.Equal(got, c.want) {
+				t.Fatalf("asked %v, want %v", got, c.want)
+			}
+			paidServed(t, c.want[1])
+		})
+	}
+}
+
+// Under In order the paid member listed first leads, and when it is out
+// of balance the next one answers, priced as it was: a preference never
+// keeps a request on a member that can't pay for it. Listed the other
+// way round, the other one leads.
+func TestInOrderPassesTheListedFirstWhenItIsOutOfBalance(t *testing.T) {
+	for _, ids := range [][]string{{"paida", "paidb"}, {"paidb", "paida"}} {
+		t.Run(strings.Join(ids, ","), func(t *testing.T) {
+			first, next := ids[0], ids[1]
+			s, asked := relays(t, provider.Ordered, ids, nil, []string{first})
+			code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"x"}]}`)
+			if code != 200 {
+				t.Fatalf("code %d: %s", code, body)
+			}
+			if got := asked(); !slices.Equal(got, ids) {
+				t.Fatalf("asked %v, want %s then %s", got, first, next)
+			}
+			paidServed(t, next)
+			restingUntil.Lock()
+			defer restingUntil.Unlock()
+			rested := false
+			for id, r := range restingUntil.note {
+				if strings.HasPrefix(id, first) {
+					rested = true
+					if r.Why != failCredit {
+						t.Errorf("%s rests for %s, want %s", id, r.Why, failCredit)
+					}
+				}
+			}
+			if !rested {
+				t.Errorf("%s should rest out of credit: %v", first, restingUntil.note)
+			}
+		})
 	}
 }

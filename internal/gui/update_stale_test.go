@@ -31,7 +31,9 @@ func TestStaleLatestIsNotUpToDate(t *testing.T) {
 	oldV := Version
 	Version = "0.1.1402"
 	defer func() { Version = oldV }()
-	u := &updater{} // nothing it may replace: a newer one is "available"
+	// the notes are asked in the pages' language, so no read asks for them
+	// again in another (relang) and the asks counted are the checks
+	u := &updater{lang: "zh"} // nothing it may replace: a newer one is "available"
 	oldU := updates
 	updates = u
 	defer func() { updates = oldU }()

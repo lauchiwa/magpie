@@ -15,7 +15,7 @@ import (
 // change that needs more raises this and says why in its commit.
 var forkScripts = []string{"lifecycle.js", "identity.js", "freeprice.js", "releases.js"}
 
-const forkScriptBudget = 55_890 // 43,962 with lifecycle.js (R1) and identity.js (the identity GUI moved out of app.js), plus 1.5%; 46,363 with freeprice.js (the free badge's words when the user's own price made a model free, kept out of app.js and i18n.js), plus 1.5%; 53,452 with the provider editor's whole-provider free toggle in freeprice.js (its words in five languages, kept out of app.js and i18n.js), plus 1.5%; 55,056 with releases.js (About's Releases row for this fork's own builds, its words in five languages), plus 1.5%
+const forkScriptBudget = 58_503 // 43,962 with lifecycle.js (R1) and identity.js (the identity GUI moved out of app.js), plus 1.5%; 46,363 with freeprice.js (the free badge's words when the user's own price made a model free, kept out of app.js and i18n.js), plus 1.5%; 53,452 with the provider editor's whole-provider free toggle in freeprice.js (its words in five languages, kept out of app.js and i18n.js), plus 1.5%; 55,056 with releases.js (About's Releases row for this fork's own builds, its words in five languages), plus 1.5%; 57,639 with groupOrderSays in freeprice.js (what a routing group's member order decides under Free first and Cheapest first, its words in five languages, kept out of the routing plugin's client.js and i18n.js), plus 1.5%
 
 func forkScript(name string) bool { return slices.Contains(forkScripts, name) }
 
