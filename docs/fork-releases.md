@@ -230,6 +230,25 @@ through the model prefs Save already sends, so the save path has no hook.
 `TestEditorSaysTheWholeProviderPrice` and `whole-provider-free.test.cjs`
 fail without them.
 
+A group's member order is the user's preference among members its routing
+ranks the same ([gateway routing](subsystems/gateway-routing.md#a-groups-member-order-is-the-users-preference-fork)).
+The gateway needs no hook for it: `routes.FreeFirst` and `routes.Cheapest`
+are stable, and a group In order keeps its listed order in `planLevel`.
+The fork's tests hold that when upstream changes them:
+`TestFreeFirstPaidMembersKeepTheirListedOrder` and
+`TestInOrderPassesTheListedFirstWhenItIsOutOfBalance`
+(`freefirst_fork_test.go`), and `TestCheapestFirstSameCostKeepsTheListedOrder`
+(`cheapest_fork_test.go`). Two upstream files say it. `cli/groups_cli.go`'s
+`groupUsage` has nine added lines under `routing` (`free`, `fast`, `cheap`
+and the preference), after `manual`. In the routing plugin's `client.js`,
+two `fork:` lines add `groupOrderSays(id)` (`freeprice.js`, its words in
+that file's `magpie.strings`) to a group's hint, as
+`[t(GROUP_HINT[id]), groupOrderSays(id)].join(" ").trim()`: the group
+editor's `gHint` and the row's routing menu item `title` in
+`openProtoMenu`'s options. Upstream's `GROUP_HINT` strings and their
+`i18n.js` translations stay as they come, and the provider-level `MODES`
+table has no hook. `group-order-says.test.cjs` fails without either line.
+
 The session folders' held listings (`internal/sessions/one_listing.go`)
 were a fork hook (`heldStamp`) until upstream counted holds instead of
 stamping them (`held.gen`, #4114, in v0.1.2310): two `time.Now()` in one
@@ -390,6 +409,12 @@ The sync PR records each item below as checked, with what was run:
   provider whether it serves `*`).
   `TestModelPrefsStarSetsAndDropsTheWholePrice` and
   `whole-provider-free.test.cjs` cover them.
+- **Member order.** `groupUsage` in `cli/groups_cli.go` still has the
+  `free`, `fast` and `cheap` lines and the preference line under
+  `routing`; upstream adding its own lines for them replaces the fork's.
+  The routing plugin's `gHint` and row menu title still append
+  `groupOrderSays(routing)`; `group-order-says.test.cjs` covers them, and
+  the three gateway fork tests above cover the order itself.
 - **GUI strings.** `tests/strings.cjs` still reads each `FORK` file as one
   with its own words, and `tests/i18n-keys.test.cjs` still skips them in
   "a plugin's words are its own" (they are always loaded, never off like a
