@@ -86,7 +86,10 @@ The pure helpers in [`billing_fork.go`](../../internal/provider/billing_fork.go)
 validate and resolve a supplied provider, settings snapshot and model. They
 do not read files, change prices, or supply the live routing/usage paths.
 Their classification distinguishes zero cost from evidence that a model
-does not consume an allowance.
+does not consume an allowance. A model's exact valid price wins over an
+explicitly set free or quota mode, but a mode derived from legacy
+`CountFree` keeps CountFree over an exact paid price, as `FreeModel` reads it
+(`TestBillingLegacyAgreesWithFreeModel`).
 
 Save, subscription inheritance and reconstruction, copy, rename, restore
 and sync preserve the metadata. A new copy inherits omitted fields; an

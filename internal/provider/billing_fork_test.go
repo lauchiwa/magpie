@@ -66,6 +66,10 @@ func TestBillingResolve(t *testing.T) {
 		{"exact free over quota", Provider{Billing: BillingQuota}, map[string]settings.ModelPrice{"rv/m": zero}, catalog.Model{}, true, true, BillingSourceModel},
 		{"exact paid over free", Provider{Billing: BillingFree}, map[string]settings.ModelPrice{"rv/m": paid}, catalog.Model{Free: true}, false, false, BillingSourceModel},
 		{"exact paid over quota", Provider{Billing: BillingQuota, CountFree: true}, map[string]settings.ModelPrice{"rv/m": paid}, catalog.Model{Free: true}, false, false, BillingSourceModel},
+		{"legacy countfree over exact paid", Provider{CountFree: true}, map[string]settings.ModelPrice{"rv/m": paid}, catalog.Model{}, true, false, BillingSourceQuota},
+		{"legacy countfree over exact paid vendor free", Provider{CountFree: true}, map[string]settings.ModelPrice{"rv/m": paid}, catalog.Model{Free: true}, true, true, BillingSourceQuota},
+		{"legacy zero wildcard over exact paid", Provider{CountFree: true}, map[string]settings.ModelPrice{"rv/m": paid, "rv/*": zero}, catalog.Model{}, true, true, BillingSourceProvider},
+		{"legacy countfree beside exact zero", Provider{CountFree: true}, map[string]settings.ModelPrice{"rv/m": zero}, catalog.Model{}, true, true, BillingSourceModel},
 		{"exact paid over wildcard", Provider{}, map[string]settings.ModelPrice{"rv/m": paid, "rv/*": zero}, catalog.Model{}, false, false, BillingSourceModel},
 		{"broken exact is unknown", Provider{}, map[string]settings.ModelPrice{"rv/m": broken}, catalog.Model{}, false, false, BillingSourceUnknown},
 		{"broken exact leaves policy", Provider{Billing: BillingFree}, map[string]settings.ModelPrice{"rv/m": broken}, catalog.Model{}, true, true, BillingSourceProvider},
@@ -184,5 +188,40 @@ func TestBillingSourceValues(t *testing.T) {
 	want := []BillingSource{"model", "provider", "quota", "vendor", "catalog-zero", "list", "unknown"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("source contract: %v", got)
+	}
+}
+
+// A mode derived from legacy data classifies each model as the live
+// FreeModel does, so activating ResolveBilling changes no old user's free
+// models: CountFree stands over an exact paid price, as upstream's
+// countfree_test holds it.
+func TestBillingLegacyAgreesWithFreeModel(t *testing.T) {
+	zero, paid := stated(0, 0, 0, 0), stated(1, 2, 0, 0)
+	for _, countFree := range []bool{false, true} {
+		for name, prices := range map[string]map[string]settings.ModelPrice{
+			"none":               nil,
+			"exact paid":         {"rv/plain": paid, "rv/vfree": paid},
+			"exact zero":         {"rv/plain": zero, "rv/vfree": zero},
+			"zero wildcard":      {"rv/*": zero},
+			"zero wildcard+paid": {"rv/*": zero, "rv/plain": paid, "rv/vfree": paid},
+			"paid wildcard":      {"rv/*": paid},
+		} {
+			prefsHome(t)
+			if err := Save(Provider{ID: "rv", Name: "RV", Key: "sk-rv", Chat: "http://127.0.0.1:9/v1", CountFree: countFree}); err != nil {
+				t.Fatal(err)
+			}
+			liveFree(t, "rv", `{"models":[{"id":"plain","cost":{"input":3,"output":15}},{"id":"vfree","free":true}]}`)
+			pricesSaved(t, prices)
+			p, err := Find("rv")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, m := range p.Available() {
+				d, err := p.ResolveBilling(settings.Settings{ModelPrices: prices}, m)
+				if err != nil || d.Free != p.FreeModel(m.ID) {
+					t.Errorf("countFree=%v prices=%s %s: decision %+v (%v), FreeModel %v", countFree, name, m.ID, d, err, p.FreeModel(m.ID))
+				}
+			}
+		}
 	}
 }

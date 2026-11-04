@@ -94,8 +94,10 @@ func (p Provider) BillingPolicy(s settings.Settings) (BillingPolicy, error) {
 }
 
 // ResolveBilling classifies supplied facts for future integration. No production
-// routing, budget, Usage or UI consumer uses it. Exact valid prices win even over
-// free/quota policy; global and nonzero provider wildcards grant no exemption.
+// routing, budget, Usage or UI consumer uses it. Exact valid prices win over an
+// explicitly set free/quota policy; global and nonzero provider wildcards grant
+// no exemption. Legacy CountFree stands over an exact paid price, as FreeModel
+// reads it, so deriving a mode from it never turns one of its models paid.
 func (p Provider) ResolveBilling(s settings.Settings, m catalog.Model) (BillingDecision, error) {
 	b, err := p.BillingPolicy(s)
 	if err != nil {
@@ -103,7 +105,7 @@ func (p Provider) ResolveBilling(s settings.Settings, m catalog.Model) (BillingD
 	}
 	d := BillingDecision{Policy: b, Source: BillingSourceUnknown}
 	if mp, ok := s.ModelPrices[p.ID+"/"+m.ID]; ok {
-		if pr, bad := mp.Price(); bad == "" {
+		if pr, bad := mp.Price(); bad == "" && !(b.Legacy && p.CountFree && !costsNothing(pr)) {
 			d.Source = BillingSourceModel
 			d.Free = costsNothing(pr)
 			d.AllowanceIndependent = d.Free
