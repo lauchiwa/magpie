@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"os"
@@ -17,66 +16,50 @@ import (
 
 func dormantQuotaFile(t *testing.T, state provider.QuotaState) string {
 	t.Helper()
-	path := filepath.Join(appdir.Config(), "quota-state.json")
-	if state == provider.QuotaStateUnknown {
+	path := filepath.Join(appdir.Config(), "quota.json")
+	now := time.Now().UTC() // the legacy request path reads the real clock
+	switch state {
+	case provider.QuotaNone:
 		return path
-	}
-	store := provider.NewQuotaStore(path)
-	epoch, err := store.Initialize(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The legacy request path uses the real clock; keep this evidence fresh there too.
-	now := time.Now().UTC()
-	fact := provider.QuotaFact{
-		Window: "included", Kind: provider.QuotaConfirmedExhaustion,
-		EvidenceID: "evidence-1", Cycle: "cycle-1",
-	}
-	if state == provider.QuotaStateAvailable {
-		fact.Kind = provider.QuotaReportedAvailable
-		fact.FreshUntil = now.Add(time.Hour)
-		fact.Capacity = &provider.QuotaCapacity{Semantics: "included", Unit: "requests", Remaining: 5, Limit: 10}
-	}
-	subject := provider.QuotaSubject{Authority: "fixture", Provider: "freev", Principal: "key-instance-1", Generation: "scope-1"}
-	_, err = store.Apply(context.Background(), provider.QuotaObservation{
-		Subject: subject, ID: "observation-1", Expected: provider.QuotaVersion{StoreEpoch: epoch},
-		Source: "fixture-source", ObservedAt: now,
-		Coverage: []provider.QuotaCoverage{{Window: "included", Scopes: []string{"m"}}},
-		Facts:    []provider.QuotaFact{fact},
-	}, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	view, err := store.Read(subject, "m", now)
-	if err != nil || view.State != state {
-		t.Fatalf("dormant fixture = %+v, %v; want %s", view, err, state)
+	case provider.QuotaUnknown:
+		if err := os.WriteFile(path, []byte(`{"version":1,`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	default:
+		if err := provider.NewQuotaStore(path).Exhaust("freev", "quota", now.Add(time.Hour), now); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return path
 }
 
-// The store is not bound to gateway identities yet. The production-reference
+// The store is not bound to the gateway yet. The production-reference
 // guard is the activation gate; this exercises the ordinary path beside it.
 func TestQuotaInactiveKeepsLegacyRouting(t *testing.T) {
-	for _, state := range []provider.QuotaState{provider.QuotaStateUnknown, provider.QuotaStateExhausted, provider.QuotaStateAvailable} {
-		t.Run(string(state), func(t *testing.T) {
+	for name, state := range map[string]provider.QuotaState{"none": provider.QuotaNone, "exhausted": provider.QuotaExhausted, "unknown": provider.QuotaUnknown} {
+		t.Run(name, func(t *testing.T) {
 			_, asked := freeByPrice(t, nil)
 			path := dormantQuotaFile(t, state)
 			before, readErr := os.ReadFile(path)
+			_, lockErr := os.Stat(path + ".lock")
 			s := New()
 			code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"x"}]}`)
 			if code != http.StatusOK || !slices.Equal(asked(), []string{"freev"}) {
 				t.Fatalf("legacy free-first changed: code=%d body=%s calls=%v", code, body, asked())
 			}
 			after, err := os.ReadFile(path)
-			if state == provider.QuotaStateUnknown {
+			if state == provider.QuotaNone {
 				if !os.IsNotExist(readErr) || !os.IsNotExist(err) {
 					t.Fatalf("startup/request created quota state: before=%v after=%v", readErr, err)
 				}
-				if _, err := os.Stat(path + ".lock"); !os.IsNotExist(err) {
-					t.Fatalf("startup/request created quota lock: %v", err)
-				}
 			} else if readErr != nil || err != nil || string(before) != string(after) {
 				t.Fatalf("legacy request changed dormant state: before=%v after=%v", readErr, err)
+			}
+			if _, err := os.Stat(path + ".lock"); os.IsNotExist(lockErr) && !os.IsNotExist(err) {
+				t.Fatalf("startup/request took the quota lock: %v", err)
+			}
+			if aside, _ := filepath.Glob(path + ".bad-*"); len(aside) != 0 {
+				t.Fatalf("startup/request moved quota state aside: %v", aside)
 			}
 		})
 	}
@@ -89,7 +72,7 @@ func TestQuotaInactiveKeepsLegacyCreditFallback(t *testing.T) {
 		io.WriteString(w, `{"error":{"message":"insufficient balance","type":"insufficient_quota"}}`)
 	})
 	_, asked := freeByPrice(t, broke)
-	path := dormantQuotaFile(t, provider.QuotaStateAvailable)
+	path := dormantQuotaFile(t, provider.QuotaExhausted)
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +91,7 @@ func TestQuotaInactiveKeepsLegacyCreditFallback(t *testing.T) {
 	}
 	restingUntil.Unlock()
 	if !rested {
-		t.Fatal("dormant availability prevented the live credit rest")
+		t.Fatal("dormant quota state prevented the live credit rest")
 	}
 	after, err := os.ReadFile(path)
 	if err != nil || string(before) != string(after) {

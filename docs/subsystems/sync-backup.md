@@ -41,12 +41,11 @@ in [providers and accounts](providers-accounts.md#dormant-billing-metadata-fork)
 
 ## What stays on each computer
 
-The fork's dormant `quota-state.json` is separate from provider billing
+The fork's dormant `quota.json` is separate from provider billing
 metadata. Neither `backup.Collect` nor the sync bundle includes it; there is
-no import from older rest or allowance caches. A newly initialized local
-store starts unknown rather than inheriting another computer's availability.
-No runtime path creates it yet. Its explicit initialization, error handling
-and later activation gates are owned by
+no import from older rest or allowance caches, so another computer's
+refusals never hold this one's keys. No runtime path creates it yet. Its
+error handling and later activation gates are owned by
 [dormant quota state](providers-accounts.md#dormant-quota-state-fork).
 
 The settings part carries the user's preferences, but not what is only about

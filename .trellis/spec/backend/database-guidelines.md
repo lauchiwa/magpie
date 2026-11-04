@@ -277,131 +277,55 @@ only the Usage display.
 - Wrong: add stored fields to an embedded request and call the new resolver from routing immediately.
 - Correct: gate request exposure explicitly, retain the old runtime, and activate routing, accounting/history and controls together in a later reviewed change.
 
-## Scenario: inactive durable quota observations
+## Scenario: dormant quota store
 
-### 1. Scope / trigger
-The fork quota component accepts explicit normalized evidence without live
-collectors or routing consumers. Its source-backed contract and activation
-gates are in [dormant quota state](../../../docs/subsystems/providers-accounts.md#dormant-quota-state-fork).
-Keep production changes in provider-owned `quota*_fork.go` files.
+The [dormant quota state contract](../../../docs/subsystems/providers-accounts.md#dormant-quota-state-fork)
+owns `internal/provider/quota_store_fork.go` and its `quota.json`. One entry
+per rest key: never refused (nothing kept), exhausted until a reset, or
+unknown.
 
-### 2. Signatures
-- `NewQuotaStore(path string) *QuotaStore` performs no I/O.
-- `(*QuotaStore).Initialize(context.Context) (string, error)` explicitly
-  creates an absent versioned store and returns its epoch.
-- `(*QuotaStore).Read(QuotaSubject, string, time.Time) (QuotaSnapshot, error)`
-  evaluates the named scope with no creation, repair or lock.
-- `(*QuotaStore).Apply(context.Context, QuotaObservation, time.Time)
-  (QuotaCommit, error)` is a locked whole-file transaction.
-- `ValidateQuotaObservation(QuotaObservation, time.Time) error` validates
-  normalized structure/freshness, not source authenticity or vendor behavior.
+- A refusal is never lost. `Exhaust` always writes, and beside a refusal
+  already kept the later reset and sighting stand. Only `Recover` with the
+  ticket `Admit` gave clears it, and not when a refusal was written since
+  (the entry's `Seq`).
+- Past the reset, and for unknown, one real request is `QuotaTry`; the
+  others are held, for at most `QuotaTryHold` without an answer. Only the
+  try's own answer releases it. Unknown is never credit.
+- Each entry decodes on its own: a bad one is its key's unknown. A file
+  that doesn't parse is moved aside on the next write, and the new file is
+  marked `unknown` so keys it doesn't name stay unknown. A newer version is
+  never written over.
+- Time is checked when written: a reset at most 31 days past its sighting.
+  A sighting more than a minute ahead of `now` is unknown when read.
+- Writes go through temp-and-rename, a process mutex and `filelock` (fail
+  open after 10s, as every magpie file). Reads are cached on size and
+  modification time.
 
-### 3. Contracts
-The complete `QuotaSubject` tuple and immutable coverage define identity and
-applicable windows. CAS uses `QuotaVersion.StoreEpoch` and per-subject
-`Revision`; acquisition precedes commit and a conflict requires fresh evidence.
-Unresolved confirmed-refusal anchors survive weaker reports, hints and restart.
-Cross-check retained operation IDs/source/time and per-operation evidence IDs
-across latest facts, refusal anchors and recovery references, not just peers
-in the latest telemetry slice.
-Stored validation is independent of today's wall time. Returned snapshots
-deep-copy nested values; Usage must eventually persist a call-time copy.
+Tests cover each rule above with a break check that turns it red, the file
+mode, and a guard that fails when a production file names the store.
+Gateway tests check the legacy path leaves no file, an exhausted file and a
+bad file byte for byte as they were. Wiring the gateway's refusal and
+success paths to it is an activation gate.
 
-`CloneQuotaSnapshot(snapshot, coverage, at)` checks and detaches a materialized
-positive-revision scope view at the supplied saved time. Keep full declared
-coverage, including unknown placeholders and sticky blockers. It cannot
-recreate missing update timestamps, cleared anchors or other-scope history;
-do not invent store records to call the full persistence validator. The
-dormant Usage library may call this helper but may not use `QuotaStore`.
-When the scope covers every declared window, a positive-revision snapshot
-cannot consist solely of no-evidence placeholders: a materialized record has
-at least one retained fact. A narrower scope can have only placeholders when
-another declared scope holds that fact; do not reject that representable view.
-
-Initialize and Apply require cancellable process AND OS ownership, keyed to a
-canonical data target's stable sibling lock; never proceed after lock errors.
-Use `filelock.TryLock`, not the fail-open/discarded-error convenience wrappers.
-Use `edit.Target` plus missing-target ancestor resolution, then private
-`steady.WriteFile` writes. Resolve an existing directory link before cleaning
-`..`; lexical `Abs`/`Dir` first can select a different absent target and lock.
-Strict JSON rejects duplicate/unknown fields,
-trailing values and invalid relationships anywhere in the file; no `.bak`
-fallback, automatic initialization or inclusion in backup/sync.
-
-Replay checks the retained last operation ID and canonical semantic digest
-before ordinary revision/freshness validation. Identical retry returns its
-committed revision with `Replayed=true`, `Transition=nil` and no write;
-`Read` provides a time-current view. Only the last operation is retained.
-
-### 4. Validation / error matrix
-| Condition | Result |
-| --- | --- |
-| Missing file on Read/Apply | `ErrQuotaMissing`, unknown view, no state creation |
-| Ambiguous JSON or any invalid stored record | `ErrQuotaCorrupt`, preserve bytes, no partial result |
-| Unsupported schema | `ErrQuotaUnsupported`, no overwrite |
-| Filesystem or OS-lock failure | `ErrQuotaIO`, no unlocked write |
-| Ownership wait cancelled or bounded wait elapsed | `ErrQuotaBusy`, no write |
-| Wrong epoch/revision or changed last-operation retry | `ErrQuotaConflict`, no rebase |
-| Missing identity/evidence, paid capacity or invalid numeric/time facts | `ErrQuotaInvalid`, no permissive state |
-| Exhausted window's reset passed | Exhausted with `RecheckDue`, never available by time alone |
-| Positive evidence no longer fresh | Unknown view; held exhaustion still blocks |
-
-### 5. Good / base / bad cases
-- Base: empty initialized store exposes its epoch with revision zero and unknown state.
-- Good: recovery names the current refusal and proves positive included capacity
-  for one window, leaving another exhausted window blocking the scope.
-- Bad: `reported_full` replaces a confirmed refusal, allowing a later lower
-  usage reading to erase the stronger blocker after restart.
-
-### 6. Tests required
-Provider `TestQuota*`: state/time/reset boundaries, immutable complete coverage,
-distinct generations, strongest anchors, structural rejection, copied snapshots,
-CAS and replay after restart/expiry, concurrent/process/alias ownership,
-initialization races and pre-rename failure preserving bytes. Inactivity AST
-guards cover bare references, selectors/method values and startup side effects
-inside library files. Gateway `TestQuotaInactive*` keeps legacy routing/rests
-with populated state. Run quota tests with `-race` on a supported runner;
-the dedicated CI step supplements the existing account-usage race selection.
-
-### 7. Wrong vs correct
-- Wrong: assume reset expiry, `elapsed`-projected usage, paid wallet capacity
-  or a caller's `trusted` flag proves free recovery.
-- Correct: retain exhaustion until admissible superseding positive included
-  evidence is supplied. Real vendor certification, live incarnation ownership
-  and trustworthy production clocks remain separate activation requirements.
-
-## Scenario: dormant accounting envelopes
+## Scenario: dormant usage biller
 
 The [Usage accounting contract](../../../docs/subsystems/usage-accounting.md)
-owns frozen new-call facts, separately labelled legacy estimates and unknown
-coverage. Keep the core pure: explicit timestamps and supplied decisions,
-detached input ownership, no settings/store reads, writers or runtime hooks.
-Repeated construction is not durable idempotence or attempt deduplication.
+owns `internal/usage/billing_fork.go`. `NewBiller` takes a record, the
+`BillingDecision` and the call's quota state from its caller; it reads no
+quota store and infers no mode for an old call from today's provider.
 
-Use method-free wire types for catalogue prices and public quota snapshots.
-Validate the complete original-to-effective-to-selected tariff chain and
-amounts, not only a selected rate and a matching sum. Known zero is not
-unknown, reports are not invoices, and paired reference-minus-charge is not
-the difference between sums over unrelated populations. Accumulate sealed
-binary64 values exactly internally; project/round only at the public boundary.
+The charge is the ledger's cost of the record, through `NewCoster`: never a
+second price arithmetic beside the ledger's. The list price is the
+provider's `PublishedPrice`, else `MakerPrice`, at the provider's peak hours,
+with no user price, price rate or rate window. A nil amount is unknown, never
+zero; JSON writes a zero charge and omits an unknown one. Totals count known
+and unknown amounts, and a saving is list minus charge over calls with both.
 
-Share only JSON mechanics in `internal/strictjson`; owners retain schema,
-size limits and typed domain errors. Quota order stays UTF-8 and unambiguous
-syntax, exact version, unsupported-version rejection, then supported shape
-and domain. Billing applies its own size bound first. Do not add billing's
-size bound or new surrogate rules to the quota decoder. Unsupported or
-corrupt new envelopes must never silently fall back to legacy projection.
-
-Tests must cover codec reconstruction without current prices/calendar/state,
-mutation isolation, strict error ordering, unknown versus zero, report
-conflicts, exact fold/merge and transitive inactivity. Domain sharing uses a
-closed file set, not a package-wide exemption or a route through private
-wrappers. Component tests do not establish live durability, budget admission,
-vendor recovery or complete historical coverage; those are activation gates.
-Guard fixtures must include import-only files, blank/dot imports, callbacks
-nested under pointers or containers, and same-spelled names from different
-packages. Scan imports independently of declarations and inspect whole types;
-checking only named functions or a top-level `func` type leaves bypasses.
+Tests cover the charge against `NewCoster` at each peak edge, every decision
+and quota state, each list source, user prices and rates that leave the list
+alone, a deleted provider's call, and a production file naming the biller.
+Component tests do not establish storage with the call, budget admission or
+historical coverage; those are activation gates.
 
 ## Naming and safety
 

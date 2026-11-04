@@ -1,431 +1,379 @@
 package provider
 
 import (
-	"bytes"
-	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
-	"reflect"
-	"runtime"
-	"sort"
-	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filelock"
 	"github.com/yetone/magpie/internal/steady"
-	"github.com/yetone/magpie/internal/strictjson"
 )
 
-// QuotaStore is dormant until explicitly initialized or used. It has no default
-// location, configuration lookup, repair path, or production owner yet.
+// QuotaStore keeps which keys and accounts are out of their included
+// allowance, and until when, across restarts. It is dormant: nothing in
+// magpie makes one yet, so no file is read or written. A key is the
+// gateway's rest key (a provider's id, id#keyID or an account's, with
+// /model for an allowance pooled by model), opaque here.
+//
+// Each key holds one entry, merged so that no refusal is lost: an
+// exhaustion is always written, and only a success that started after the
+// last write clears it (Recover's ticket). Once the reset time has
+// passed, Admit lets one real request through to find out (QuotaTry);
+// there is no probe of its own. An entry or file that can't be read is
+// unknown, and gets that one try too: unknown is never credit.
 type QuotaStore struct {
-	path  string
-	write func(string, []byte, fs.FileMode) error
+	path string
+	mu   sync.Mutex
+	// read is the file as last read, kept while its size and time are
+	// unchanged, so that Admit on each request costs one stat
+	read  quotaRead
+	tries map[string]time.Time // key: when its one try was handed out
 }
 
+type QuotaState string
+
+const (
+	QuotaNone      QuotaState = ""          // never refused: nothing to say
+	QuotaExhausted QuotaState = "exhausted" // refused until ResetAt
+	QuotaUnknown   QuotaState = "unknown"   // its entry or the file can't be read
+)
+
+// QuotaEntry is one key's state. Seq is the file's write that last set
+// it, for Recover's ticket.
+type QuotaEntry struct {
+	State      QuotaState `json:"state"`
+	Reason     string     `json:"reason"` // quota or credit
+	ResetAt    time.Time  `json:"resetAt"`
+	ObservedAt time.Time  `json:"observedAt"`
+	Seq        uint64     `json:"seq"`
+	tried      time.Time  // when Admit handed this ticket the try, else zero
+}
+
+type QuotaAdmit int
+
+const (
+	QuotaPass QuotaAdmit = iota // not out of its allowance
+	QuotaHold                   // out until ResetAt, or another request is trying
+	QuotaTry                    // the one request that finds out
+)
+
+// QuotaTryHold is how long a handed-out try holds the others back without
+// an answer (a request that never ends), before another may try.
+var QuotaTryHold = 10 * time.Minute
+
+var (
+	ErrQuotaInvalid     = errors.New("quota entry invalid")
+	ErrQuotaUnsupported = errors.New("quota state schema unsupported")
+	ErrQuotaIO          = errors.New("quota state I/O failure")
+	ErrQuotaCorrupt     = errors.New("quota state corrupt")
+)
+
+// quotaLongest bounds how far past its sighting a reset is kept, as
+// loadRests bounds a rest, so no refusal holds a key out for good.
+// quotaSkew is how far ahead of now a sighting may be and still be this
+// clock's: a refusal from further ahead was seen before the clock was set
+// back, so its times say nothing of now.
+const (
+	quotaLongest = 31 * 24 * time.Hour
+	quotaSkew    = time.Minute
+)
+
 type quotaFile struct {
-	Version        uint64        `json:"version"`
-	Epoch          string        `json:"epoch"`
-	CommitSequence uint64        `json:"commit_sequence"`
-	Records        []quotaRecord `json:"records"`
+	Version uint64 `json:"version"`
+	Seq     uint64 `json:"seq"`
+	// Unknown: written after a file that didn't parse was moved aside, so a
+	// key with no entry is unknown, not never refused, until written
+	Unknown bool                       `json:"unknown,omitempty"`
+	Entries map[string]json.RawMessage `json:"entries"`
+}
+
+type quotaRead struct {
+	size    int64
+	mod     time.Time
+	ok      bool
+	err     error // the file as a whole: unsupported or I/O
+	bad     bool  // the file doesn't parse: every key unknown
+	unknown bool  // quotaFile.Unknown
+	seq     uint64
+	entries map[string]QuotaEntry // a bad entry is QuotaUnknown
 }
 
 func NewQuotaStore(path string) *QuotaStore { return &QuotaStore{path: path} }
 
-// Initialize creates only absent state; corrupt or unsupported bytes stay put.
-func (s *QuotaStore) Initialize(ctx context.Context) (string, error) {
-	target, release, err := s.lock(ctx)
-	if err != nil {
-		return "", err
+// Read is key's entry as of now. A file or entry that can't be read is
+// QuotaUnknown with the reason; a key never refused is QuotaNone. A refusal
+// seen more than quotaSkew after now, by a clock set back since, is
+// QuotaUnknown too, with its Seq for Recover.
+func (s *QuotaStore) Read(key string, now time.Time) (QuotaEntry, error) {
+	if !validQuotaKey(key) {
+		return QuotaEntry{}, ErrQuotaInvalid
 	}
-	defer release()
-	data, err := readQuotaFile(target)
-	if err == nil {
-		return data.Epoch, nil
+	s.mu.Lock()
+	r := s.load()
+	s.mu.Unlock()
+	switch {
+	case r.err != nil:
+		return QuotaEntry{State: QuotaUnknown}, r.err
+	case r.bad:
+		return QuotaEntry{State: QuotaUnknown}, ErrQuotaCorrupt
 	}
-	if !errors.Is(err, ErrQuotaMissing) {
-		return "", err
+	e, ok := r.entries[key]
+	if e.State == QuotaUnknown || !ok && r.unknown {
+		return QuotaEntry{State: QuotaUnknown}, ErrQuotaCorrupt
 	}
-	var epoch [16]byte
-	if _, err := rand.Read(epoch[:]); err != nil {
-		return "", quotaIO("epoch", err)
+	if e.State == QuotaExhausted && e.ObservedAt.After(now.Add(quotaSkew)) {
+		e.State = QuotaUnknown
 	}
-	data = quotaFile{Version: 1, Epoch: hex.EncodeToString(epoch[:]), Records: []quotaRecord{}}
-	if err := s.save(ctx, target, data); err != nil {
-		return "", err
-	}
-	return data.Epoch, nil
+	return e, nil
 }
 
-// Read never creates a file, directory or lock. An unusable store is unknown,
-// accompanied by an error, not an empty allowance or a restored backup.
-func (s *QuotaStore) Read(subject QuotaSubject, scope string, now time.Time) (QuotaSnapshot, error) {
-	unknown := QuotaSnapshot{Subject: subject, Scope: scope, State: QuotaStateUnknown}
-	if err := validateQuotaSubject(subject); err != nil {
-		return unknown, err
+// Admit says whether a request may go to key now. Out of its allowance it
+// is held until ResetAt; past it, or with nothing readable to go by, one
+// request at a time is QuotaTry and the others are held. The entry is the
+// ticket for Recover.
+func (s *QuotaStore) Admit(key string, now time.Time) (QuotaAdmit, QuotaEntry) {
+	e, err := s.Read(key, now)
+	switch {
+	case errors.Is(err, ErrQuotaInvalid), e.State == QuotaNone:
+		return QuotaPass, e
+	case e.State == QuotaExhausted && now.Before(e.ResetAt):
+		return QuotaHold, e
 	}
-	if !validQuotaID(scope) || now.IsZero() {
-		return unknown, fmt.Errorf("%w: read scope or time", ErrQuotaInvalid)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if at, ok := s.tries[key]; ok && !now.Before(at) && now.Sub(at) < QuotaTryHold {
+		return QuotaHold, e
 	}
-	target, err := quotaTarget(s.path)
-	if err != nil {
-		return unknown, err
+	if s.tries == nil {
+		s.tries = map[string]time.Time{}
 	}
-	data, err := readQuotaFile(target)
-	if err != nil {
-		return unknown, err
-	}
-	record := data.record(subject)
-	version := QuotaVersion{StoreEpoch: data.Epoch}
-	if record != nil {
-		version.Revision = record.Revision
-	}
-	return quotaView(record, subject, scope, version, now), nil
+	s.tries[key] = now
+	e.tried = now
+	return QuotaTry, e
 }
 
-// Apply acknowledges only the retained last operation on a subject. A retry is
-// checked before wall-time/CAS validation: expiry cannot uncommit an operation.
-func (s *QuotaStore) Apply(ctx context.Context, observation QuotaObservation, now time.Time) (QuotaCommit, error) {
-	target, release, err := s.lock(ctx)
-	if err != nil {
-		return QuotaCommit{}, err
+// Exhaust records a refusal for key's allowance, back at resetAt (the
+// vendor's time, else the provider's own: OwnQuotaRest), at most
+// quotaLongest after observedAt, when it was seen: Exhaust is called as it
+// is. It is always written: beside a refusal already kept, the later reset
+// and sighting stand, so no refusal of several at once is lost. One kept
+// from more than quotaSkew after observedAt was seen by a clock since set
+// back, and is replaced.
+func (s *QuotaStore) Exhaust(key, reason string, resetAt, observedAt time.Time) error {
+	if !validQuotaKey(key) || reason != "quota" && reason != "credit" || resetAt.IsZero() || observedAt.IsZero() {
+		return ErrQuotaInvalid
 	}
-	defer release()
-	data, err := readQuotaFile(target)
-	if err != nil {
-		return QuotaCommit{}, err
-	}
-	if err := validateQuotaObservationStructure(observation); err != nil {
-		return QuotaCommit{}, err
-	}
-	if observation.Expected.StoreEpoch != data.Epoch {
-		return QuotaCommit{}, ErrQuotaConflict
-	}
-	digest, err := quotaDigest(observation)
-	if err != nil {
-		return QuotaCommit{}, err
-	}
-	current := data.record(observation.Subject)
-	if current != nil && current.LastID == observation.ID {
-		if current.Digest != digest {
-			return QuotaCommit{}, ErrQuotaConflict
+	// the refusal holds key until its reset, so whichever request saw it,
+	// the try is over
+	defer s.release(key, nil)
+	return s.change(key, func(cur QuotaEntry) (QuotaEntry, bool) {
+		e := QuotaEntry{State: QuotaExhausted, Reason: reason, ResetAt: resetAt.UTC(), ObservedAt: observedAt.UTC()}
+		if longest := e.ObservedAt.Add(quotaLongest); e.ResetAt.After(longest) {
+			e.ResetAt = longest
 		}
-		return QuotaCommit{Version: QuotaVersion{StoreEpoch: data.Epoch, Revision: current.Revision}, Replayed: true}, nil
-	}
-	revision := uint64(0)
-	if current != nil {
-		revision = current.Revision
-	}
-	if observation.Expected.Revision != revision {
-		return QuotaCommit{}, ErrQuotaConflict
-	}
-	next, err := reduceQuota(current, observation, now)
-	if err != nil {
-		return QuotaCommit{}, err
-	}
-	if data.CommitSequence == math.MaxUint64 {
-		return QuotaCommit{}, ErrQuotaConflict
-	}
-	next.LastID, next.Digest = observation.ID, digest
-	if err := validateQuotaRecord(next); err != nil {
-		return QuotaCommit{}, err
-	}
-	beforeVersion := QuotaVersion{StoreEpoch: data.Epoch}
-	if current != nil {
-		beforeVersion.Revision = current.Revision
-	}
-	version := QuotaVersion{StoreEpoch: data.Epoch, Revision: next.Revision}
-	transition := &QuotaTransition{
-		Before: quotaViews(current, observation.Subject, observation.Coverage, beforeVersion, now),
-		After:  quotaViews(&next, observation.Subject, next.Coverage, version, now),
-	}
-	if current == nil {
-		data.Records = append(data.Records, next)
-	} else {
-		*current = next
-	}
-	data.CommitSequence++
-	if err := s.save(ctx, target, data); err != nil {
-		return QuotaCommit{}, err
-	}
-	return QuotaCommit{Version: version, Transition: transition}, nil
-}
-
-func (d *quotaFile) record(subject QuotaSubject) *quotaRecord {
-	for i := range d.Records {
-		if d.Records[i].Subject == subject {
-			return &d.Records[i]
+		if cur.State == QuotaExhausted && !cur.ObservedAt.After(e.ObservedAt.Add(quotaSkew)) {
+			if cur.ResetAt.After(e.ResetAt) {
+				e.ResetAt = cur.ResetAt
+			}
+			if cur.ObservedAt.After(e.ObservedAt) {
+				e.ObservedAt = cur.ObservedAt
+			}
 		}
-	}
-	return nil
+		return e, true
+	})
 }
 
-func (s *QuotaStore) save(ctx context.Context, target string, data quotaFile) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("%w: %w", ErrQuotaBusy, err)
+// Recover clears key's refusal after a request to it was served. ticket
+// is the entry Admit gave that request: a refusal written since then is
+// newer than the success and stays. Only the request handed the try ends
+// it; another one served meanwhile, admitted before the refusal, doesn't.
+func (s *QuotaStore) Recover(key string, ticket QuotaEntry) error {
+	if !validQuotaKey(key) {
+		return ErrQuotaInvalid
 	}
-	b, err := json.Marshal(data)
+	defer s.release(key, &ticket)
+	s.mu.Lock()
+	r := s.load()
+	s.mu.Unlock()
+	if e, ok := r.entries[key]; r.err == nil && !r.bad && (ok && e.State == QuotaNone || !ok && !r.unknown) {
+		return nil // nothing kept for it: nothing to clear (the hot path)
+	}
+	return s.change(key, func(cur QuotaEntry) (QuotaEntry, bool) {
+		if cur.State == QuotaExhausted && cur.Seq != ticket.Seq {
+			return cur, false
+		}
+		return QuotaEntry{}, true
+	})
+}
+
+// release lets another request try key: after any refusal (ticket nil),
+// or the answer of the request that was handed the try.
+func (s *QuotaStore) release(key string, ticket *QuotaEntry) {
+	s.mu.Lock()
+	if at, ok := s.tries[key]; ok && (ticket == nil || !ticket.tried.IsZero() && ticket.tried.Equal(at)) {
+		delete(s.tries, key)
+	}
+	s.mu.Unlock()
+}
+
+// load is the file as last read, read again when its size or time
+// changed. Called with s.mu held; a read is one small file.
+func (s *QuotaStore) load() quotaRead {
+	target, err := edit.Target(s.path)
 	if err != nil {
-		return ErrQuotaCorrupt
+		return quotaRead{err: ErrQuotaIO}
 	}
-	write := s.write
-	if write == nil {
-		write = steady.WriteFile
-	}
-	if err := write(target, b, 0600); err != nil {
-		return quotaIO("write", err)
-	}
-	return nil
-}
-
-func readQuotaFile(target string) (quotaFile, error) {
-	b, err := os.ReadFile(target)
+	st, err := os.Stat(target)
 	if errors.Is(err, fs.ErrNotExist) {
-		return quotaFile{}, ErrQuotaMissing
+		s.read = quotaRead{}
+		return s.read
 	}
 	if err != nil {
-		return quotaFile{}, quotaIO("read", err)
+		return quotaRead{err: ErrQuotaIO}
 	}
-	return decodeQuotaFile(b)
-}
-
-func decodeQuotaFile(b []byte) (quotaFile, error) {
-	bad := func() (quotaFile, error) { return quotaFile{}, ErrQuotaCorrupt }
-	if strictjson.Validate(b) != nil {
-		return bad()
+	if s.read.ok && s.read.size == st.Size() && s.read.mod.Equal(st.ModTime()) {
+		return s.read
 	}
-	var header map[string]json.RawMessage
-	if json.Unmarshal(b, &header) != nil || header == nil {
-		return bad()
-	}
-	var version uint64
-	if raw, ok := header["version"]; !ok || bytes.Equal(raw, []byte("null")) || json.Unmarshal(raw, &version) != nil {
-		return bad()
-	}
-	if version != 1 {
-		return quotaFile{}, ErrQuotaUnsupported
-	}
-	if !strictjson.Shape(b, reflect.TypeFor[quotaFile]()) {
-		return bad()
-	}
-	var data quotaFile
-	if json.Unmarshal(b, &data) != nil {
-		return bad()
-	}
-	if !validQuotaID(data.Epoch) {
-		return bad()
-	}
-	seen := make(map[QuotaSubject]bool)
-	var sequence uint64
-	for _, record := range data.Records {
-		if seen[record.Subject] || validateQuotaRecord(record) != nil || record.Revision > math.MaxUint64-sequence {
-			return bad()
-		}
-		seen[record.Subject] = true
-		sequence += record.Revision
-	}
-	if sequence != data.CommitSequence {
-		return bad()
-	}
-	return data, nil
-}
-
-func quotaDigest(o QuotaObservation) (string, error) {
-	o.ObservedAt = o.ObservedAt.UTC()
-	o.Coverage = append([]QuotaCoverage(nil), o.Coverage...)
-	for i := range o.Coverage {
-		o.Coverage[i].Scopes = append([]string(nil), o.Coverage[i].Scopes...)
-		sort.Strings(o.Coverage[i].Scopes)
-	}
-	sort.Slice(o.Coverage, func(i, j int) bool { return o.Coverage[i].Window < o.Coverage[j].Window })
-	o.Facts = append([]QuotaFact(nil), o.Facts...)
-	for i := range o.Facts {
-		fact := &o.Facts[i]
-		fact.FreshUntil, fact.ResetAt = fact.FreshUntil.UTC(), fact.ResetAt.UTC()
-		if fact.Capacity != nil {
-			capacity := *fact.Capacity
-			if capacity.Remaining == 0 {
-				capacity.Remaining = 0
-			} // Normalize negative zero.
-			fact.Capacity = &capacity
-		}
-	}
-	sort.Slice(o.Facts, func(i, j int) bool { return o.Facts[i].Window < o.Facts[j].Window })
-	b, err := json.Marshal(o)
+	b, err := steady.ReadFile(target)
 	if err != nil {
-		return "", ErrQuotaInvalid
+		return quotaRead{err: ErrQuotaIO}
 	}
-	digest := sha256.Sum256(b)
-	return hex.EncodeToString(digest[:]), nil
+	s.read = decodeQuota(b)
+	s.read.size, s.read.mod, s.read.ok = st.Size(), st.ModTime(), true
+	return s.read
 }
 
-type quotaProcessLock struct {
-	gate chan struct{}
-	refs int
-}
-
-var quotaProcessLocks struct {
-	sync.Mutex
-	paths map[string]*quotaProcessLock
-}
-
-const quotaLockWait = 10 * time.Second
-
-func quotaLocalLock(ctx context.Context, target string) (func(), error) {
-	key := target
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
-		key = strings.ToLower(key)
+// decodeQuota reads each entry on its own: one that doesn't read is that
+// key's QuotaUnknown, and the others stand.
+func decodeQuota(b []byte) quotaRead {
+	var f quotaFile
+	if json.Unmarshal(b, &f) != nil || f.Version == 0 {
+		return quotaRead{bad: true}
 	}
-	quotaProcessLocks.Lock()
-	if quotaProcessLocks.paths == nil {
-		quotaProcessLocks.paths = make(map[string]*quotaProcessLock)
+	if f.Version != 1 {
+		return quotaRead{err: ErrQuotaUnsupported}
 	}
-	entry := quotaProcessLocks.paths[key]
-	if entry == nil {
-		entry = &quotaProcessLock{gate: make(chan struct{}, 1)}
-		quotaProcessLocks.paths[key] = entry
-	}
-	entry.refs++
-	quotaProcessLocks.Unlock()
-	drop := func() {
-		quotaProcessLocks.Lock()
-		entry.refs--
-		if entry.refs == 0 {
-			delete(quotaProcessLocks.paths, key)
+	r := quotaRead{seq: f.Seq, unknown: f.Unknown, entries: make(map[string]QuotaEntry, len(f.Entries))}
+	for k, raw := range f.Entries {
+		if !validQuotaKey(k) {
+			continue // no key to give it to
 		}
-		quotaProcessLocks.Unlock()
+		var e QuotaEntry
+		if json.Unmarshal(raw, &e) != nil || !validQuotaEntry(e, f.Seq) {
+			e = QuotaEntry{State: QuotaUnknown}
+		}
+		r.entries[k] = e
 	}
-	select {
-	case entry.gate <- struct{}{}:
-		return func() { <-entry.gate; drop() }, nil
-	case <-ctx.Done():
-		drop()
-		return nil, fmt.Errorf("%w: %w", ErrQuotaBusy, ctx.Err())
-	}
+	return r
 }
 
-func (s *QuotaStore) lock(ctx context.Context) (string, func(), error) {
-	ctx, cancel := context.WithTimeout(ctx, quotaLockWait)
-	defer cancel()
-	target, err := quotaTarget(s.path)
+// change writes key's entry as fn makes it from the one kept (QuotaNone
+// takes it out), under the file's lock, through a temp file renamed over
+// it. A file that doesn't parse is moved aside first, as logins.json is;
+// one of a newer schema is left alone. Other keys' bytes are kept as
+// they are, a bad entry's too.
+func (s *QuotaStore) change(key string, fn func(QuotaEntry) (QuotaEntry, bool)) error {
+	target, err := edit.Target(s.path)
 	if err != nil {
-		return "", nil, err
+		return ErrQuotaIO
 	}
-	localRelease, err := quotaLocalLock(ctx, target)
-	if err != nil {
-		return "", nil, err
+	quotaWriting.Lock()
+	defer quotaWriting.Unlock()
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return ErrQuotaIO
 	}
-	var file *os.File
-	fail := func(err error) (string, func(), error) {
-		if file != nil {
-			file.Close()
-		}
-		localRelease()
-		return "", nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return fail(fmt.Errorf("%w: %w", ErrQuotaBusy, err))
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
-		return fail(quotaIO("lock directory", err))
-	}
-	file, err = os.OpenFile(target+".lock", os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return fail(quotaIO("lock open", err))
-	}
-	tick := time.NewTicker(5 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		if err := ctx.Err(); err != nil {
-			return fail(fmt.Errorf("%w: %w", ErrQuotaBusy, err))
-		}
-		held, err := filelock.TryLock(file)
-		if err != nil {
-			return fail(quotaIO("lock ownership", err))
-		}
-		if held {
-			var once sync.Once
-			return target, func() { once.Do(func() { filelock.Unlock(file); file.Close(); localRelease() }) }, nil
-		}
-		select {
-		case <-ctx.Done():
-		case <-tick.C:
-		}
-	}
-}
-
-// Resolve absent targets through their deepest existing ancestor too. The same
-// sibling lock then owns a direct path, a link, and a not-yet-created target.
-// Hard-link aliases and concurrent external symlink retargeting are unsupported.
-func quotaTarget(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", ErrQuotaInvalid
-	}
-	target, err := edit.Target(path)
-	if err != nil {
-		return "", quotaIO("target", err)
-	}
-	rest := ""
-	for range 255 {
-		resolved, err := filepath.EvalSymlinks(target)
-		if err == nil {
-			absolute, err := filepath.Abs(filepath.Join(resolved, rest))
-			if err != nil {
-				return "", quotaIO("target", err)
+	unlock, _ := filelock.Lock(target+".lock", filelock.Wait)
+	defer unlock()
+	defer func() { s.mu.Lock(); s.read = quotaRead{}; s.mu.Unlock() }()
+	// a new file's writes count on from a number no earlier one reached,
+	// so a ticket from before it can't match
+	f := quotaFile{Version: 1, Seq: uint64(time.Now().UnixNano()), Entries: map[string]json.RawMessage{}}
+	cur := QuotaEntry{}
+	b, err := steady.ReadFile(target)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return ErrQuotaIO
+	default:
+		r := decodeQuota(b)
+		switch {
+		case r.err != nil:
+			return r.err
+		case r.bad:
+			aside := target + ".bad-" + time.Now().UTC().Format("20060102T150405.000000000")
+			if steady.Rename(target, aside) != nil {
+				return ErrQuotaIO
 			}
-			return absolute, nil
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return "", quotaIO("target", err)
-		}
-		// An ancestor can itself be a dangling directory link.
-		linked, err := edit.Target(target)
-		if err != nil {
-			return "", quotaIO("target", err)
-		}
-		if linked != target {
-			target = linked
-			continue
-		}
-		// Split without cleaning: a '..' must traverse the resolved directory
-		// link, not its lexical parent. Abs and Dir would clean it too soon.
-		parent, base := filepath.Split(target)
-		if parent == "" {
-			parent = "."
-		} else {
-			for len(parent) > len(filepath.VolumeName(parent))+1 && os.IsPathSeparator(parent[len(parent)-1]) {
-				parent = parent[:len(parent)-1]
+			f.Unknown = true
+		default:
+			var kept quotaFile
+			if json.Unmarshal(b, &kept) == nil && kept.Entries != nil {
+				f.Entries = kept.Entries
 			}
+			f.Seq, f.Unknown, cur = r.seq, r.unknown, r.entries[key]
 		}
-		if parent == target {
-			return "", quotaIO("target", fs.ErrNotExist)
-		}
-		rest = filepath.Join(base, rest)
-		target = parent
 	}
-	return "", quotaIO("target links", fs.ErrInvalid)
+	next, write := fn(cur)
+	if !write {
+		return nil
+	}
+	return s.put(target, f, key, next)
 }
 
-// Filesystem paths and decoder input may contain private caller data. Preserve
-// error identity without rendering a path or raw persisted value in the error.
-func quotaIO(operation string, err error) error {
-	return &quotaIOError{operation: operation, cause: err}
+// quotaWriting keeps this process's writers one at a time; filelock keeps
+// them apart from another magpie's.
+var quotaWriting sync.Mutex
+
+func (s *QuotaStore) put(target string, f quotaFile, key string, e QuotaEntry) error {
+	f.Seq++
+	if e.State == QuotaNone && !f.Unknown {
+		delete(f.Entries, key)
+	} else {
+		// in a file whose keys are unknown, a key served is kept as clear
+		e.Seq = f.Seq
+		raw, err := json.Marshal(e)
+		if err != nil {
+			return ErrQuotaInvalid
+		}
+		f.Entries[key] = raw
+	}
+	b, err := json.Marshal(f)
+	if err != nil {
+		return ErrQuotaInvalid
+	}
+	if steady.WriteFile(target, b, 0o600) != nil {
+		return ErrQuotaIO
+	}
+	return nil
 }
 
-type quotaIOError struct {
-	operation string
-	cause     error
+func validQuotaEntry(e QuotaEntry, seq uint64) bool {
+	if e.Seq == 0 || e.Seq > seq {
+		return false
+	}
+	if e.State == QuotaNone {
+		return e.Reason == "" && e.ResetAt.IsZero() && e.ObservedAt.IsZero()
+	}
+	return e.State == QuotaExhausted && (e.Reason == "quota" || e.Reason == "credit") &&
+		!e.ResetAt.IsZero() && !e.ObservedAt.IsZero() && !e.ResetAt.After(e.ObservedAt.Add(quotaLongest))
 }
 
-func (e *quotaIOError) Error() string   { return ErrQuotaIO.Error() + ": " + e.operation }
-func (e *quotaIOError) Unwrap() []error { return []error{ErrQuotaIO, e.cause} }
+// validQuotaKey: a rest key is text with no control characters, of a
+// bounded length.
+func validQuotaKey(k string) bool {
+	if k == "" || len(k) > 512 || !utf8.ValidString(k) {
+		return false
+	}
+	for _, r := range k {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
