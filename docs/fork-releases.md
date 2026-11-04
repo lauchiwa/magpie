@@ -173,15 +173,20 @@ There are no scheduled model probes. This component alone is not the live
 quota-billing feature and does not warrant an intermediate release; see
 [the state contract and activation gate](subsystems/providers-accounts.md#dormant-quota-state-fork).
 
-The dormant Usage core is isolated in `internal/usage/billing*_fork.go`.
-It freezes explicitly supplied call-time facts and monetary estimates, with
-strict versioned envelopes, separately labelled legacy projections and exact
-intermediate totals. It does not change `Record`, `Append`, pricing, budgets
-or consumers. Only the pure provider `CloneQuotaSnapshot` and shared
-`internal/strictjson` mechanics cross the component boundary; the Usage core
-must not read the quota store. Preserve the exact-file inactivity guards and
-quota decoder error precedence when syncing upstream. This is not activation
-or an intermediate release; see [Usage accounting](subsystems/usage-accounting.md).
+The dormant Usage biller is `internal/usage/billing_fork.go`. It bills a
+call from a supplied `BillingDecision` and quota state, at the ledger's
+cost (`NewCoster`), beside the provider's published or maker's list price.
+It does not change `Record`, `Append`, pricing, budgets or consumers, and
+reads no quota store. `TestDormantBillerHasNoProductionConsumer` fails when
+a production file names it. The published price is
+`Provider.PublishedPrice` (`billing_fork.go`), `ListPrice` without the
+maker fallback: upstream's `ListPrice` (`internal/provider/models.go`) is a
+one-line call of the fork's `listPrice(model, true)`, whose `maker` flag
+skips `makerListPrice`, marked `// fork:`. When upstream changes
+`ListPrice`, move its body into `listPrice` again and keep the flag before
+`makerListPrice`; `TestBillerListSource/maker` fails without it. This is
+not activation or an intermediate release; see
+[Usage accounting](subsystems/usage-accounting.md).
 
 `Provider.FreeModel` (`internal/provider/models.go`) asks `userFree`
 (`freemodel_fork.go`) right after upstream's `CountFree` (the user's word

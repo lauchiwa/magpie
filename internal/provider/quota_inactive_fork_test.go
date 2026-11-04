@@ -17,8 +17,7 @@ var quotaInactiveFiles = []string{
 	"internal/provider/quota_types_fork.go", "internal/provider/quota_fork.go",
 	"internal/provider/quota_store_fork.go", "internal/provider/quota_evidence_fork.go",
 	"internal/provider/quota_snapshot_fork.go",
-	"internal/usage/billing_types_fork.go", "internal/usage/billing_fork.go",
-	"internal/usage/billing_codec_fork.go",
+	"internal/usage/billing_fork.go",
 }
 
 func quotaInactiveLibrary(path string) bool {
@@ -301,17 +300,14 @@ func quotaInactiveFixture(t *testing.T, path, extra string) []string {
  func CloneQuotaSnapshot(){}
  func quotaSnapshotPrivate(){}
  `,
-		"internal/usage/billing_types_fork.go": `package usage
+		"internal/usage/billing_fork.go": `package usage
  type BillingContext struct{}
  type BillingQuota struct{}
  type billingPrivate struct{}
- `,
-		"internal/usage/billing_fork.go": `package usage
  func CaptureBilling(){}
  func billingCopy(){}
  func (BillingContext) Seal(){}
  `,
-		"internal/usage/billing_codec_fork.go":   "package usage\n",
 		"internal/usage/usage.go":                "package usage\ntype Record struct{}\n",
 		"internal/strictjson/strictjson_fork.go": "package strictjson\n",
 		"internal/provider/provider.go":          "package provider\nconst BillingQuota = 0\n",
@@ -362,7 +358,7 @@ func TestQuotaInactiveGuardDetectsSyntheticMutations(t *testing.T) {
 		struct{ name, path, source, reason string }{"live receiver", "internal/usage/billing_fork.go", "func (*Record) Charge(){CaptureBilling()}", "bridges live receiver"},
 		struct{ name, path, source, reason string }{"aliased live receiver", "internal/usage/billing_fork.go", "type bridge = Record; func (*bridge) Charge(){CaptureBilling()}", "bridges live receiver"},
 		struct{ name, path, source, reason string }{"quota from usage", "internal/usage/billing_fork.go", "import p \"github.com/yetone/magpie/internal/provider\"\nfunc live(){_ = p.NewQuotaStore()}", "non-snapshot quota machinery"},
-		struct{ name, path, source, reason string }{"quota validator from usage", "internal/usage/billing_codec_fork.go", "import p \"github.com/yetone/magpie/internal/provider\"\nvar check = p.ValidateQuotaObservation", "non-snapshot quota machinery"},
+		struct{ name, path, source, reason string }{"quota validator from usage", "internal/usage/billing_fork.go", "import p \"github.com/yetone/magpie/internal/provider\"\nvar check = p.ValidateQuotaObservation", "non-snapshot quota machinery"},
 		struct{ name, path, source, reason string }{"bridge through generic helper", "internal/strictjson/strictjson_fork.go", "import u \"github.com/yetone/magpie/internal/usage\"\nfunc Validate(){u.CaptureBilling()}", "inactive quota symbol"},
 		struct{ name, path, source, reason string }{"private snapshot helper", "internal/provider/provider.go", "func live(){quotaSnapshotPrivate()}", "inactive quota symbol"},
 	)
@@ -401,7 +397,7 @@ func TestQuotaInactiveGuardAllowsDormantDefinitions(t *testing.T) {
 }
 
 func TestQuotaInactiveGuardAllowsOnlyNamedBillingBridge(t *testing.T) {
-	for _, path := range []string{"internal/usage/billing_fork.go", "internal/usage/billing_codec_fork.go"} {
+	for _, path := range []string{"internal/usage/billing_fork.go"} {
 		source := "import p \"github.com/yetone/magpie/internal/provider\"\nfunc explicit(){ var s p.QuotaSnapshot; _ = s; p.CloneQuotaSnapshot(); billingCopy() }"
 		if violations := quotaInactiveFixture(t, path, source); len(violations) != 0 {
 			t.Fatalf("pure bridge rejected: %v", violations)

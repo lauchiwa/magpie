@@ -370,38 +370,25 @@ the dedicated CI step supplements the existing account-usage race selection.
   evidence is supplied. Real vendor certification, live incarnation ownership
   and trustworthy production clocks remain separate activation requirements.
 
-## Scenario: dormant accounting envelopes
+## Scenario: dormant usage biller
 
 The [Usage accounting contract](../../../docs/subsystems/usage-accounting.md)
-owns frozen new-call facts, separately labelled legacy estimates and unknown
-coverage. Keep the core pure: explicit timestamps and supplied decisions,
-detached input ownership, no settings/store reads, writers or runtime hooks.
-Repeated construction is not durable idempotence or attempt deduplication.
+owns `internal/usage/billing_fork.go`. `NewBiller` takes a record, the
+`BillingDecision` and the call's quota state from its caller; it reads no
+quota store and infers no mode for an old call from today's provider.
 
-Use method-free wire types for catalogue prices and public quota snapshots.
-Validate the complete original-to-effective-to-selected tariff chain and
-amounts, not only a selected rate and a matching sum. Known zero is not
-unknown, reports are not invoices, and paired reference-minus-charge is not
-the difference between sums over unrelated populations. Accumulate sealed
-binary64 values exactly internally; project/round only at the public boundary.
+The charge is the ledger's cost of the record, through `NewCoster`: never a
+second price arithmetic beside the ledger's. The list price is the
+provider's `PublishedPrice`, else `MakerPrice`, at the provider's peak hours,
+with no user price, price rate or rate window. A nil amount is unknown, never
+zero; JSON writes a zero charge and omits an unknown one. Totals count known
+and unknown amounts, and a saving is list minus charge over calls with both.
 
-Share only JSON mechanics in `internal/strictjson`; owners retain schema,
-size limits and typed domain errors. Quota order stays UTF-8 and unambiguous
-syntax, exact version, unsupported-version rejection, then supported shape
-and domain. Billing applies its own size bound first. Do not add billing's
-size bound or new surrogate rules to the quota decoder. Unsupported or
-corrupt new envelopes must never silently fall back to legacy projection.
-
-Tests must cover codec reconstruction without current prices/calendar/state,
-mutation isolation, strict error ordering, unknown versus zero, report
-conflicts, exact fold/merge and transitive inactivity. Domain sharing uses a
-closed file set, not a package-wide exemption or a route through private
-wrappers. Component tests do not establish live durability, budget admission,
-vendor recovery or complete historical coverage; those are activation gates.
-Guard fixtures must include import-only files, blank/dot imports, callbacks
-nested under pointers or containers, and same-spelled names from different
-packages. Scan imports independently of declarations and inspect whole types;
-checking only named functions or a top-level `func` type leaves bypasses.
+Tests cover the charge against `NewCoster` at each peak edge, every decision
+and quota state, each list source, user prices and rates that leave the list
+alone, a deleted provider's call, and a production file naming the biller.
+Component tests do not establish storage with the call, budget admission or
+historical coverage; those are activation gates.
 
 ## Naming and safety
 

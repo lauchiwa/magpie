@@ -1957,10 +1957,14 @@ var makerCatalogs = sync.OnceValue(func() []string {
 // auto-review through the Codex subscription costs nothing too, as OpenAI
 // serves it a ChatGPT sign-in (codexReviewFree).
 func (p Provider) ListPrice(model string) (catalog.Price, bool) {
+	return p.listPrice(model, true) // fork: maker gates makerListPrice (PublishedPrice)
+}
+
+func (p Provider) listPrice(model string, maker bool) (catalog.Price, bool) {
 	if own := p.OwnModelID(model); own != model {
 		// a model listed by an id the user gave it is priced as the
 		// provider's own id of it first, then as the id it is listed by
-		if pr, ok := p.ListPrice(own); ok {
+		if pr, ok := p.listPrice(own, maker); ok {
 			return pr, true
 		}
 	}
@@ -1993,6 +1997,9 @@ func (p Provider) ListPrice(model string) (catalog.Price, bool) {
 	for _, m := range names {
 		if pr, ok := catalog.PricedBy(priceCatalogs(cats), m); ok {
 			return pr, true
+		}
+		if !maker {
+			continue
 		}
 		if pr, ok := makerListPrice(m); ok {
 			return pr, true

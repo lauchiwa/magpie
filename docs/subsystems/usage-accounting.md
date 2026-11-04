@@ -24,152 +24,73 @@ best-effort write. This is not an atomic billing settlement protocol.
 
 ## Dormant accounting component (fork)
 
-The explicit-input library in
-[`billing_types_fork.go`](../../internal/usage/billing_types_fork.go),
-[`billing_fork.go`](../../internal/usage/billing_fork.go) and
-[`billing_codec_fork.go`](../../internal/usage/billing_codec_fork.go) is not
-connected to the active paths above. It does not change `Record`, `OwnCost`,
-`Append`, `Pricer`, live budgets, UI, CLI, observers, sync or backup. It has no
-startup initialization, file writer, current-state lookup, timer or network
-request. There is no activation flag and no model probe.
+[`billing_fork.go`](../../internal/usage/billing_fork.go) bills one call
+under its provider's billing mode, beside its list price. Nothing in
+production calls it: it does not change `Record`, `OwnCost`, `Append`,
+`Pricer`, budgets, the UI, the CLI, observers, sync or backup, and it has no
+file, timer or network request of its own.
 
-The component's ownership boundary is:
+`NewBiller` reads the ledger's prices once, through `NewCoster`, and returns
+a function of a record, the `provider.BillingDecision` `ResolveBilling` made
+for it, and the provider's quota state when the call was made (`""`,
+`"exhausted"` or `"unknown"`). It returns a `CallBilling`:
 
-1. `CaptureBilling` validates and copies explicit attempt-time policy,
-   identity, price and quota inputs into a private context. Caller inputs
-   must not be mutated concurrently while capture runs.
-2. `Seal` combines that held context with matching completion usage and
-   evidence. Later changes to the original input do not change the result.
-   Repeated construction is not a durable commit or an exactly-once guarantee.
-3. `Amounts` and the legacy projection preserve monetary dimensions and
-   their knownness separately. Totals fold the same projections without
-   treating missing values as zero.
-4. `EncodeBilling` and `DecodeBilling` exchange a strict versioned envelope.
-   These are byte transformations, not proof that bytes were durably saved.
+- `Charge` is what the call costs the user. It is the ledger's cost for a
+  call the decision doesn't make free, `0` for a free or within-quota call,
+  and the ledger's cost again, with `Paid` set, for a call past a quota the
+  provider charges for then (`QuotaPaid`). A call to such a provider in an
+  unknown quota state has no charge: it may have been charged or not. A
+  model with its own price set (source `model`) is charged that price
+  whatever the quota, and one the vendor serves free
+  (`AllowanceIndependent`) stays free past the quota.
+- `List` is the call at its list price: the price the provider publishes
+  (`provider.PublishedPrice`, `ListSource` `"provider"`), else its maker's
+  (`provider.MakerPrice`, `"maker"`), at the call's hour when the provider
+  bills peak hours double (`PeakOf`). A price the user set, a price rate and
+  a rate window never change it; they change the charge. A provider gone
+  since lists at its maker's price, and a call made before its provider was
+  deleted is listed as that provider's, as the ledger prices it.
+- A nil amount is unknown, never zero. JSON writes a charge of `0` and
+  leaves an unknown one out.
 
-The caller supplies an opaque attempt identity and the complete authority,
-provider incarnation, principal incarnation and evidence generation. A
-display name, key fingerprint or the route ID shared by retries is not that
-identity. The library validates supplied relationships, not their real-world
-authenticity. A production identity and evidence owner is still required.
+Because the charge comes from `NewCoster`, it is the ledger's cost of the
+same record by construction, peak hours and holidays included. The decision
+and the quota state come from the caller; the biller reads no quota store
+and infers no mode from today's provider for an old call.
 
-### Monetary meaning
-
-The envelope distinguishes estimated spend, applicable reported USD,
-reference value, signed paired difference and vendor credits. Reports never
-become estimates or independently verified invoices. Missing usage is not a
-known zero-token call, and a zero-token report can still report nonzero USD.
-
-An exact model override precedes the inherited policy. A quota model's free
-classification is not proof that an attempt was included. Included and paid
-outcomes require separate attempt-bound evidence. Actual paid evidence is
-retained even when permission was absent; recording it does not authorize
-dispatch. Conflicting report and zero-charge evidence remain visible, with
-unknown selected charge rather than a silent zero.
-
-Reference inputs identify a provider's published pay-as-you-go price, or an
-explicitly matched maker reference when that provider reference is absent.
-User free settings, discounts and markups are not a published reference.
-Published zero remains zero; unavailable references stay unknown. The pure
-library accepts those normalized inputs; it does not discover prices or
-certify a provider's claim.
-
-New envelopes retain their original rates, resolved time/rate factors,
-effective tariff, selected tier/components and amounts. Historical decoding
-checks that chain under the stored arithmetic version, not today's tariff
-or holiday calendar. Hour-cache fallback and strict tier thresholds are
-part of that version. Overflow and inconsistent inputs are errors. Supplied
-timestamps must remain JSON-representable after UTC normalization as well as
-in their original offset; capture must not produce an unencodable envelope.
-
-Difference is reference minus selected charge only for comparable known
-pairs. A negative difference is a premium, not zero savings. Summing total
-reference and total spend from different populations cannot establish total
-savings. Totals retain source and unknown coverage; exact internal sums are
-rounded only when projected. `BillingAmounts.Values` keeps dimension, origin,
-source, unit and authority with known/unknown counts, rather than one total
-that silently joins different populations. `BillingTotals.Merge` merges the
-exact accumulators; adding rounded projections cannot provide that guarantee.
-Subscription fees are not silently allocated,
-so the difference does not claim net cash savings after a subscription fee.
-
-Legacy projections accept an explicitly supplied current-price estimate and
-reported facts. They never infer an old billing mode or quota from today's
-provider. They do not create historical savings. Invalid or unsupported new
-envelopes cannot fall back to the legacy path.
-
-### Quota evidence and historical limits
-
-[`CloneQuotaSnapshot`](../../internal/provider/quota_snapshot_fork.go)
-checks and copies a supplied materialized scope view, complete declared
-coverage and its saved evaluation instant. It shares provider-owned rules
-with [dormant quota state](providers-accounts.md#dormant-quota-state-fork).
-All applicable windows must be represented, including unknown ones; one
-exhausted window cannot be selected away. Expiry does not establish recovery.
-
-This checks consistency relative to supplied coverage. It cannot certify
-coverage authenticity, recover omitted update timestamps, replay a cleared
-blocker or reconstruct arbitrary old views from later data. No store fields
-are invented to claim those guarantees. No-record and unavailable context
-remain explicit rather than fabricated snapshot windows. Availability
-before an attempt does not prove that the vendor charged it to free quota.
-
-### Serialization and errors
-
-The wire format uses explicit fields, required zero values and distinct
-omitted optional evidence. It rejects ambiguous JSON, unknown fields in a
-supported schema, nulls, missing fields and contradictory monetary facts.
-An unsupported version is distinct from corruption; neither returns a usable
-partial envelope. Payload limits and error categories belong to the owner.
-
-[`strictjson`](../../internal/strictjson/strictjson_fork.go) shares only
-syntax/member/shape mechanics with the quota store. Quota keeps its existing
-version/error precedence and gains no billing-specific size limit. Billing's
-method-free price and quota wire types avoid permissive catalogue decoding.
-Strict validation is not cryptographic authentication.
+`BillingTotals` sums `CallBilling`s. `Charge` and `List` are each summed
+over the calls they are known for, with counts of the known and the
+unknown. `Saved` is list minus charge over the calls both are known for
+(`Paired`), so it is negative where a provider charged more than the list,
+and it is no net saving after a subscription fee.
 
 ## Integration gates
 
-None of the following is implemented merely by adding the dormant library:
+None of the following is done by adding the dormant biller:
 
-- Capture before every actual attempt, including charged failures and
-  retries; bind live provider/account incarnations and trusted price/evidence
-  sources without hidden current-state reads.
-- Durable intents, acknowledged settlement, incomplete-history errors and
-  pending-liability recovery. A post-dispatch write failure cannot undo a
-  request, justify a blind retry or release uncertainty as zero.
-- Coherent caller/issuer admission, reservations, settlement and restart.
-  Legacy current-price estimates must revalue together while frozen new-call
-  amounts remain fixed. Revaluation must not discard active holds. Unknown
-  accounting for an affected monetary-limited key must not permit spending
-  against a fabricated zero; optional logging failures alone must not stop
-  otherwise unlimited requests.
-- Rows, summaries, packed blocks, CSV, heatmap and session projections with
-  source/knownness and cache-version compatibility. Filters must not change
-  the authoritative budget population.
-- OTLP and watched-attempt paths, plus the middleware Usage hook's queued
-  records and cached coster. No old current-price cache may rewrite frozen
-  facts. Allowance-window list-value estimates must not become spend by a
-  blanket replacement of cost lookups.
-- Mixed-version sync/backup and UI/CLI controls that preserve or explicitly
-  reject supported evidence instead of silently dropping it. No history
-  backfill from a local installation date.
+- Computing a decision and a quota state at call time, for every attempt,
+  retries and charged failures included, without reading today's provider
+  for an old call.
+- Storing the result with the call. Historical calls have no billing record
+  and must not be given one from today's settings.
+- Budgets, rows, summaries, packed blocks, CSV, the heatmap, sessions, OTLP
+  and the middleware Usage hook. Each has its own projection path, and none
+  of them reads `CallBilling` yet.
+- UI and CLI controls, and sync and backup across versions.
 
-These require their own reviewed runtime changes and whole-path verification
-before activation or release. Component tests do not prove live durability,
-vendor recovery, strict invoice caps or large-history performance.
+Each needs its own reviewed runtime change and a test of the whole path
+before activation or a release.
 
 ## Verification
 
-Run the provider quota and billing tests, the Usage billing tests and the
-strict-JSON tests under the repository's isolated test environment. Mutation
-checks must fail by assertion for changed rates plus amounts, omitted
-coverage, reset-as-recovery, shared input mutation, unknown-as-zero, unpaired
-savings, permissive decoding and a production consumer.
-
-The inactivity guards cover the closed set of domain files, including
-private wrappers, method values and methods on live receiver types. The
-Usage library may share quota data and its pure checked-copy helper, not
-access the quota store. Existing runtime inactivity tests remain necessary.
-Run race checks on supported runners; report actual results and unrun
-checks separately from this contract.
+Run `go test ./internal/usage/ -run 'TestBill|TestCallBilling|TestDormantBill'`
+and the provider billing and price tests in the repository's isolated test
+environment. Break checks must turn a test red for: a list from `ListPrice`
+(maker's price labelled the provider's), a list without peak hours, a list
+from a reported cost, a paid-past-quota call left free, an unknown quota
+state charged nothing, the served model's list skipped, a deleted
+provider's call listed as its successor's, an allowance-independent model
+charged past the quota, a free call left out of the savings, and a
+production file naming the biller (`TestDormantBillerHasNoProductionConsumer`).
+`TestDormantBillingDoesNotRepriceHistory` checks that setting a mode doesn't
+change what the ledger shows for an old call.
