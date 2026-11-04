@@ -36,7 +36,7 @@ func TestDormantBillingMiddlewareUsageHook(t *testing.T) {
 	if err := os.MkdirAll(settings.Dir(), 0700); err != nil {
 		t.Fatal(err)
 	}
-	quota := filepath.Join(settings.Dir(), "quota-state.json")
+	quota := filepath.Join(settings.Dir(), "quota.json")
 	quotaBytes := []byte(`{"version":999,"synthetic":"must-not-read-or-write"}`)
 	if err := os.WriteFile(quota, quotaBytes, 0600); err != nil {
 		t.Fatal(err)

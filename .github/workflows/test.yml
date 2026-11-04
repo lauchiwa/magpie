@@ -91,7 +91,7 @@ jobs:
 
       - name: Race dormant billing
         if: runner.os != 'Windows'
-        run: go test -race -tags "${{ steps.tags.outputs.tags }}" ./internal/usage ./internal/strictjson -run '^TestBill|^TestCallBilling|^TestDormantBill|^TestStrict' -count=1 -timeout=300s
+        run: go test -race -tags "${{ steps.tags.outputs.tags }}" ./internal/usage -run '^TestBill|^TestCallBilling|^TestDormantBill' -count=1 -timeout=300s
 
       # The redaction tests reuse this binary in fresh processes to check
       # first-use races, so it must include the race detector. The gateway's
@@ -110,7 +110,7 @@ jobs:
         if: runner.os != 'Windows'
         run: go test -race -tags "${{ steps.tags.outputs.tags }}" ./internal/provider/ -run '^Test(LoginUsage|SubscriptionUsageEachAccount)'
 
-      # The dormant quota store serializes process and OS ownership separately.
+      # The dormant quota store serializes writers in and across processes.
       - name: Race quota state
         if: runner.os != 'Windows'
         run: go test -race -tags "${{ steps.tags.outputs.tags }}" ./internal/provider/ -run '^TestQuota' -count=1 -timeout=180s

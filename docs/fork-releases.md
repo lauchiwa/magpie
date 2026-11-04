@@ -163,14 +163,15 @@ reconstruction, copy or save must not drop the metadata. The existing
 the integrated billing feature is activated. See
 [the inactive contract](subsystems/providers-accounts.md#dormant-billing-metadata-fork).
 
-The next component stays in provider-owned `quota*_fork.go` files: normalized
-evidence, pure state reduction and an explicitly initialized private store.
-Keep its refusal anchors, complete coverage, CAS/replay and strict locked
-persistence together when syncing upstream. Its tests reject production
-consumers and startup side effects. Do not hook it into upstream allowance
-refreshes, rest renewal, routing, backup or Usage as a merge resolution.
-There are no scheduled model probes. This component alone is not the live
-quota-billing feature and does not warrant an intermediate release; see
+The dormant quota store is `internal/provider/quota_store_fork.go`. It
+keeps which keys are out of their included allowance, and until when, in
+`quota.json`; a refusal is always kept, only the try's success clears it,
+and a file or entry that can't be read is unknown, never credit. Its tests
+reject production consumers and startup side effects. Do not hook it into
+upstream allowance refreshes, rest renewal, routing, backup or Usage as a
+merge resolution. There are no scheduled model probes. This component alone
+is not the live quota-billing feature and does not warrant an intermediate
+release; see
 [the state contract and activation gate](subsystems/providers-accounts.md#dormant-quota-state-fork).
 
 The dormant Usage biller is `internal/usage/billing_fork.go`. It bills a
