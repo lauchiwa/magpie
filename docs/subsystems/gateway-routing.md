@@ -1720,25 +1720,35 @@ user changes it, and the old order is not kept. Nothing about the
 preference is written to `CountFree`, `PriceRate`, `ModelPrices` or a
 billing mode, and `FreeModel` and `PriceAt` read nothing of it.
 
-Protocol fit comes first under every routing but In order: after
-`routes.Apply`, `weighRouted` ([`routing.go`](../../internal/gateway/routing.go))
-stable-sorts by `keyFit` (`fallback.go`), so members whose provider takes the request as
-it is go ahead of those that need it translated. Each rule below holds
-among members of equal fit.
+Protocol fit comes first under every routing but In order, Until used up
+and By weight: after `routes.Apply`, `weighRouted`
+([`routing.go`](../../internal/gateway/routing.go)) stable-sorts by
+`keyFit` (`fallback.go`), so members whose provider takes the request as
+it is go ahead of those that need it translated. In order and Until used
+up are `Exact` strategies (`internal/routes/strategies.go`), whose order
+stands as they say, and a group routed By weight orders its members in
+`weightedUnits`, never through `weighRouted`. Each rule below holds among
+members of equal fit.
 
 | Group routing | What member order decides | What it never overrides |
 | --- | --- | --- |
 | In order | Which member answers first; a paid member listed first leads (`planLevel` in [`fallback.go`](../../internal/gateway/fallback.go) keeps the listed order, not `routes.Ordered`) | Rests, caps, credits spent last (`CreditsLast`), caller access |
-| Free first | The order inside the free tier, then inside the paid tier (`routes.FreeFirst`, a stable partition) | A ready free member goes before every paid one |
-| Cheapest first | The order among members that cost the same now (`sameCost`) and among those with no known price (`routes.Cheapest`, a stable sort) | A cheaper ready member goes first; one with no known price goes last |
+| Free first | The order inside the free tier, then inside the paid tier (`routes.FreeFirst`, a stable partition) | A ready free member with room goes before every paid one |
+| Cheapest first | The order among members that cost the same now (`sameCost`), with the same cache-read price too (`CacheCost`), and among those with no known price (`routes.Cheapest`, a stable sort) | A cheaper ready member goes first, then the one that reads its cache cheaper; one with no known price goes last |
 | By weight | The failover order after the weighted pick | The shares come from the weights |
 | Manual | Nothing: only the picked member is served | |
-| Smart, Least used, Weekly pace, Speed first, In turn, Until used up | Their own documented ties | Their own ranking |
+| Speed first | The order among members within a tenth of the fastest of their band (`routes.Fastest`) | A faster member goes first, and one request in `ProbeEvery` (5) puts one not measured lately first |
+| Smart, Least used, Weekly pace, In turn, Until used up | Their own documented ties | Their own ranking |
 
 Sink, `restLast`, a `Fallback`, rules, a nested group weighed as one
 (`firstAwake`, `Group.Within`) and a kept conversation (`affine`) work as
 before. A member listed first that rests, is capped or is out of balance is
-passed over as any other would be, and a kept conversation can stay on the
+passed over as any other would be. A member whose slots
+(`MaxConcurrency`) or minute (`MaxRPM`) are full gives way to the next
+one with room (`laneMate` in
+[`concurrency.go`](../../internal/gateway/concurrency.go)), so under Free
+first a paid member can answer before a free one that is ready but full.
+A kept conversation can stay on the
 member that answered it, so the first member is not promised every request.
 Members a pattern matches (`models=` with `*` or `re:`) come after the named
 ones in the order `magpie models` lists them, so the preference fully

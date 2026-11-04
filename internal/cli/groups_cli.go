@@ -104,9 +104,11 @@ const groupUsage = `usage:
            free    the models that cost nothing first (served free by their vendor, or priced 0 by you),
                    in their listed order, then the paid ones, in theirs
            fast    the one that answered fastest lately first, by its time to the first token and how
-                   fast it writes; those within a tenth of each other keep their listed order
+                   fast it writes; those within a tenth of each other keep their listed order, and one
+                   request in five goes first to one not measured lately
            cheap   the one whose model costs least now first, by its price a million tokens in and out at
-                   this hour; those that cost the same keep their listed order, one with no known price last
+                   this hour, then by its cache-read price; those that cost the same keep their listed
+                   order, one with no known price last
            where a routing ranks members the same, the order of models= decides: that order is your
            preference (models a pattern matches go in magpie models' order). Set models= again to
            change it; the old order isn't kept
