@@ -61,9 +61,10 @@ func decodeCache(b []byte, zone string) (map[string]*state, bool) {
 			decodeHook(i)
 		}
 	}
-	// unique holds a string only while a handle to it lives: a GC between
-	// two files gave the later one a copy of its own (ubuntu CI's Test run
-	// 41743223611). Each worker holds its handles while the files are read.
+	// fork: unique holds a string only while a handle to it lives: a GC
+	// between two files gave the later one a copy of its own (ubuntu CI's
+	// Test run 41743223611). Each worker holds its handles while the files
+	// are read.
 	var helds [][]unique.Handle[string]
 	if workers := min(runtime.GOMAXPROCS(0), 8, len(raws)/256); workers < 2 {
 		helds = make([][]unique.Handle[string], 1)
@@ -182,8 +183,10 @@ func (st *state) share(held *[]unique.Handle[string]) {
 			one(s)
 		}
 	}
-	// the names a parse's models, days and tools are held by (named's
-	// UnmarshalJSON made them unique, with no handle kept)
+	// fork: the names a parse's models, days and tools are held by.
+	// named's UnmarshalJSON makes them unique with no handle kept, and is
+	// left as upstream has it: its Make keeps a name off the file's bytes
+	// for every caller, and the second lookup here costs one hash.
 	for i := range st.Models {
 		one(&st.Models[i].name)
 	}
