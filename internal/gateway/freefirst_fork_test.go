@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"io"
+	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -156,7 +157,8 @@ func relays(t *testing.T, routing string, ids, free, broke []string) (*Server, f
 }
 
 // paidServed checks that the one that answered, id, is billed as paid:
-// not free, at its price, and recorded as the call's provider.
+// not free, at its price, and recorded as the call's provider with its
+// 1,000 tokens in and 100 out costing $0.0045 at that price.
 func paidServed(t *testing.T, id string) {
 	t.Helper()
 	p, err := provider.Find(id)
@@ -166,11 +168,16 @@ func paidServed(t *testing.T, id string) {
 	if p.FreeModel("m") {
 		t.Errorf("%s/m counts as free", id)
 	}
-	if pr, ok := p.PriceAt(settings.Load(), "m", time.Now()); !ok || pr.Input != 3 || pr.Output != 15 {
+	pr, ok := p.PriceAt(settings.Load(), "m", time.Now())
+	if !ok || pr.Input != 3 || pr.Output != 15 {
 		t.Errorf("%s/m is priced %+v (known %v), want its $3/$15", id, pr, ok)
 	}
-	if r := lastUsage(t); r.Provider != id || r.Status != 200 {
+	r := lastUsage(t)
+	if r.Provider != id || r.Status != 200 {
 		t.Errorf("the answer is recorded as %q (status %d), want %s", r.Provider, r.Status, id)
+	}
+	if c := r.CostAt(pr); r.Input != 1000 || r.Output != 100 || math.Abs(c-0.0045) > 1e-9 {
+		t.Errorf("the answer is recorded at %d in, %d out, costing $%v; want 1000, 100, $0.0045", r.Input, r.Output, c)
 	}
 }
 
@@ -202,29 +209,35 @@ func TestFreeFirstPaidMembersKeepTheirListedOrder(t *testing.T) {
 
 // Under In order the paid member listed first leads, and when it is out
 // of balance the next one answers, priced as it was: a preference never
-// keeps a request on a member that can't pay for it.
+// keeps a request on a member that can't pay for it. Listed the other
+// way round, the other one leads.
 func TestInOrderPassesTheListedFirstWhenItIsOutOfBalance(t *testing.T) {
-	s, asked := relays(t, provider.Ordered, []string{"paida", "paidb"}, nil, []string{"paida"})
-	code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"x"}]}`)
-	if code != 200 {
-		t.Fatalf("code %d: %s", code, body)
-	}
-	if got := asked(); !slices.Equal(got, []string{"paida", "paidb"}) {
-		t.Fatalf("asked %v, want paida then paidb", got)
-	}
-	paidServed(t, "paidb")
-	restingUntil.Lock()
-	defer restingUntil.Unlock()
-	rested := false
-	for id, r := range restingUntil.note {
-		if strings.HasPrefix(id, "paida") {
-			rested = true
-			if r.Why != failCredit {
-				t.Errorf("%s rests for %s, want %s", id, r.Why, failCredit)
+	for _, ids := range [][]string{{"paida", "paidb"}, {"paidb", "paida"}} {
+		t.Run(strings.Join(ids, ","), func(t *testing.T) {
+			first, next := ids[0], ids[1]
+			s, asked := relays(t, provider.Ordered, ids, nil, []string{first})
+			code, body := postAs(t, s, "", `{"model":"group/g","messages":[{"role":"user","content":"x"}]}`)
+			if code != 200 {
+				t.Fatalf("code %d: %s", code, body)
 			}
-		}
-	}
-	if !rested {
-		t.Errorf("paida should rest out of credit: %v", restingUntil.note)
+			if got := asked(); !slices.Equal(got, ids) {
+				t.Fatalf("asked %v, want %s then %s", got, first, next)
+			}
+			paidServed(t, next)
+			restingUntil.Lock()
+			defer restingUntil.Unlock()
+			rested := false
+			for id, r := range restingUntil.note {
+				if strings.HasPrefix(id, first) {
+					rested = true
+					if r.Why != failCredit {
+						t.Errorf("%s rests for %s, want %s", id, r.Why, failCredit)
+					}
+				}
+			}
+			if !rested {
+				t.Errorf("%s should rest out of credit: %v", first, restingUntil.note)
+			}
+		})
 	}
 }

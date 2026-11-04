@@ -35,9 +35,16 @@ const says = {
   de: ["Auch bezahlte Mitglieder behalten ihre Reihenfolge: Die Reihenfolge der Mitglieder ist deine Vorliebe unter denen, die das Routing gleich einstuft.",
     "Die Reihenfolge der Mitglieder ist deine Vorliebe unter denen, die gleich viel kosten."],
 };
-// GROUP_ROUTE_OPTS' places: Smart, Free first, Cheapest first
-const SMART = 0, FREE = 6, CHEAP = 8;
-const KIND = '.segs[data-kind="|order|drain|rotate|usage|pace|free|fast|cheap|weight|manual"]';
+// the group editor's routings: the one control whose options hold Free
+// first and Cheapest first. Its data-kind lists the routing ids in
+// GROUP_ROUTE_OPTS' order, which the row's menu shares, so a place is
+// found by id (places) and a routing added upstream moves none of them.
+const KIND = '.segs[data-kind*="|free|"][data-kind*="|cheap|"]';
+async function places(page) {
+  const ids = (await page.locator(".rt-gedit " + KIND).getAttribute("data-kind")).split("|");
+  const at = (id) => { const i = ids.indexOf(id); assert.ok(i >= 0, `${JSON.stringify(id)} in ${ids.join("|")}`); return i; };
+  return { n: ids.length, SMART: at(""), FREE: at("free"), CHEAP: at("cheap") };
+}
 
 function serve(lang, web) {
   const state = { agents: [{ id: "codex", name: "Codex", path: "/test/codex", fields: [] }], profiles: [], settings: { lang, theme: "light" } };
@@ -94,12 +101,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     test(`${engine} ${lang}: Free first's and Cheapest first's hints say what the member order decides`, async (t) => {
       const { page, errors } = await open(t, engine, { lang });
 
+      // the routings' places, from Thrifty's editor, shut again unchanged
+      await page.locator('.rt-group[data-id="gcheap"]').click();
+      await page.locator(".rt-gedit " + KIND).waitFor();
+      const { n, SMART, FREE, CHEAP } = await places(page);
+      await page.locator(".rt-gedit input").first().press("Escape");
+      assert.equal(await page.locator(".rt-gedit").count(), 0);
+
       // the row's menu: each routing's title, Free first's and Cheapest
       // first's with the sentence, Smart's without
       await page.locator('.rt-group[data-id="gfree"] button.rt-groute').click();
       const items = page.locator(".proto-menu .pm-item");
       await items.first().waitFor();
-      assert.equal(await items.count(), 11);
+      assert.equal(await items.count(), n);
       endsWith(await items.nth(FREE).getAttribute("title"), free);
       endsWith(await items.nth(CHEAP).getAttribute("title"), cheap);
       saysNone(await items.nth(SMART).getAttribute("title"), lang);
