@@ -27,13 +27,16 @@ func readCodexUsage(t *testing.T, used func() float64, resets time.Time) {
 	t.Cleanup(func() { provider.LoginUsageVia(nil) })
 }
 
-// waitUsed has codex's windows read again and waits till they say used.
-func waitUsed(t *testing.T, used float64) {
+// waitUsed has codex's windows read again and waits till the stand-in's
+// five hours, back at resets, say used. fork: a reading an earlier test
+// left in the provider's cache, at used in another window, counted too;
+// the next reading then had nothing alike to be told renewed from.
+func waitUsed(t *testing.T, used float64, resets time.Time) {
 	t.Helper()
 	provider.StaleAllowance("codex", "me@example.com")
 	for deadline := time.Now().Add(10 * time.Second); ; {
 		a := provider.Allowances("codex")["me@example.com"]
-		if len(a) > 0 && a[0].Used == used {
+		if len(a) > 0 && a[0].Name == "5 hours" && a[0].Resets.Equal(resets) && a[0].Used == used {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -118,11 +121,11 @@ func TestReadingKeepsARefusalsRest(t *testing.T) {
 	var used atomic.Int64
 	used.Store(100)
 	readCodexUsage(t, func() float64 { return float64(used.Load()) }, resets)
-	waitUsed(t, 100)
+	waitUsed(t, 100, resets)
 	restByRefusal(t, id, resets)
 	told := armRenewed(t)
 	used.Store(80)
-	waitUsed(t, 80)
+	waitUsed(t, 80, resets)
 	told()
 	if _, ok := restOf(id); !ok {
 		t.Fatal("a reading that found the window less than full lifted the refusal's rest, due at", resets.Format(time.TimeOnly))
@@ -155,14 +158,14 @@ func TestAutoVisionKeepsOffARefusedAccount(t *testing.T) {
 	var used atomic.Int64
 	used.Store(100)
 	readCodexUsage(t, func() float64 { return float64(used.Load()) }, resets)
-	waitUsed(t, 100)
+	waitUsed(t, 100, resets)
 	restByRefusal(t, candidate{p: *p, model: "gpt-6.1-sol"}.restKey(), resets)
 	if m := AutoVision(); m != "keyed/eye" {
 		t.Fatalf("AutoVision = %q with codex refused till %s", m, resets.Format(time.TimeOnly))
 	}
 	told := armRenewed(t)
 	used.Store(80)
-	waitUsed(t, 80)
+	waitUsed(t, 80, resets)
 	told()
 	if m := AutoVision(); m != "keyed/eye" {
 		t.Fatalf("AutoVision = %q, back on the refused account, before its reset", m)
