@@ -89,7 +89,7 @@ func TestEditorFreeReadsTheUsersOwnPrice(t *testing.T) {
 	check("settings.json unreadable", vendor)
 }
 
-// fork: the editor's whole-provider toggle is drawn from whole, the saved
+// fork: the billing control's locked hint is drawn from whole, the saved
 // `<id>/*` (provider.WholeOf): none, free at $0 in every part, a price
 // set otherwise, or one that doesn't read. A settings.json that can't be
 // read, with no last good generation, holds no price, so none is sent.

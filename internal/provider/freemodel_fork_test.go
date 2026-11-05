@@ -328,7 +328,7 @@ func TestCatalogFreeReadsTheUsersOwnPrice(t *testing.T) {
 	}
 }
 
-// The whole-provider toggle reads `<id>/*` as the badge does: $0 in every
+// The billing control reads `<id>/*` as the badge does: $0 in every
 // part is free, any other price is shown for what it is, and one that
 // doesn't read names the part; none is nil. Another provider's `<id>/*`
 // and a price from any provider (*/model) are no word on this one.

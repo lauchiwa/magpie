@@ -13,16 +13,16 @@ import (
 // its budgets and their history stay upstream's own and a sync meets no
 // conflict there; they are weighed here instead, on the same terms: a
 // change that needs more raises this and says why in its commit.
-var forkScripts = []string{"lifecycle.js", "identity.js", "freeprice.js", "releases.js"}
+var forkScripts = []string{"lifecycle.js", "identity.js", "freeprice.js", "billing.js", "releases.js"}
 
-const forkScriptBudget = 58_503 // 43,962 with lifecycle.js (R1) and identity.js (the identity GUI moved out of app.js), plus 1.5%; 46,363 with freeprice.js (the free badge's words when the user's own price made a model free, kept out of app.js and i18n.js), plus 1.5%; 53,452 with the provider editor's whole-provider free toggle in freeprice.js (its words in five languages, kept out of app.js and i18n.js), plus 1.5%; 55,056 with releases.js (About's Releases row for this fork's own builds, its words in five languages), plus 1.5%; 57,639 with groupOrderSays in freeprice.js (what a routing group's member order decides under Free first and Cheapest first, its words in five languages, kept out of the routing plugin's client.js and i18n.js), plus 1.5%
+const forkScriptBudget = 61_410 // 43,962 with lifecycle.js (R1) and identity.js (the identity GUI moved out of app.js), plus 1.5%; 46,363 with freeprice.js (the free badge's words when the user's own price made a model free, kept out of app.js and i18n.js), plus 1.5%; 53,452 with the provider editor's whole-provider free toggle in freeprice.js (its words in five languages, kept out of app.js and i18n.js), plus 1.5%; 55,056 with releases.js (About's Releases row for this fork's own builds, its words in five languages), plus 1.5%; 57,639 with groupOrderSays in freeprice.js (what a routing group's member order decides under Free first and Cheapest first, its words in five languages, kept out of the routing plugin's client.js and i18n.js), plus 1.5%; 60,502 with billing.js (the editors' List price / Free / Free quota control, its words in five languages; freeprice.js's whole-provider toggle and its words moved into it), plus 1.5%
 
 func forkScript(name string) bool { return slices.Contains(forkScripts, name) }
 
 // fork: the bytes our hooks add inside app.js (lifecycleError, identityRead,
 // renderIdentityProfiles, identityField, the rev the save bodies carry, the
 // stale and committed catches, the free badge's priced, the
-// whole-provider toggle's field). TestCoreScriptBudget weighs app.js and the
+// billing control's field). TestCoreScriptBudget weighs app.js and the
 // core against upstream's budgets plus this, so those budgets stay
 // upstream's text as they come; a hook that needs more raises this and
 // says why in its commit.

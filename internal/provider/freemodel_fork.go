@@ -117,10 +117,10 @@ func costsNothing(pr catalog.Price) bool {
 }
 
 // Whole is what the user's saved price for every model of a provider
-// (`<id>/*`) says, for the provider editor's whole-provider toggle:
+// (`<id>/*`) says, for the provider editors' billing control (Free):
 // free when it is $0 in every part (the reading userPriced makes, so the
-// toggle and the badge agree), else the price, else the part that
-// doesn't read. The toggle only turns a price of nothing on or off: one
+// control and the badge agree), else the price, else the part that
+// doesn't read. The control only sets or takes off a price of nothing: one
 // set otherwise, by `magpie model price <id>/*`, is shown and left alone.
 type Whole struct {
 	Free  bool           `json:"free,omitempty"`
