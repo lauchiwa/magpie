@@ -315,7 +315,10 @@ type providerJSON struct {
 	// delete or off/on sends back; "" for none (lifecycle_fork.go)
 	Rev string `json:"rev,omitempty"`
 
-	Whole *provider.Whole `json:"whole,omitempty"` // fork: the saved <id>/*, for the whole-provider toggle (freeprice.js)
+	Whole *provider.Whole `json:"whole,omitempty"` // fork: the saved <id>/*, for the billing control's locked hint (billing.js)
+	// fork: the billing control's mode and whether <id>/* holds it (billing_fork.go)
+	BillingMode   provider.BillingMode `json:"billingMode,omitempty"`
+	BillingLocked bool                 `json:"billingLocked,omitempty"`
 }
 
 type moveJSON struct {
@@ -822,7 +825,8 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 	// only read, so the settings every look shares: a copy of its own for
 	// each provider was 16 MB of what twenty window polls allocated
 	held := settings.Shared()
-	out.Whole = provider.WholeOf(held, p.ID) // fork: the whole-provider toggle's word, freemodel_fork.go
+	out.Whole = provider.WholeOf(held, p.ID) // fork: the billing control (billing_fork.go)
+	out.BillingMode, out.BillingLocked = billingOf(held, p, out.Whole)
 	sames := held.ModelSameAs
 	// a list fetched before magpie kept each model's most: the one Codex
 	// CLI keeps says it

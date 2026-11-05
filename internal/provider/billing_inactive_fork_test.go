@@ -16,6 +16,8 @@ import (
 )
 
 // Check references too, so taking a method value cannot evade the inactive gate.
+// BillingPolicy has one reader outside this package: the editor's billing
+// control (internal/gui/billing_fork.go), which only shows the legacy mode.
 func TestBillingResolverHasNoProductionConsumer(t *testing.T) {
 	fset := token.NewFileSet()
 	root, err := filepath.Abs(filepath.Join("..", ".."))
@@ -39,9 +41,21 @@ func TestBillingResolverHasNoProductionConsumer(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
 		ast.Inspect(f, func(n ast.Node) bool {
-			if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "ResolveBilling" {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if sel.Sel.Name == "ResolveBilling" {
 				t.Errorf("inactive resolver referenced in production at %s", fset.Position(sel.Pos()))
+			}
+			if sel.Sel.Name == "BillingPolicy" && !strings.HasPrefix(rel, "internal/provider/") && rel != "internal/gui/billing_fork.go" {
+				t.Errorf("billing policy referenced outside the editor's billing view at %s", fset.Position(sel.Pos()))
 			}
 			return true
 		})

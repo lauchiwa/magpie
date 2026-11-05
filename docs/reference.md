@@ -1331,13 +1331,16 @@ price came from it.
 `--reset` removes the first, and says so when a `<provider id>/*` price is
 still in force; reset that one by name to take it away too.
 
-In the app, a provider of your own's editor has **Whole provider free**
-under Advanced, after Price rate: On saves `<provider id>/*` at 0 in every
-part, Off takes it away, both with Save. A `<provider id>/*` priced
-otherwise, or one that doesn't read, is shown there and can't be changed
-from it; `magpie model price '<provider id>/*' --reset` takes it away first.
-A model's own price still comes first, and its price boxes still show the
-list price greyed in.
+In the app, each provider's editor has **Billing** after its models:
+**List price**, **Free** or **Free quota**, saved with Save. Free saves
+`<provider id>/*` at 0 in every part; Free quota is
+`magpie provider set <id> free=yes` (Free first and Cheapest first count it
+free, Usage keeps the listed price); List price takes both away. A
+`<provider id>/*` priced otherwise, or one that doesn't read, is shown there
+and Free can't be chosen; `magpie model price '<provider id>/*' --reset`
+takes it away first. A provider is made Free once it is added. A model's
+own price still comes first, and its price boxes still show the list price
+greyed in.
 
 A price is **one provider's tariff for one model**, not the model's own: the
 same model through two providers is two prices, and each keeps its own.

@@ -7688,13 +7688,6 @@ function priceRateField() {
   box.oninput = () => { draft.priceRate = box.value; };
   return field(t("Price rate"), box, t("Costs are counted at the official price times this, as a relay bills, like 0.8 or 1.5; a price you set for a model stays as set"));
 }
-// countFreeField: provider.CountFree (jiabubu: a free daily quota)
-function countFreeField() {
-  const [l, c] = tick(t("Count its models as free"), !!draft.countFree);
-  l.classList.add("count-free");
-  c.onchange = () => { draft.countFree = c.checked; };
-  return field(t("Free for me"), l, t("For a free quota, like a daily allowance: Free first uses its models before paid ones, and Cheapest first counts them as costing nothing. Prices and the costs Usage counts stay as listed."));
-}
 // a provider's hours at its own rate (#2463), drawn by ratewindows.js
 function rateWindowsField() {
   const box = el("div", "stack rate-windows"), d = draft;
@@ -7823,7 +7816,7 @@ function advancedSet(d, p) {
     !!d.proxyMode || Object.values(d.accountProxies || {}).some((x) => x?.mode) ||
     [d.concurrency, d.maxAccounts, d.queueLimit, d.queueWait, d.maxRPM, d.priceRate, d.contexts, d.outputs, d.compacts].some((v) => String(v ?? "").trim()) ||
     !!d.rateWindows?.length ||
-    !!(d.searches || d.authHeader || d.passUserAgent || d.unredacted || d.countFree || d.pinUpstream || d.nativeCompaction || d.balanceToken || d.limitRestOff) ||
+    !!(d.searches || d.authHeader || d.passUserAgent || d.unredacted || d.pinUpstream || d.nativeCompaction || d.balanceToken || d.limitRestOff) ||
     !!d.fallback?.length || !!p?.balanceToken?.set;
 }
 function priceRateError(ed) {
@@ -8693,8 +8686,11 @@ function holdModal(later) {
   }
   // grown to the window's foot it stays, capped there, its fields scrolling;
   // it moves up only for a window grown too short to show half of it
+  const was = modalHold.off;
   modalHold.off = Math.max(0, Math.min(want, Math.max(space - h, modalHold.off), space / 2));
-  if (y != null && want < -0.5) {
+  // fork: moved up less than wanted, the room it gave lets the dialog grow
+  // under the button, so any shortfall caps it (docs/fork-releases.md)
+  if (y != null && (want < -0.5 || (want < 0 && modalHold.off < was))) {
     // no room above: the fields over a button below them give way
     const body = d.querySelector(".ebody");
     if (body && !body.contains(modalHold.at)) modalHold.cap = Math.max(0, h + want);
@@ -9325,6 +9321,7 @@ function drawEditor(p, presetID) {
     }
     ed.append(...field(t("Models"), renderModels(p), ""));
     if (p.drawIds?.length) ed.append(...renderDrawers(p));
+    ed.append(...billingField(p)); // fork: billing.js
     // a subscription's window too: Codex's backend says 272K for models
     // that take 872K (#120)
     const cx = input(draft.contexts || "", t("e.g. 128k · or gpt-6=1m, comma separated"));
@@ -9339,7 +9336,7 @@ function drawEditor(p, presetID) {
     if (perAccount) proxies.append(perAccount);
     advIn.append(...field(t("Proxy"), proxies));
     advIn.append(...concurrencyField(p));
-    advIn.append(...priceRateField(), ...countFreeField(), ...rateWindowsField());
+    advIn.append(...priceRateField(), ...rateWindowsField());
     if (p.cline) advIn.append(...upstreamField());
     advIn.append(...unmaskRow(""));
     ed.append(...pluginOptionsField(subOf(a.agent)));
@@ -9572,8 +9569,7 @@ function drawEditor(p, presetID) {
   ed.append(...identityField(p));
   advIn.append(...field(t("Proxy"), proxies));
   advIn.append(...concurrencyField(p));
-  advIn.append(...priceRateField(), ...countFreeField(), ...rateWindowsField());
-  advIn.append(...wholeFreeField(p)); // fork: freeprice.js
+  advIn.append(...priceRateField(), ...rateWindowsField());
 
   if (p?.cline || (isNew && pr?.id === "clinepass")) advIn.append(...upstreamField());
 
@@ -9810,6 +9806,7 @@ function drawEditor(p, presetID) {
     };
     ed.append(...field(t("Models"), pick.box, t("Optional: Fetch models to pick from the vendor's list, or type ids; none picked, magpie asks for the list after saving.")));
   }
+  ed.append(...billingField(p)); // fork: billing.js
 
   // Jev's endpoint can be the one its gateway's docs give — Cloudflare's
   // names the account, …/accounts/<id>/ai/run — in place of the preset's
