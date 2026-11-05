@@ -124,7 +124,8 @@ through a PR. The fork keeps its logic in files upstream doesn't have
 `internal/gui/identity.go`, `internal/cli/identity_cli.go`,
 `internal/cli/lifecycle_cli.go`, `internal/gui/assets/lifecycle.js`,
 `internal/gui/assets/identity.js`, `internal/gui/assets/identity.css`,
-`internal/gui/assets/freeprice.js`, `internal/gui/core_budget_fork_test.go`).
+`internal/gui/assets/freeprice.js`, `internal/gui/assets/billing.js`,
+`internal/gui/core_budget_fork_test.go`).
 Upstream files carry only short hooks: field declarations, delegating calls,
 variadic options and single request-body fields, many marked `fork:`. After
 the merge, `git diff <previous upstream tag> HEAD` over the upstream files
@@ -227,14 +228,20 @@ model priced `paid`. `TestCatalogFreeReadsTheUsersOwnPrice`,
 `TestPickerFreeReadsTheUsersOwnPrice`, `TestEditorFreeReadsTheUsersOwnPrice`
 and `free-badge-user-price.test.cjs` fail without them.
 
-The whole-provider free toggle reads `provider.WholeOf` (`freemodel_fork.go`)
-through `providerJSON.Whole` (`gui/providers.go`, its own block), set by
-`out.Whole = provider.WholeOf(held, p.ID)` after `providerInfoWith`'s
-`held := settings.Load()`. In `app.js`, the key provider editor appends
-`wholeFreeField(p)` (`freeprice.js`) after its `priceRateField()`. It saves
-through the model prefs Save already sends, so the save path has no hook.
-`TestEditorSaysTheWholeProviderPrice` and `whole-provider-free.test.cjs`
-fail without them.
+The billing control reads `providerJSON.Whole`, `BillingMode` and
+`BillingLocked` (`gui/providers.go`, its own block), set by
+`out.Whole = provider.WholeOf(held, p.ID)` and `billingOf` (`billing_fork.go`)
+after `providerInfoWith`'s `held := settings.Shared()`. In `app.js`, both
+editors append `billingField(p)` (`billing.js`) after their models, the
+subscription editor after `renderDrawers`, the key editor after the custom
+provider's Models; upstream's `countFreeField` and its two calls are taken
+out, and `advancedSet` no longer opens Advanced for `countFree`. It saves
+through the `countFree` and model prefs Save already sends, so the save
+path has no hook. `TestBillingViewReadsTheLegacyFields`,
+`TestEditorSaysTheWholeProviderPrice`, `whole-provider-free.test.cjs` and
+`provider-count-free.test.cjs` (upstream's, rewritten for the control) fail
+without them. A sync that changes `countFreeField` meets its removal: keep
+it removed, and carry a new hint or behaviour into `billing.js`.
 
 A group's member order is the user's preference among members its routing
 ranks the same ([gateway routing](subsystems/gateway-routing.md#a-groups-member-order-is-the-users-preference-fork)).
@@ -375,7 +382,7 @@ The sync PR records each item below as checked, with what was run:
   `accountModelsAsRead(req.Rev)`; `gui/api.go`'s `fail()` still calls
   `lifecycleFail`.
 - **GUI, page.** `index.html` still loads `lifecycle.js`, `identity.js` and
-  `freeprice.js` before `app.js`, `identity.css` right after `app.css`, and keeps the
+  `freeprice.js` and `billing.js` before `app.js`, `identity.css` right after `app.css`, and keeps the
   `#identityHead`/`#identityPanel` nodes. In `app.js`, `loadProvidersNow`
   still asks `identityRead()` beside the list and hands it to
   `identityTake`, `renderProviders` calls `renderIdentityProfiles()`, and
@@ -408,13 +415,14 @@ The sync PR records each item below as checked, with what was run:
   three `Priced` fields are still there (a `priced` of upstream's own would
   clash). In `app.js`, `freeBadge`, `renderList`, `renderModels`' chips and
   `isFree` still read `priced`; `free-badge-user-price.test.cjs` covers them.
-- **Whole provider free.** `providerInfoWith` still sets `out.Whole` after
-  `held := settings.Load()`, the key provider editor still appends
-  `wholeFreeField(p)` after `priceRateField()`, and `SetModelPrefs` still
-  writes a `"*"` entry's price as `<id>/*` (`SetModelPrice` asks no
-  provider whether it serves `*`).
-  `TestModelPrefsStarSetsAndDropsTheWholePrice` and
-  `whole-provider-free.test.cjs` cover them.
+- **Billing control.** `providerInfoWith` still sets `out.Whole` and
+  `out.BillingMode, out.BillingLocked` after `held := settings.Shared()`,
+  both editors still append `billingField(p)` after their models,
+  `countFreeField` is still gone, and `SetModelPrefs` still writes a `"*"`
+  entry's price as `<id>/*` (`SetModelPrice` asks no provider whether it
+  serves `*`). `TestModelPrefsStarSetsAndDropsTheWholePrice`,
+  `whole-provider-free.test.cjs` and `provider-count-free.test.cjs` cover
+  them.
 - **Member order.** `groupUsage` in `cli/groups_cli.go` still has the
   `free`, `fast` and `cheap` lines and the preference line under
   `routing`; upstream adding its own lines for them replaces the fork's.

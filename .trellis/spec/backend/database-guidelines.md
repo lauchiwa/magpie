@@ -244,6 +244,9 @@ see [the subsystem contract](../../../docs/subsystems/providers-accounts.md#dorm
 - `Provider.BillingPolicy(settings.Settings)` and
   `Provider.ResolveBilling(settings.Settings, catalog.Model)` are pure,
   currently unused by production selection/accounting consumers.
+  `BillingPolicy` has one display reader, the editor's billing control
+  (`internal/gui/billing_fork.go` `billingOf`), which clears the explicit
+  fields first so it shows the legacy mode runtime follows.
 
 ### 3. Contracts
 Storage support is not setter support. Embedding `Provider` in an HTTP
@@ -260,10 +263,11 @@ copy, and keep instance/revision checks on writes.
 | Invalid enum in provider mutation or incoming provider batch | Error before the provider write |
 | New billing field in GUI payload, even null or empty | Inactive-setting error before side effects |
 | Old GUI payload omits both fields | Preserve stored metadata |
+| Provider shown to the editor | `billingMode` from the legacy fields only; never a `billing` key |
 
 ### 5. Good / base / bad cases
 - Base: an old provider has neither field and keeps existing free/price behavior.
-- Good: editing its name preserves dormant policy, while the old free controls still work as before.
+- Good: editing its name preserves dormant policy, while the billing control still writes only `CountFree` and `<id>/*`.
 - Bad: a new current-mode check in historical pricing makes old calls change cost.
 
 ### 6. Tests required
