@@ -8686,8 +8686,11 @@ function holdModal(later) {
   }
   // grown to the window's foot it stays, capped there, its fields scrolling;
   // it moves up only for a window grown too short to show half of it
+  const was = modalHold.off;
   modalHold.off = Math.max(0, Math.min(want, Math.max(space - h, modalHold.off), space / 2));
-  if (y != null && want < -0.5) {
+  // fork: moved up less than wanted, the room it gave lets the dialog grow
+  // under the button, so any shortfall caps it (docs/fork-releases.md)
+  if (y != null && (want < -0.5 || (want < 0 && modalHold.off < was))) {
     // no room above: the fields over a button below them give way
     const body = d.querySelector(".ebody");
     if (body && !body.contains(modalHold.at)) modalHold.cap = Math.max(0, h + want);

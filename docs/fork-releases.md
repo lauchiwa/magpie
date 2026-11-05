@@ -308,6 +308,12 @@ each one when upstream fixes the same thing, and take upstream's version
   client before the final trace and report are published.
 - `packaged_test.go`'s `TestPackagedByDpkg` writes `magpie.list` on Windows,
   where NTFS reads `magpie:amd64.list` as a file `magpie` with a stream.
+- `app.js`'s `holdModal` caps a dialog that moved up less than it wanted
+  (`want` between -0.5 and 0), not only one short by more: moving up freed
+  room under its max height, the dialog grew into it, and a pressed button
+  ended lower (`provider-remove.test.cjs` "kept"). Upstream's code fails the
+  same at a 700px window; the billing control made the editor fill the
+  test's 760px one. This is a fix in production code.
 - `routing-save.test.cjs`'s `open()` waits for the accounts' allowance
   (`loginUsage`) before it holds the editor: its arrival redraws the editor,
   and a late one landed among the clicks that must not redraw it.
