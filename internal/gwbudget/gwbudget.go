@@ -98,6 +98,11 @@ func ForgetRefreshForTest() { lastAsk.Store(0) }
 // a limit and nothing can hold it.
 var ErrUnlimited = errors.New("this gateway key is held to a limit, but magpie's Key limits plugin isn't serving it, so nothing was sent; turn the plugin on in magpie's Settings → Plugins")
 
+// ErrUsageUnread is what a Refusal unwraps to when it is no limit reached
+// but a key's usage that couldn't be read to check one (fork, Billing D4):
+// the gateway answers it 503, as it does ErrUnlimited.
+var ErrUsageUnread = errors.New("the gateway key's usage couldn't be read")
+
 // Limiting is the limiter for who's request: nil, nil when who has no
 // limit; ErrUnlimited when it has one and none serves. With none, one
 // refresh is asked first (at most once a second, never from inside one),
