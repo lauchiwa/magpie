@@ -193,12 +193,15 @@ func TestHubRootsOfACodexThread(t *testing.T) {
 
 	// in a git repository Codex names it in the turn's metadata, which is
 	// read before any rollout (a thread this computer has none of here)
-	inRepo := `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"magpie-image__generate_image","arguments":{},"_meta":{"threadId":"019a0000-0000-7000-8000-000000000000","x-codex-turn-metadata":{"workspaces":{"/work/repo":{"has_changes":false},"relative":{}}}}}}`
+	// fork: an absolute folder on this OS (/work/repo isn't one on Windows)
+	repo := filepath.Join(t.TempDir(), "repo")
+	repoKey, _ := json.Marshal(repo)
+	inRepo := `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"magpie-image__generate_image","arguments":{},"_meta":{"threadId":"019a0000-0000-7000-8000-000000000000","x-codex-turn-metadata":{"workspaces":{` + string(repoKey) + `:{"has_changes":false},"relative":{}}}}}}`
 	ev = hubEvents(t, hubPostTo(t, srv.URL+HubMCPPath+"codex", inRepo, bothAccept, "codex-mcp-client/0.165.0"))
 	ask = nextEvent(t, ev, "roots/list")
 	hubPostTo(t, srv.URL+HubMCPPath+"codex", `{"jsonrpc":"2.0","id":`+string(ask.ID)+`,"result":{"roots":[]}}`, bothAccept, "codex-mcp-client/0.165.0")
 	nextEvent(t, ev, "the call's result")
-	if c := <-got; strings.Join(c.Roots, " ") != "file:///work/repo" {
+	if c := <-got; strings.Join(c.Roots, " ") != fileURI(repo) { // fork
 		t.Fatalf("called for %+v, want the turn's workspace", c)
 	}
 
