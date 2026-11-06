@@ -154,6 +154,24 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     });
   }
 
+  // fork: Billing D4, write failures. Requests a restart cut off are in a
+  // limit's counts at their reservation, and the limit says how many.
+  const pendingSays = { en: "2 cut-off requests counted at their reservation.", zh: "2 个中断的请求按预留计入。", "zh-TW": "2 個中斷的請求按預留計入。", ja: "途中で切れた 2 件のリクエストを予約分で計上しています。", de: "2 abgebrochene Anfragen mit ihrer Reservierung gezählt." };
+  for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
+    test(`${engine} ${lang}: a limit holding requests a restart cut off`, async (t) => {
+      const held = { period: "day", start: "2026-10-30T00:00:00Z", reset: "2026-10-31T00:00:00Z", calls: 3, tokens: 400, cost: 0, tokenLimit: 1000, tokensLeft: 600, costLeft: 0, spent: false, pending: 2 };
+      const { browser, page, seen } = await open(engine, lang, { ...ME, limits: [held] });
+      t.after(() => browser.close());
+      await signIn(page, KEY);
+      await page.locator("#info").waitFor();
+      const box = page.locator("#limits");
+      assert.equal(await box.locator(".bar").count(), 1);
+      const notes = await box.locator(".note").allTextContents();
+      assert(notes.includes(pendingSays[lang]), "notes: " + JSON.stringify(notes));
+      assert.deepEqual(seen.errors, []);
+    });
+  }
+
   // the admin finds the page's address under the gateway keys, the one
   // other machines reach, and copies it
   for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
