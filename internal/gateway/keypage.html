@@ -158,6 +158,7 @@ const STR = {
     day: "Daily", week: "Weekly", month: "Monthly", days: "Every {n} days", hours: "Every {n} hours",
     tokensOf: "{a} of {b} tokens", costOf: "{a} of {b}", resets: "Resets {t}", spent: "Used up until it resets",
     unread: "Usage unread", unreadWhy: "The gateway couldn't read this key's usage, so it refuses the key until it can.",
+    pending: "{n} cut-off requests counted at their reservation.",
     usage: "Usage", today: "Today", d7: "7 days", d30: "30 days", calls: "{n} requests", tokens: "tokens", cost: "≈ {c}",
     top: "Most used, last 30 days", none: "Nothing yet.",
     setup: "Set up", withKey: "Put my key in the setup", models: "Models this key can use", filter: "Filter models",
@@ -179,6 +180,7 @@ const STR = {
     day: "每天", week: "每周", month: "每月", days: "每 {n} 天", hours: "每 {n} 小时",
     tokensOf: "已用 {a} / {b} tokens", costOf: "已用 {a} / {b}", resets: "{t} 重置", spent: "已用完，重置后恢复",
     unread: "用量未读到", unreadWhy: "网关读不到这个密钥的用量，读到之前拒绝这个密钥。",
+    pending: "{n} 个中断的请求按预留计入。",
     usage: "用量", today: "今天", d7: "7 天", d30: "30 天", calls: "{n} 次请求", tokens: "tokens", cost: "约 {c}",
     top: "最近 30 天最常用", none: "还没有用量。",
     setup: "配置", withKey: "在配置里填入我的密钥", models: "这个密钥可用的模型", filter: "筛选模型",
@@ -200,6 +202,7 @@ const STR = {
     day: "每天", week: "每週", month: "每月", days: "每 {n} 天", hours: "每 {n} 小時",
     tokensOf: "已用 {a} / {b} tokens", costOf: "已用 {a} / {b}", resets: "{t} 重設", spent: "已用完，重設後恢復",
     unread: "用量未讀到", unreadWhy: "閘道讀不到這個金鑰的用量，讀到之前拒絕這個金鑰。",
+    pending: "{n} 個中斷的請求按預留計入。",
     usage: "用量", today: "今天", d7: "7 天", d30: "30 天", calls: "{n} 次請求", tokens: "tokens", cost: "約 {c}",
     top: "最近 30 天最常用", none: "還沒有用量。",
     setup: "設定", withKey: "在設定中填入我的金鑰", models: "這個金鑰可用的模型", filter: "篩選模型",
@@ -221,6 +224,7 @@ const STR = {
     day: "毎日", week: "毎週", month: "毎月", days: "{n} 日ごと", hours: "{n} 時間ごと",
     tokensOf: "{b} トークン中 {a}", costOf: "{b} 中 {a}", resets: "{t} にリセット", spent: "リセットまで使い切りました",
     unread: "使用量を読めません", unreadWhy: "ゲートウェイはこのキーの使用量を読めないため、読めるまでこのキーを拒否します。",
+    pending: "途中で切れた {n} 件のリクエストを予約分で計上しています。",
     usage: "使用量", today: "今日", d7: "7 日間", d30: "30 日間", calls: "{n} リクエスト", tokens: "トークン", cost: "約 {c}",
     top: "直近 30 日でよく使ったモデル", none: "まだありません。",
     setup: "設定", withKey: "設定にキーを入れる", models: "このキーで使えるモデル", filter: "モデルを絞り込む",
@@ -242,6 +246,7 @@ const STR = {
     day: "Täglich", week: "Wöchentlich", month: "Monatlich", days: "Alle {n} Tage", hours: "Alle {n} Stunden",
     tokensOf: "{a} von {b} Tokens", costOf: "{a} von {b}", resets: "Zurückgesetzt {t}", spent: "Aufgebraucht bis zum Zurücksetzen",
     unread: "Nutzung nicht lesbar", unreadWhy: "Der Zugang kann die Nutzung dieses Schlüssels nicht lesen und lehnt ihn ab, bis er es kann.",
+    pending: "{n} abgebrochene Anfragen mit ihrer Reservierung gezählt.",
     usage: "Nutzung", today: "Heute", d7: "7 Tage", d30: "30 Tage", calls: "{n} Anfragen", tokens: "Tokens", cost: "≈ {c}",
     top: "Am meisten genutzt, letzte 30 Tage", none: "Noch nichts.",
     setup: "Einrichten", withKey: "Meinen Schlüssel einsetzen", models: "Modelle für diesen Schlüssel", filter: "Modelle filtern",
@@ -375,6 +380,8 @@ function drawLimits() {
       bar.setAttribute("aria-valuenow", String(Math.round(Math.min(1, f) * 100)));
       row.append(bar, el("div", "sub num", text));
     }
+    // fork: Billing D4, requests a restart cut off count at their reservation
+    if (l.pending) row.append(el("div", "note", t("pending", { n: nf.format(l.pending) })));
     if (l.reset && !l.reset.startsWith("0001")) row.append(el("div", "note", t("resets", { t: when(l.reset) })));
     box.append(row);
   }

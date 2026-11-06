@@ -316,6 +316,13 @@ func gatewayKeyLimit(out io.Writer, args []string) error {
 		} else {
 			fmt.Fprintf(w, "Cost\t$%.2f used, no cap (estimate%s)\n", st.Cost, unpriced)
 		}
+		if st.Pending > 0 { // fork: Billing D4, requests a restart cut off
+			what := fmt.Sprintf("%d requests cut off before they ended", st.Pending)
+			if st.Pending == 1 {
+				what = "1 request cut off before it ended"
+			}
+			fmt.Fprintf(w, "Pending\t%s (a crash, a kill or a handover), in the counts above at what it reserved\n", what)
+		}
 		state := "open"
 		if st.Spent {
 			state = "spent: requests are refused until " + st.Reset.Format("2006-01-02 15:04")
@@ -469,6 +476,9 @@ func limitWords(k access.Key, now time.Time) string {
 			s += " (refused until it can be read)"
 		} else if st.Spent {
 			s += " (spent until " + st.Reset.Format("01-02 15:04") + ")"
+		}
+		if st.Pending > 0 && !st.Unavailable { // fork: Billing D4
+			s += fmt.Sprintf(" (%d cut off, counted as reserved)", st.Pending)
 		}
 		each = append(each, s)
 	}

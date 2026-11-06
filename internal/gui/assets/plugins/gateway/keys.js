@@ -650,9 +650,12 @@ function gatewayLimitLine(k, u) {
   const at = new Date(u.reset);
   parts.push(t(u.spent ? "refused until {when}" : "resets {when}", { when: resetClock(at) }));
   if (u.inFlight) parts.push(t(u.inFlight === 1 ? "1 in flight" : "{n} in flight", { n: u.inFlight }));
+  // fork: Billing D4, requests a restart cut off count at their reservation
+  if (u.pending) parts.push(t(u.pending === 1 ? "1 pending at its reservation" : "{n} pending at their reservation", { n: u.pending }));
   line.textContent = parts.join(" · ");
   line.title = t("Counted from {start}; resets {when}", { start: new Date(u.start).toLocaleString(intlLang()), when: at.toLocaleString(intlLang()) })
-    + (u.unpriced ? "\n" + t("{n} calls without a known price aren't in the cost", { n: u.unpriced }) : "");
+    + (u.unpriced ? "\n" + t("{n} calls without a known price aren't in the cost", { n: u.unpriced }) : "")
+    + (u.pending ? "\n" + t("A request cut off before it ended (magpie quit, crashed or handed over) may have been billed, so it counts at what it reserved") : ""); // fork
   return line;
 }
 
