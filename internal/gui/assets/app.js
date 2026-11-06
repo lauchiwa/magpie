@@ -13575,6 +13575,8 @@ function quotaError(err, q) {
   // a remote magpie's gateway key card (#1547, remote_key_limits.go)
   if (/^remote magpie is too old to tell this key's limit/.test(err)) return t("That computer's magpie is too old to tell this key's limit — update magpie there");
   if (/answered its key's limit in a form magpie doesn't read$/.test(err)) return t("That computer answered this key's limit in a form magpie doesn't read — hover for more");
+  // fork: Billing D4, a remote that couldn't read the key's usage refuses it
+  if (/^remote magpie couldn't read this key's usage/.test(err)) return t("That computer's magpie couldn't read this key's usage — it refuses the key until it can");
   // a ClinePass card with its balance but not its limits (#79): the
   // built-in key card (clineLimitsUnread, cline_usage.go) and the Cline
   // plugin both begin their error with these words

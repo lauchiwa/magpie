@@ -400,6 +400,40 @@ func TestRemoteMagpieKeyLimits(t *testing.T) {
 	}
 }
 
+// fork: Billing D4. A remote that couldn't read a key's usage answers its
+// limit as unavailable, with zeros. The card keeps the last numbers it
+// read, dated, or says why: never 0 used.
+func TestRemoteMagpieKeyUsageUnread(t *testing.T) {
+	good := `{"limited":true,"key":"laptop","limit":{"period":"day","reset":"2026-10-12T00:00:00Z","tokens":2000,"tokenLimit":10000,"tokensLeft":8000}}`
+	unread := `{"limited":true,"key":"laptop","limit":{"period":"day","reset":"2026-10-12T00:00:00Z","tokenLimit":10000,"unavailable":true},"limits":[{"period":"day","reset":"2026-10-12T00:00:00Z","tokenLimit":10000,"unavailable":true}]}`
+	peer := &fakePeer{limits: map[string]string{"sk-magpie-office": unread}}
+	remoteQuotaHome(t, peer)
+	p, err := Find("office")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.KeyName = "laptop"
+	if err := Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	ForgetRemoteCardsForTest()
+	ctx := context.Background()
+	if q := keyCards(RemoteCards(ctx))["laptop"]; q.Error != errRemoteKeyUnread || q.GatewayKey != nil || len(q.Windows) != 0 {
+		t.Fatalf("an unread key with nothing read before: %+v %+v", q, q.GatewayKey)
+	}
+	peer.Lock()
+	peer.limits["sk-magpie-office"] = good
+	peer.Unlock()
+	RefreshUsage(ctx, "office/"+remoteKeyCard, "laptop")
+	peer.Lock()
+	peer.limits["sk-magpie-office"] = unread
+	peer.Unlock()
+	RefreshUsage(ctx, "office/"+remoteKeyCard, "laptop")
+	if q := keyCards(RemoteCards(ctx))["laptop"]; q.AsOf == nil || len(q.Windows) != 1 || q.Windows[0].Amount != 2000 {
+		t.Errorf("an unread key lost what was read before: %+v", q)
+	}
+}
+
 // Two keys under one name each show their own, told apart by the key.
 func TestRemoteKeyNames(t *testing.T) {
 	names, _ := remoteKeys(Provider{KeyName: "a", Key: "sk-magpie-1111111111", Keys: []KeyAccount{{Name: "a", Key: "sk-magpie-2222222222"}, {Key: "sk-magpie-3333333333"}, {Name: "off", Key: "x", Off: true}}})

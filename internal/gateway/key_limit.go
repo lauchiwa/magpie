@@ -61,7 +61,9 @@ func keyLimited(next http.Handler) http.Handler {
 		if err != nil {
 			status, errType := http.StatusServiceUnavailable, "gateway_key_limit_off"
 			var refused gwbudget.Refusal
-			if errors.As(err, &refused) {
+			if errors.Is(err, gwbudget.ErrUsageUnread) { // fork: Billing D4
+				errType = "gateway_key_usage_unread"
+			} else if errors.As(err, &refused) {
 				status, errType = http.StatusTooManyRequests, "gateway_key_limit"
 				w.Header().Set("Retry-After", strconv.Itoa(refused.RetryAfter(now)))
 				w.Header().Set(remoteKeyLimitHeader, refused.ResetAt().Format(time.RFC3339))

@@ -28,6 +28,10 @@
 //   - Only requests that came with a gateway key are limited: from
 //     another computer one is required; on this one a request without one
 //     (or with a token that is no key) isn't limited.
+//   - fork: while usage.jsonl can't be read, a limited key's request is
+//     refused (Refusal.Unavailable) and its status says so: what it used
+//     isn't known, so it is never taken for nothing (Billing D4). No log
+//     at all is a key that has used nothing.
 package budget
 
 import (
@@ -107,8 +111,9 @@ func counts(r usage.Record) bool {
 // usage.jsonl the first time; those of windows no limit counts in now
 // are let go. A window two limits share (a day and a week on a Monday,
 // a day and a month on the 1st) is kept once, as Append adds a call to
-// each one kept (#2942). Called with state held.
-func sumsFor(keyID string, starts []time.Time) []*sums {
+// each one kept (#2942). Called with state held. fork: a read that
+// failed is its error, and nothing is kept or let go.
+func sumsFor(keyID string, starts []time.Time) ([]*sums, error) {
 	k := slot(keyID)
 	kept := state.sums[k]
 	out := make([]*sums, len(starts))
@@ -124,25 +129,34 @@ func sumsFor(keyID string, starts []time.Time) []*sums {
 		if j := at(kept, start); j >= 0 {
 			out[i] = kept[j]
 		} else {
-			out[i] = read(keyID, start)
+			s, err := read(keyID, start)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = s
 		}
 		next = append(next, out[i])
 	}
 	state.sums[k] = next
-	return out
+	return out, nil
 }
 
-func read(keyID string, start time.Time) *sums {
+// read is keyID's sums in the window from start, or (fork) why
+// usage.jsonl couldn't be read for them.
+func read(keyID string, start time.Time) (*sums, error) {
 	s := &sums{start: start}
 	cost := usage.NewCoster()
-	usage.Visit(start, func(r usage.Record) {
+	err := usage.VisitRead(start, func(r usage.Record) {
 		// a key issued under keyID spends from its limits too
 		if (r.CallerKeyID == keyID || r.CallerIssuerID == keyID) && counts(r) && !r.Time.Before(start) {
 			c, ok := cost(r)
 			s.add(r, c, ok)
 		}
 	})
-	return s
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // Forget drops what is kept in memory, as a restart would.
@@ -213,6 +227,18 @@ type Status struct {
 	CostLeft   float64 `json:"costLeft"`
 	// Spent: the key is refused until Reset
 	Spent bool `json:"spent"`
+	// fork: Unavailable is a window whose usage couldn't be read: its
+	// counts and what is left are 0 as nothing is known of them, and the
+	// key's requests are refused until it can be read (Billing D4)
+	Unavailable bool `json:"unavailable,omitempty"`
+}
+
+// unavailable is l's status in the window from start while usage.jsonl
+// can't be read.
+func unavailable(l *access.Limit, start, reset time.Time, h *held) Status {
+	st := status("", l, &sums{start: start}, h, reset)
+	st.TokensLeft, st.CostLeft, st.Unavailable = 0, 0, true
+	return st
 }
 
 func status(keyID string, l *access.Limit, s *sums, h *held, reset time.Time) Status {
@@ -250,16 +276,24 @@ func All(k access.Key, now time.Time) []Status {
 	ls := k.Limits()
 	var out []Status
 	read1 := map[int64]*sums{}
+	unread := map[int64]bool{} // fork
 	for _, l := range ls {
 		start, reset := l.Window(now)
 		s := read1[start.Unix()]
-		if s == nil {
-			s = read(k.ID, start)
+		if s == nil && !unread[start.Unix()] {
+			var err error
+			if s, err = read(k.ID, start); err != nil {
+				unread[start.Unix()] = true
+			}
 			read1[start.Unix()] = s
 		}
 		state.Lock()
 		h := state.held[window{slot(k.ID), start.Unix()}]
-		out = append(out, status(k.ID, l, s, h, reset))
+		if s == nil {
+			out = append(out, unavailable(l, start, reset, h))
+		} else {
+			out = append(out, status(k.ID, l, s, h, reset))
+		}
 		state.Unlock()
 	}
 	return out
@@ -275,6 +309,10 @@ func Binding(all []Status) *Status {
 		switch {
 		case b == nil:
 			b = st
+		case st.Unavailable || b.Unavailable: // fork: refused, for as long as it can't be read
+			if !b.Unavailable {
+				b = st
+			}
 		case st.Spent != b.Spent:
 			if st.Spent {
 				b = st
@@ -311,6 +349,9 @@ type Refusal struct {
 // Error says it as a client is told: the key, what it used of which
 // cap, and when it resets.
 func (r *Refusal) Error() string {
+	if r.Unavailable { // fork: no path or OS error, which a remote client is no one to be told
+		return fmt.Sprintf("magpie gateway key %q has a limit, but this computer couldn't read the key's usage to check it, so nothing was sent; it is let in again once magpie's usage.jsonl can be read", r.Key)
+	}
 	what := ""
 	if r.TokenLimit > 0 && r.Tokens+r.Reserved >= r.TokenLimit {
 		counted := "input, output and cache-write tokens"
@@ -335,6 +376,15 @@ func (r *Refusal) RetryAfter(now time.Time) int {
 
 // ResetAt is when the window resets.
 func (r *Refusal) ResetAt() time.Time { return r.Reset }
+
+// Unwrap is gwbudget.ErrUsageUnread for a refusal of a key whose usage
+// couldn't be read (fork), so the gateway answers it 503, not 429.
+func (r *Refusal) Unwrap() error {
+	if r.Unavailable {
+		return gwbudget.ErrUsageUnread
+	}
+	return nil
+}
 
 // Limiter is Reserve as the gateway's budget point asks it
 // (gwbudget.Limiter); plugins/budget serves it.
@@ -382,8 +432,11 @@ func reserve(who access.Identity, body int64, model string, now time.Time) (rele
 	}
 	state.Lock()
 	defer state.Unlock()
-	ss := sumsFor(who.KeyID, starts)
 	heldAt := func(start time.Time) *held { return state.held[window{slot(who.KeyID), start.Unix()}] }
+	ss, err := sumsFor(who.KeyID, starts)
+	if err != nil { // fork: what the key used isn't known, so nothing is let in
+		return nil, &Refusal{Status: unavailable(ls[0], starts[0], resets[0], heldAt(starts[0])), Key: who.KeyName}
+	}
 	// every limit is asked: of those with nothing left, the one that
 	// resets last is the one the client is told, as it is refused until then
 	for i, l := range ls {

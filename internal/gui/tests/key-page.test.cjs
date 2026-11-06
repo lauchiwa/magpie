@@ -134,6 +134,26 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     assert.equal(await page.locator("#limits").textContent(), "No limit on this key.");
   });
 
+  // fork: Billing D4. A limit whose usage the gateway couldn't read is
+  // told as unread and refused, in every language: never "0 of" a cap.
+  for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
+    test(`${engine} ${lang}: a limit whose usage couldn't be read`, async (t) => {
+      const unread = { period: "day", start: "2026-10-30T00:00:00Z", reset: "2026-10-31T00:00:00Z", calls: 0, tokens: 0, cost: 0, tokenLimit: 1000, costLimit: 5, tokensLeft: 0, costLeft: 0, spent: false, unavailable: true };
+      const { browser, page, seen } = await open(engine, lang, { ...ME, limits: [unread] });
+      t.after(() => browser.close());
+      await signIn(page, KEY);
+      await page.locator("#info").waitFor();
+      const box = page.locator("#limits");
+      const text = await box.textContent();
+      assert.equal(await box.locator(".bar").count(), 0, "an unread limit has no bar");
+      assert.equal(await box.locator(".tag.bad").count(), 1);
+      assert(!text.includes("0 of 1,000") && !text.includes("$0.00"), "says 0 used: " + text);
+      if (lang === "en") assert(text.includes("Usage unread") && text.includes("refuses the key until it can"), text);
+      else assert(!text.includes("Usage unread") && !text.includes("unreadWhy"), "untranslated: " + text);
+      assert.deepEqual(seen.errors, []);
+    });
+  }
+
   // the admin finds the page's address under the gateway keys, the one
   // other machines reach, and copies it
   for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {

@@ -294,6 +294,10 @@ func gatewayKeyLimit(out io.Writer, args []string) error {
 			fmt.Fprintf(w, "Limit %d\t%s, all must have something left\n", n+1, perPhrase(&access.Limit{Period: st.Period, Days: st.Days, Hours: st.Hours}))
 		}
 		fmt.Fprintf(w, "Window\tthis %s, %s – %s (local time)\n", (&access.Limit{Period: st.Period, Days: st.Days, Hours: st.Hours}).Per(), st.Start.Format("2006-01-02 15:04"), st.Reset.Format("2006-01-02 15:04"))
+		if st.Unavailable { // fork: Billing D4, usage that couldn't be read is no 0 used
+			fmt.Fprintf(w, "State\tunknown: this computer couldn't read the key's usage, so requests are refused until it can\n")
+			continue
+		}
 		if st.TokenLimit > 0 {
 			counted := "input, output and cache writes"
 			if st.CacheReads {
@@ -457,8 +461,13 @@ func limitWords(k access.Key, now time.Time) string {
 		if st.CostLimit > 0 {
 			parts = append(parts, fmt.Sprintf("$%.2f/$%.2f", st.Cost, st.CostLimit))
 		}
+		if st.Unavailable { // fork: Billing D4
+			parts = []string{"usage unread"}
+		}
 		s := strings.Join(parts, " ") + " " + perPhrase(&access.Limit{Period: st.Period, Days: st.Days, Hours: st.Hours})
-		if st.Spent {
+		if st.Unavailable { // fork: Billing D4
+			s += " (refused until it can be read)"
+		} else if st.Spent {
 			s += " (spent until " + st.Reset.Format("01-02 15:04") + ")"
 		}
 		each = append(each, s)

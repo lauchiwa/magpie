@@ -82,6 +82,27 @@ type remoteKeyLimit struct {
 	TokensLeft int64     `json:"tokensLeft"`
 	CostLeft   float64   `json:"costLeft"`
 	Spent      bool      `json:"spent"`
+	// Unavailable is a limit whose usage that computer couldn't read: it
+	// refuses the key until it can (fork: Billing D4)
+	Unavailable bool `json:"unavailable"`
+}
+
+// errRemoteKeyUnread is a remote magpie that couldn't read a key's usage
+// (fork: Billing D4).
+const errRemoteKeyUnread = "remote magpie couldn't read this key's usage; it refuses the key until it can"
+
+// unavailable is an answer with a limit whose usage that computer
+// couldn't read (fork: Billing D4).
+func (a *remoteKeyAnswer) unavailable() bool {
+	if a.Limit != nil && a.Limit.Unavailable {
+		return true
+	}
+	for _, l := range a.Limits {
+		if l.Unavailable {
+			return true
+		}
+	}
+	return false
 }
 
 type remoteKeyRead struct {
@@ -269,6 +290,9 @@ func askRemoteKeyLimit(ctx context.Context, p Provider, key string) (*remoteKeyA
 		// not the answer of a magpie's keyLimit: something else at that
 		// address, or a reply cut short
 		return nil, fmt.Errorf("%s answered its key's limit in a form magpie doesn't read", remoteName(p))
+	}
+	if a.unavailable() { // fork: Billing D4, its usage unread is no 0 used
+		return nil, errors.New(errRemoteKeyUnread)
 	}
 	return &a, nil
 }

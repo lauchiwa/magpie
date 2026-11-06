@@ -190,6 +190,32 @@ skips `makerListPrice`, marked `// fork:`. When upstream changes
 not activation or an intermediate release; see
 [Usage accounting](subsystems/usage-accounting.md).
 
+A key's budget window that can't be read is refused, never 0 used
+(Billing D4; [Usage accounting](subsystems/usage-accounting.md)). The
+hooks are each marked `// fork`. In `internal/usage/log_index.go`,
+`logSnapshot` has an `err` field. `readLogSnapshot` passes the stat error
+through `logStatErr`, keeps a snapshot unchanged only while `sameLogErr`
+holds, sets `next.err` where it gives up on the log (`unreadErr` for the
+open and seek errors), and stops at a read error that isn't EOF. The
+helpers and `VisitRead` are in `log_read_fork.go`. In
+`internal/budget/budget.go`, `read` and `sumsFor` return the error and keep
+nothing, `Status.Unavailable` and `unavailable()` are new, `All` and
+`Binding` have a case for it, `reserve` refuses on the error, and
+`Refusal.Error` and `Unwrap` (to `gwbudget.ErrUsageUnread`, new in
+`gwbudget.go`) speak of it. `internal/gateway/key_limit.go`'s `keyLimited`
+checks `ErrUsageUnread` before its `errors.As` for a 503 type of its own.
+The surfaces are hooked too: `internal/cli/gateway_keys_cli.go`'s status
+loop and `limitWords`, `internal/gateway/keypage.html`'s `drawLimits` and
+its five `STR` tables, `internal/gui/assets/plugins/gateway/keys.js`'s
+`bindingUsed`, `gatewayLimitBadge` and `gatewayLimitLine`, one
+`quotaError` line in `app.js`, `internal/provider/remote_key_limits.go`'s
+`remoteKeyLimit.Unavailable` and `askRemoteKeyLimit`, and four strings
+per language in `i18n.js`. When upstream rewrites one of these, carry
+the check over: `TestKeyLimitRefusesWhileUsageUnread`,
+`TestUnreadUsageIsNoZero`, `TestGatewayKeyLimitUnreadCLI`,
+`TestRemoteMagpieKeyUsageUnread`, `gateway-key-limit-unread.test.cjs`,
+`usage-remote-key-unread.test.cjs` and `key-page.test.cjs` fail without it.
+
 `Provider.FreeModel` (`internal/provider/models.go`) asks `userFree`
 (`freemodel_fork.go`) right after upstream's `CountFree` (the user's word
 that the whole provider costs nothing outranks a price they set on one of

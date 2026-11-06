@@ -60,6 +60,9 @@ type logSnapshot struct {
 	hosts map[string]string
 	// full is where the full blocks end, for log-v1.bin
 	full logFull
+	// fork: err is why the log couldn't be read, nil for a log read whole
+	// or one that isn't there (VisitRead)
+	err error
 }
 
 var logIndex struct {
@@ -107,9 +110,10 @@ func readLogSnapshot() *logSnapshot {
 	path := Path()
 	start := logIndexNow()
 	info, err := statLogFile(path)
+	err = logStatErr(info, err) // fork: a log there but unreadable is no empty one
 	settled := settledLogStamp(info, start)
 	old := logIndex.snapshot
-	unchanged := old != nil && old.path == path && (err != nil && old.info == nil || err == nil && sameLogInfo(old.info, info))
+	unchanged := old != nil && old.path == path && (err != nil && old.info == nil && sameLogErr(old.err, err) || err == nil && sameLogInfo(old.info, info))
 	if unchanged && info != nil {
 		if logChangeStamp(info) == "" || !old.settled {
 			unchanged = old.hash != "" && logRecordHash(path, old.off) == old.hash
@@ -132,6 +136,7 @@ func readLogSnapshot() *logSnapshot {
 
 	next := &logSnapshot{path: path, info: info, settled: settled, version: logIndex.version, keyProviders: map[string]bool{}, hosts: map[string]string{}}
 	if err != nil {
+		next.err = unreadErr(err) // fork
 		logIndex.snapshot = next
 		return next
 	}
@@ -166,10 +171,12 @@ func readLogSnapshot() *logSnapshot {
 	logIndex.reads++
 	f, err := os.Open(path)
 	if err != nil {
+		next.err = unreadErr(err) // fork
 		return next
 	} // never publish an incomplete read as current
 	defer f.Close()
 	if _, err = f.Seek(next.off, 0); err != nil {
+		next.err = err // fork
 		return next
 	}
 	var tail *rowChunk
@@ -184,6 +191,10 @@ func readLogSnapshot() *logSnapshot {
 	rd := bufio.NewReaderSize(io.LimitReader(f, info.Size()-next.off), 64<<10)
 	for next.off < info.Size() {
 		b, e := rd.ReadBytes('\n')
+		if e != nil && e != io.EOF { // fork: a failed read is no end of the log
+			next.err = e
+			return next
+		}
 		if e != nil {
 			break
 		} // a partial final line is read again after it completes

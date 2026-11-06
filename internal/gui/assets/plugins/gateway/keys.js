@@ -597,6 +597,8 @@ function limitDraft(k, n) {
 // that resets last, as it is refused until then; else the first
 function bindingUsed(k) {
   const all = keyUsed(k), spent = all.filter((u) => u.spent);
+  const unread = all.find((u) => u.unavailable); // fork: Billing D4, refused while unread
+  if (unread) return unread;
   return spent.length ? spent.reduce((a, b) => (new Date(b.reset) > new Date(a.reset) ? b : a)) : all[0];
 }
 
@@ -605,10 +607,13 @@ function bindingUsed(k) {
 // several limits, the one holding it most and how many more there are.
 function gatewayLimitBadge(k) {
   const u = bindingUsed(k), more = keyUsed(k).length - 1;
-  const b = el("button", "amodels limit" + (u ? " set" : "") + (u?.spent ? " spent" : "") + (gatewayLimit?.id === k.id ? " open" : ""));
+  const b = el("button", "amodels limit" + (u ? " set" : "") + (u?.spent || u?.unavailable ? " spent" : "") + (gatewayLimit?.id === k.id ? " open" : "")); // fork: unavailable
   b.type = "button";
   if (!u) b.textContent = t("Limit");
-  else {
+  else if (u.unavailable) { // fork: Billing D4, unread usage is no 0 used
+    b.textContent = t("Usage unread") + " · " + perWords(u.period, u.days, u.hours)
+      + (more > 0 ? " · " + t(more === 1 ? "+1 limit" : "+{n} limits", { n: more }) : "");
+  } else {
     const parts = [];
     if (u.tokenLimit) parts.push(fmtN(u.tokens) + " / " + fmtN(u.tokenLimit));
     if (u.costLimit) parts.push(usd(u.cost) + " / " + usd(u.costLimit));
@@ -631,9 +636,15 @@ function gatewayLimitBadge(k) {
 // left and when it resets, under its row; with several, each says its
 // window first.
 function gatewayLimitLine(k, u) {
-  const line = el("div", "key-limit" + (u.spent ? " spent" : ""));
+  const line = el("div", "key-limit" + (u.spent || u.unavailable ? " spent" : "")); // fork: unavailable
   const parts = [];
   if (keyUsed(k).length > 1) parts.push(perWords(u.period, u.days, u.hours));
+  if (u.unavailable) { // fork: Billing D4, unread usage is no 0 used
+    parts.push(t("Couldn't read this key's usage · refused until it can"));
+    line.textContent = parts.join(" · ");
+    line.title = t("magpie couldn't read its usage log, so it can't tell what this key used; it refuses the key's requests until the log can be read");
+    return line;
+  }
   if (u.tokenLimit) parts.push(t("{used} of {limit} tokens · {left} left", { used: fmtN(u.tokens), limit: fmtN(u.tokenLimit), left: fmtN(u.tokensLeft) }));
   if (u.costLimit) parts.push(t("{used} of {limit} estimated · {left} left", { used: usd(u.cost), limit: usd(u.costLimit), left: usd(u.costLeft) }));
   const at = new Date(u.reset);

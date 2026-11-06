@@ -22,6 +22,30 @@ invoice. Display filters and Usage clears do not erase budget spending.
 `Append` currently has no durable success result: observers run before its
 best-effort write. This is not an atomic billing settlement protocol.
 
+A window the budget can't read is unknown, never 0 used (fork, Billing D4).
+When `usage.jsonl` fails to read with anything but "no log" (a stat or
+open error, a path that isn't a file, a read error before EOF), the usage
+index's `logSnapshot.err` is set (`log_index.go`, `log_read_fork.go`), and
+`budget.read` returns the error and keeps nothing, so the next request
+reads again. `All` gives each limit in that window an `Unavailable` status
+with its counts and what is left 0, `Binding` picks it over any spent one,
+and `reserve` refuses every limited key, token caps included, with a
+`Refusal` that unwraps to `gwbudget.ErrUsageUnread`. The gateway answers
+that 503 `gateway_key_usage_unread`, X-Should-Retry false, and nothing is
+sent. `/v1/magpie/limit` and `/v1/magpie/me` carry `unavailable`; the CLI
+(`magpie gateway key limit`, `list`), the Gateway keys page, the key
+holder's `/me` page and a Remote magpie's key card say the usage couldn't
+be read instead of "0 of". A remote's unavailable answer is a failed read
+there: the card keeps the last numbers it read, dated. Not covered yet: a
+failed write of a record (its call counts only in the sums this process
+holds, and is gone from the window once it is read again from the file),
+and reservations held across a restart.
+`TestKeyLimitRefusesWhileUsageUnread`, `TestKeyLimitRefusesWhileUsageUnreadable`,
+`TestUnreadUsageIsNoZero`, `TestGatewayKeyLimitUnreadCLI`,
+`TestRemoteMagpieKeyUsageUnread`, `gateway-key-limit-unread.test.cjs`,
+`usage-remote-key-unread.test.cjs` and `key-page.test.cjs`'s unread case
+fail without it.
+
 ## Dormant accounting component (fork)
 
 [`billing_fork.go`](../../internal/usage/billing_fork.go) bills one call
