@@ -156,7 +156,9 @@ func gitHead(path string) (bool, error) {
 	}
 	if fi.Mode()&fs.ModeSymlink != 0 {
 		to, err := os.Readlink(path)
-		return strings.HasPrefix(to, "refs/"), err
+		// fork: Windows reads a link's target back with \ (Go writes
+		// "refs/heads/main" as refs\heads\main), and git takes it there too
+		return strings.HasPrefix(filepath.ToSlash(to), "refs/"), err
 	}
 	if !fi.Mode().IsRegular() {
 		return false, nil
