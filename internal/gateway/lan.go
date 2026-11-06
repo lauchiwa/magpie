@@ -606,6 +606,9 @@ func appendUsage(r *http.Request, rec usage.Record) {
 	who := access.Caller(r.Context())
 	rec.CallerKeyID, rec.CallerKeyName, rec.CallerIssuerID = who.KeyID, who.KeyName, who.IssuerID()
 	rec.Local = local(r)
+	if rec.Hold == "" { // fork: Billing D4
+		rec.Hold = holdOf(r.Context())
+	}
 	if r.Context().Value(observedKey{}) != nil {
 		rec.Watched = true
 	}

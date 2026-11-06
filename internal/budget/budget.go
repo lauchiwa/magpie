@@ -32,6 +32,12 @@
 //     refused (Refusal.Unavailable) and its status says so: what it used
 //     isn't known, so it is never taken for nothing (Billing D4). No log
 //     at all is a key that has used nothing.
+//   - fork: a reservation is written to usage-holds.jsonl before its
+//     request is sent (journal_fork.go), and a call usage.jsonl can't take
+//     is kept there, so a crash, a kill or a handover counts a request it
+//     cut off at its reservation (Status.Pending), and a failed write
+//     still counts. A request whose reservation can't be written is
+//     refused (Refusal.Unrecorded).
 package budget
 
 import (
@@ -56,6 +62,10 @@ type sums struct {
 	input, output, cacheRead, cacheWrite int64
 	cost                                 float64
 	unpriced                             int
+	// fork: requests cut off before they ended, and their reserved
+	// tokens; their reserved cost is in cost (journal_fork.go)
+	pending    int
+	pendTokens int64
 }
 
 func (s *sums) add(r usage.Record, cost float64, priced bool) {
@@ -71,7 +81,7 @@ func (s *sums) add(r usage.Record, cost float64, priced bool) {
 }
 
 func (s *sums) tokens(l *access.Limit) int64 {
-	n := s.input + s.output + s.cacheWrite
+	n := s.input + s.output + s.cacheWrite + s.pendTokens // fork
 	if l != nil && l.CacheReads {
 		n += s.cacheRead
 	}
@@ -146,7 +156,11 @@ func sumsFor(keyID string, starts []time.Time) ([]*sums, error) {
 func read(keyID string, start time.Time) (*sums, error) {
 	s := &sums{start: start}
 	cost := usage.NewCoster()
+	recorded := map[string]bool{} // fork: the reservations usage.jsonl has a call of
 	err := usage.VisitRead(start, func(r usage.Record) {
+		if r.Hold != "" {
+			recorded[r.Hold] = true
+		}
 		// a key issued under keyID spends from its limits too
 		if (r.CallerKeyID == keyID || r.CallerIssuerID == keyID) && counts(r) && !r.Time.Before(start) {
 			c, ok := cost(r)
@@ -156,6 +170,12 @@ func read(keyID string, start time.Time) (*sums, error) {
 	if err != nil {
 		return nil, err
 	}
+	// fork: and what usage-holds.jsonl keeps (journal_fork.go)
+	lines, live, err := holdLines()
+	if err != nil {
+		return nil, err
+	}
+	addHeld(s, keyID, lines, live, recorded, cost)
 	return s, nil
 }
 
@@ -165,6 +185,7 @@ func Forget() {
 	defer state.Unlock()
 	state.sums = map[string][]*sums{}
 	state.held = map[window]*held{}
+	forgetJournal() // fork
 }
 
 // Append writes rec to usage.jsonl and, for a key's call, counts it
@@ -180,7 +201,9 @@ func Append(rec usage.Record) {
 	if rec.Time.IsZero() {
 		rec.Time = time.Now()
 	}
-	usage.Append(rec)
+	if usage.AppendErr(rec) != nil && counts(rec) { // fork: kept where a restart reads it
+		keepUnwritten(rec)
+	}
 	if !counts(rec) {
 		return
 	}
@@ -231,6 +254,10 @@ type Status struct {
 	// counts and what is left are 0 as nothing is known of them, and the
 	// key's requests are refused until it can be read (Billing D4)
 	Unavailable bool `json:"unavailable,omitempty"`
+	// fork: Pending is how many requests that are in no record and not
+	// in flight here (cut off by a crash, a kill or a handover) are in
+	// Tokens and Cost at their reservation
+	Pending int `json:"pending,omitempty"`
 }
 
 // unavailable is l's status in the window from start while usage.jsonl
@@ -243,7 +270,7 @@ func unavailable(l *access.Limit, start, reset time.Time, h *held) Status {
 
 func status(keyID string, l *access.Limit, s *sums, h *held, reset time.Time) Status {
 	st := Status{Period: l.Period, Days: l.Days, Hours: l.Hours, Start: s.start, Reset: reset, Calls: s.calls, Tokens: s.tokens(l), Cost: s.cost, Unpriced: s.unpriced,
-		TokenLimit: l.Tokens, CostLimit: l.Cost, CacheReads: l.CacheReads}
+		TokenLimit: l.Tokens, CostLimit: l.Cost, CacheReads: l.CacheReads, Pending: s.pending}
 	if h != nil {
 		st.InFlight, st.Reserved, st.ReservedCost = h.n, h.tokens, h.cost
 	}
@@ -344,6 +371,9 @@ func (st *Status) share() float64 {
 type Refusal struct {
 	Status
 	Key string
+	// fork: Unrecorded: the key had room, but its reservation couldn't be
+	// written, so a restart couldn't count the request
+	Unrecorded bool
 }
 
 // Error says it as a client is told: the key, what it used of which
@@ -351,6 +381,9 @@ type Refusal struct {
 func (r *Refusal) Error() string {
 	if r.Unavailable { // fork: no path or OS error, which a remote client is no one to be told
 		return fmt.Sprintf("magpie gateway key %q has a limit, but this computer couldn't read the key's usage to check it, so nothing was sent; it is let in again once magpie's usage.jsonl can be read", r.Key)
+	}
+	if r.Unrecorded { // fork
+		return fmt.Sprintf("magpie gateway key %q has a limit, but this computer couldn't write down the request's reservation, which a restart counts, so nothing was sent; it is let in again once magpie's usage-holds.jsonl can be written", r.Key)
 	}
 	what := ""
 	if r.TokenLimit > 0 && r.Tokens+r.Reserved >= r.TokenLimit {
@@ -383,6 +416,9 @@ func (r *Refusal) Unwrap() error {
 	if r.Unavailable {
 		return gwbudget.ErrUsageUnread
 	}
+	if r.Unrecorded {
+		return gwbudget.ErrUsageUnrecorded
+	}
 	return nil
 }
 
@@ -398,21 +434,37 @@ func (Limiter) Reserve(who access.Identity, body int64, model string, now time.T
 	return release, nil
 }
 
+// ReserveHold is Reserve under the hold the gateway names on the
+// request's records (gwbudget.HoldLimiter, fork).
+func (Limiter) ReserveHold(hold string, who access.Identity, body int64, model string, now time.Time) (func(), gwbudget.Refusal) {
+	release, refused := ReserveHold(hold, who, body, model, now)
+	if refused != nil {
+		return nil, refused
+	}
+	return release, nil
+}
+
 // Reserve lets a request of who's in, holding a reservation for it until
 // the release it returns is called, or refuses it. body is the request's
 // size in bytes (-1 unknown) and model the model it named, for a cost cap
 // before the key has a price of its own this window.
 func Reserve(who access.Identity, body int64, model string, now time.Time) (release func(), refused *Refusal) {
+	return ReserveHold(NewHold(), who, body, model, now) // fork
+}
+
+// ReserveHold is Reserve with its reservation written down under hold
+// (fork, journal_fork.go), the id the request's records name.
+func ReserveHold(hold string, who access.Identity, body int64, model string, now time.Time) (release func(), refused *Refusal) {
 	if who.Issuer == nil {
-		return reserve(who, body, model, now)
+		return reserve(hold, who, body, model, now)
 	}
 	// an issued key's request is held to its own limits and to its
 	// issuer's, which count what every key issued under it spends
-	own, refused := reserve(who, body, model, now)
+	own, refused := reserve(hold, who, body, model, now)
 	if refused != nil {
 		return nil, refused
 	}
-	up, refused := reserve(*who.Issuer, body, model, now)
+	up, refused := reserve(hold, *who.Issuer, body, model, now)
 	if refused != nil {
 		own()
 		return nil, refused
@@ -420,7 +472,7 @@ func Reserve(who access.Identity, body int64, model string, now time.Time) (rele
 	return func() { own(); up() }, nil
 }
 
-func reserve(who access.Identity, body int64, model string, now time.Time) (release func(), refused *Refusal) {
+func reserve(holdID string, who access.Identity, body int64, model string, now time.Time) (release func(), refused *Refusal) {
 	ls := who.Limits()
 	if who.KeyID == "" || len(ls) == 0 {
 		return func() {}, nil
@@ -486,6 +538,14 @@ func reserve(who access.Identity, body int64, model string, now time.Time) (rele
 			}
 		}
 	}
+	// fork: written down before the request is sent, so a restart counts it
+	written := make([]holdWindow, len(holds))
+	for i, x := range holds {
+		written[i] = holdWindow{Start: x.k.start, Tokens: x.est, Cost: x.cost}
+	}
+	if err := openHold(holdID, who.KeyID, written); err != nil {
+		return nil, &Refusal{Status: status(who.KeyID, ls[0], ss[0], heldAt(starts[0]), resets[0]), Key: who.KeyName, Unrecorded: true}
+	}
 	for i := range holds {
 		x := &holds[i]
 		x.h = state.held[x.k]
@@ -510,6 +570,7 @@ func reserve(who access.Identity, body int64, model string, now time.Time) (rele
 					delete(state.held, x.k)
 				}
 			}
+			settle(holdID) // fork
 		})
 	}, nil
 }

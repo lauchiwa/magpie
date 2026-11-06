@@ -57,12 +57,14 @@ func keyLimited(next http.Handler) http.Handler {
 			size, model = int64(len(b)), budget.ModelOf(b)
 		}
 		now := limitClock()
-		release, err := reserveFor(who, size, model, now)
+		ctx, release, err := reserveHeld(r.Context(), who, size, model, now) // fork: Billing D4, a hold its records name
 		if err != nil {
 			status, errType := http.StatusServiceUnavailable, "gateway_key_limit_off"
 			var refused gwbudget.Refusal
 			if errors.Is(err, gwbudget.ErrUsageUnread) { // fork: Billing D4
 				errType = "gateway_key_usage_unread"
+			} else if errors.Is(err, gwbudget.ErrUsageUnrecorded) { // fork: Billing D4
+				errType = "gateway_key_usage_unrecorded"
 			} else if errors.As(err, &refused) {
 				status, errType = http.StatusTooManyRequests, "gateway_key_limit"
 				w.Header().Set("Retry-After", strconv.Itoa(refused.RetryAfter(now)))
@@ -77,7 +79,7 @@ func keyLimited(next http.Handler) http.Handler {
 			return
 		}
 		defer release()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

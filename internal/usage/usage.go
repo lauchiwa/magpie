@@ -47,6 +47,10 @@ type Record struct {
 	// CallerIssuerID is the key CallerKeyID was issued under (an issued,
 	// short-lived key: access.IssueKey), whose limits count this call too.
 	CallerIssuerID string `json:"callerIssuerId,omitempty"`
+	// fork: Hold is the reservation a limited key's request held while
+	// this call was made (budget's usage-holds.jsonl), so a restart counts
+	// a reservation its call was recorded for once (Billing D4)
+	Hold string `json:"hold,omitempty"`
 	// SessionProvider is the provider ID recorded by the agent. SessionAccount
 	// identifies the session's creator, not the account used for an API request.
 	// Neither field establishes an upstream route from today's configuration.
@@ -271,7 +275,12 @@ var loads int
 
 // Append writes one record. Errors are swallowed: accounting must never
 // break a call.
-func Append(r Record) {
+func Append(r Record) { _ = AppendErr(r) } // fork: AppendErr says why it wasn't written
+
+// AppendErr is Append, and (fork, Billing D4) whether the record reached
+// usage.jsonl: a gateway key's limits keep a call it couldn't write
+// elsewhere, so a restart still counts it.
+func AppendErr(r Record) error {
 	if r.Time.IsZero() {
 		r.Time = Clock()
 	}
@@ -281,14 +290,14 @@ func Append(r Record) {
 	defer codexUsedNew(r)
 	b, err := json.Marshal(r)
 	if err != nil {
-		return
+		return err
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	path := Path()
 	f, before := openLog(path)
 	if f == nil {
-		return
+		return errLogUnopened
 	}
 	if !holdLog {
 		defer f.Close()
@@ -298,10 +307,11 @@ func Append(r Record) {
 			f.Close()
 			heldLog.f = nil
 		}
-		return
+		return err
 	}
 	after, _ := statLogHandle(f)
 	noteLogAppend(path, before, after)
+	return nil
 }
 
 // heldLog is the log Append keeps open between calls, under mu: every

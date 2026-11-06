@@ -11,6 +11,9 @@ import (
 // its place reads as no log on Windows and as a failed read elsewhere.
 var errLogNotFile = errors.New("usage.jsonl is not a file")
 
+// errLogUnopened is AppendErr's error for a log it couldn't open.
+var errLogUnopened = errors.New("usage.jsonl couldn't be opened to append to")
+
 // VisitRead is Visit for a reader that must not take a log it couldn't
 // read for an empty one (a gateway key's limits, Billing D4): err is why
 // the log couldn't be read, and then fn is never called. No log at all is

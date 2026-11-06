@@ -78,7 +78,10 @@ type packedRow struct {
 	// in 32 bits: no call reads or writes 2^31 tokens, and they were
 	// 48 of a row's bytes as int64s (#2278); one past it is kept as the
 	// most an int32 holds (tokensOf)
-	Tokens         [6]int32
+	Tokens [6]int32
+	// fork: Flags sits in the 4 bytes before Order's alignment, which a
+	// sixth Varied (rowHold) took from the row's end (TestRowsOfOneSessionShareAShape)
+	Flags          uint16
 	Order, RouteID int64
 	Cost, Credits  float64
 	// the times of the call, in ms as in Record, kept in 32 bits (msOf):
@@ -89,7 +92,6 @@ type packedRow struct {
 	Own, Retried, Queued       int32
 	Masking                    int32 // ms (Record.Masking)
 	Status, Tries              int32
-	Flags                      uint16
 }
 
 // msOf is a time in ms as a packedRow keeps it: one past 24 days, which
@@ -179,19 +181,22 @@ type rowChunk struct {
 // rowMsg is the Text of a row's Claude message id, after rowText's, and
 // rowError its error's
 const (
-	rowMsg   = 35
+	rowMsg   = 36 // fork: after Record.Hold (35)
 	rowError = 9
 	// rowClient is the Text of the client's own name, when the user counts
 	// it as another agent (Row.Client, #1958)
 	rowClient = 33
 	// rowTexts is how many strings a row has: rowText's and the message id
-	rowTexts = 36
+	rowTexts = 37
+	// fork: rowHold is the Text of the reservation a call was made under
+	// (Record.Hold, Billing D4): one a request, so a varied one
+	rowHold = 35
 )
 
 // rowVaried are the strings that differ call by call: the error, the
 // request and response ids, the archive and the message id. A row keeps
 // them itself; every other string is the same for most of a chunk's rows.
-var rowVaried = [...]int{rowError, 11, 22, 25, rowMsg}
+var rowVaried = [...]int{rowError, 11, 22, 25, rowMsg, rowHold} // fork: rowHold
 
 // rowVariedAt is each Text slot's place in Varied, or -1
 var rowVariedAt = func() (at [rowTexts]int8) {
@@ -251,8 +256,8 @@ func (c *rowChunk) shape(t [rowTexts]uint32) uint32 {
 // reason ("Upstream stop reason", #1927) and the service tiers (#1784)
 // among them: a string left out comes back empty from the cache, in the
 // page and in /v1/magpie/usage/requests (TestRowTextHoldsEveryString)
-func rowText(r *Row) [35]*string {
-	return [35]*string{&r.Agent, &r.Provider, &r.Host, &r.SessionProvider, &r.SessionAccount, &r.Model, &r.Requested, &r.Served, &r.Effort, &r.Error, &r.ErrType, &r.RequestID, &r.Endpoint, &r.Session, &r.NativeSession, &r.Kind, &r.Source, &r.Via, &r.ProviderKeyID, &r.ProviderKeyName, &r.CallerKeyID, &r.CallerKeyName, &r.Archive, &r.Operation, &r.ProviderAccount, &r.ResponseID, &r.Upstream, &r.Subagent, &r.ParentAgent, &r.Stop, &r.TierAsked, &r.TierSent, &r.TierServed, &r.Client, &r.CallerIssuerID}
+func rowText(r *Row) [36]*string { // fork: Hold last
+	return [36]*string{&r.Agent, &r.Provider, &r.Host, &r.SessionProvider, &r.SessionAccount, &r.Model, &r.Requested, &r.Served, &r.Effort, &r.Error, &r.ErrType, &r.RequestID, &r.Endpoint, &r.Session, &r.NativeSession, &r.Kind, &r.Source, &r.Via, &r.ProviderKeyID, &r.ProviderKeyName, &r.CallerKeyID, &r.CallerKeyName, &r.Archive, &r.Operation, &r.ProviderAccount, &r.ResponseID, &r.Upstream, &r.Subagent, &r.ParentAgent, &r.Stop, &r.TierAsked, &r.TierSent, &r.TierServed, &r.Client, &r.CallerIssuerID, &r.Hold}
 }
 func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 	if c.dict == nil {
