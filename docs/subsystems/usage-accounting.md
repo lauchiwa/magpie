@@ -19,8 +19,9 @@ deduplication.
 reservations, accumulates eligible local calls and reconstructs windows from
 the ledger. Its limits are estimates, not a guarantee about a vendor's final
 invoice. Display filters and Usage clears do not erase budget spending.
-`Append` currently has no durable success result: observers run before its
-best-effort write. This is not an atomic billing settlement protocol.
+`usage.Append` swallows a failed write, and observers run before it;
+`usage.AppendErr` (fork) is the same write with its error. This is not an
+atomic billing settlement protocol.
 
 A window the budget can't read is unknown, never 0 used (fork, Billing D4).
 When `usage.jsonl` fails to read with anything but "no log" (a stat or
@@ -36,15 +37,46 @@ sent. `/v1/magpie/limit` and `/v1/magpie/me` carry `unavailable`; the CLI
 (`magpie gateway key limit`, `list`), the Gateway keys page, the key
 holder's `/me` page and a Remote magpie's key card say the usage couldn't
 be read instead of "0 of". A remote's unavailable answer is a failed read
-there: the card keeps the last numbers it read, dated. Not covered yet: a
-failed write of a record (its call counts only in the sums this process
-holds, and is gone from the window once it is read again from the file),
-and reservations held across a restart.
+there: the card keeps the last numbers it read, dated.
 `TestKeyLimitRefusesWhileUsageUnread`, `TestKeyLimitRefusesWhileUsageUnreadable`,
 `TestUnreadUsageIsNoZero`, `TestGatewayKeyLimitUnreadCLI`,
 `TestRemoteMagpieKeyUsageUnread`, `gateway-key-limit-unread.test.cjs`,
 `usage-remote-key-unread.test.cjs` and `key-page.test.cjs`'s unread case
 fail without it.
+
+A limited key's reservation and a call it couldn't record outlive the
+process (fork, Billing D4, [`journal_fork.go`](../../internal/budget/journal_fork.go)).
+`usage-holds.jsonl`, beside `usage.jsonl`, is written only for a limited
+key's requests. `reserve` appends an `open` line (the key, each window's
+start, the tokens and cost reserved there) before the request is sent; a
+journal that can't be written refuses the request with a `Refusal` that
+unwraps to `gwbudget.ErrUsageUnrecorded`, which the gateway answers 503
+`gateway_key_usage_unrecorded`, nothing sent. The release writes `done`.
+`keyLimited` reserves under an id of its own (`gwbudget.HoldLimiter`,
+`reserveHeld` in `key_hold_fork.go`) and `appendUsage` writes it on the
+call's records as `hold`. A call `usage.jsonl` refuses (`AppendErr`) is
+kept whole as a `rec` line, and then its request's `done` isn't written.
+`budget.read` counts, besides `usage.jsonl`'s calls, the `rec` lines, and
+every `open` with no `done`, no record naming its hold and not in flight
+in this process, at its reservation: a request cut off by a crash, a kill
+or a handover (`Status.Pending`). The journal is written without fsync,
+so it outlives the process, not a power cut. It is written again, by
+temp file and rename, once a process and past 256 KB, dropping each
+`open` with its `done` and lines older than `access.MaxDays`; a journal
+written to meanwhile is left as it is. Limits: a cut-off request counts
+at its estimate (body/4 plus the window's mean output), which can be
+less than the vendor billed; the other gateway of a handover counts the
+first's requests in flight at their estimate until their records are
+read again; the MCP tool and web_fetch reservations name no hold, so one
+cut off after its record was written also counts its estimate. The CLI,
+the Gateway keys page and the key holder's page say how many are
+pending. `TestCutOffRequestCountsAtItsReservation`,
+`TestHeldRequestCountsOnce`, `TestIssuedRequestHeldInBoth`,
+`TestUnwrittenCallStillCounts`, `TestUnrecordedReservationIsRefused`,
+`TestKeyLimitCountsACutOffRequest`,
+`TestKeyLimitRefusesWhileReservationsUnwritable`,
+`TestGatewayKeyLimitPendingCLI`, `gateway-key-limit-pending.test.cjs`
+and `key-page.test.cjs`'s cut-off case fail without it.
 
 ## Dormant accounting component (fork)
 

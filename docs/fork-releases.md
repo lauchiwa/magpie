@@ -216,6 +216,36 @@ the check over: `TestKeyLimitRefusesWhileUsageUnread`,
 `TestRemoteMagpieKeyUsageUnread`, `gateway-key-limit-unread.test.cjs`,
 `usage-remote-key-unread.test.cjs` and `key-page.test.cjs` fail without it.
 
+A limited key's reservations and the calls `usage.jsonl` refused are kept
+in `usage-holds.jsonl` (Billing D4; [Usage accounting](subsystems/usage-accounting.md)).
+New files: `internal/budget/journal_fork.go`, `internal/gwbudget/hold_fork.go`
+and `internal/gateway/key_hold_fork.go`. The hooks are each marked
+`// fork`. In `internal/usage/usage.go`, `Record.Hold` is new and `Append`
+calls `AppendErr`, the old body returning its error (`errLogUnopened` is in
+`log_read_fork.go`). In `internal/usage/request_page.go`, `rowText` ends
+with `&r.Hold`, `rowHold` (35) is a varied slot, `rowMsg` is 36, `rowTexts`
+37, and `packedRow.Flags` moved up beside `Tokens` so the row stays 152
+bytes. In `internal/budget/budget.go`, `sums` has `pending` and
+`pendTokens` (in `tokens`), `read` collects the holds its records name and
+calls `addHeld`, `Forget` calls `forgetJournal`, `Append` keeps a refused
+call with `keepUnwritten`, `Status.Pending`, `Refusal.Unrecorded` (in
+`Error` and `Unwrap`) and `Limiter.ReserveHold` are new, `Reserve` calls
+`ReserveHold`, `reserve` takes the hold id, writes it with `openHold` and
+calls `settle` on release. `internal/gateway/key_limit.go`'s `keyLimited`
+calls `reserveHeld`, passes its context on and checks
+`ErrUsageUnrecorded`; `lan.go`'s `appendUsage` sets `rec.Hold`. The
+surfaces: `gateway_keys_cli.go`'s status loop and `limitWords`,
+`keypage.html`'s `drawLimits` and its five `STR` tables, `keys.js`'s
+`gatewayLimitLine`, and three strings per language in `i18n.js`. When
+upstream rewrites one of these, carry the check over:
+`TestCutOffRequestCountsAtItsReservation`, `TestHeldRequestCountsOnce`,
+`TestUnwrittenCallStillCounts`, `TestUnrecordedReservationIsRefused`,
+`TestKeyLimitCountsACutOffRequest`,
+`TestKeyLimitRefusesWhileReservationsUnwritable`,
+`TestGatewayKeyLimitPendingCLI`, `TestRowTextHoldsEveryString`,
+`gateway-key-limit-pending.test.cjs` and `key-page.test.cjs` fail
+without it.
+
 `Provider.FreeModel` (`internal/provider/models.go`) asks `userFree`
 (`freemodel_fork.go`) right after upstream's `CountFree` (the user's word
 that the whole provider costs nothing outranks a price they set on one of
