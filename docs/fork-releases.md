@@ -230,6 +230,16 @@ through the model prefs Save already sends, so the save path has no hook.
 `TestEditorSaysTheWholeProviderPrice` and `whole-provider-free.test.cjs`
 fail without them.
 
+A routing group's Free first and Cheapest first hints end with what its
+member order decides, from `groupOrderSays` (`freeprice.js`), whose words
+are in that file's `magpie.strings`, not in `i18n.js`. Upstream's
+`GROUP_HINT` strings stay as they come. In `plugins/routing/client.js` two
+`fork:` lines join it on: the row's routing menu item `title` in
+`openProtoMenu`'s options and the group editor's `gHint`, each as
+`[t(GROUP_HINT[id]), groupOrderSays(id)].join(" ").trim()`. The
+provider-level `MODES` table has no hook. `group-order-says.test.cjs`
+fails without either line.
+
 The session folders' held listings (`internal/sessions/one_listing.go`)
 were a fork hook (`heldStamp`) until upstream counted holds instead of
 stamping them (`held.gen`, #4114, in v0.1.2310): two `time.Now()` in one

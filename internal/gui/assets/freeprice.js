@@ -5,10 +5,14 @@
 // model picker skip a model priced "paid", whose name may still say free.
 // The key provider editor's whole-provider toggle (wholeFreeField, drawn
 // from the provider's whole, provider.WholeOf). app.js only calls in.
+// A routing group's Free first and Cheapest first hints end with what its
+// member order decides (groupOrderSays); the Routing page only calls in.
 // Loaded before app.js; nothing here runs at load but the words. Kept out
 // of i18n.js and app.js so an upstream sync meets one file of ours.
 magpie.strings({
   zh: {
+    "Paid members keep their listed order too: the order of the members is your preference among those the routing ranks the same.": "付费成员也按列出的顺序：成员的顺序就是你的偏好，在路由排得一样的成员之间起作用。",
+    "The order of the members is your preference among those that cost the same.": "成员的顺序就是你的偏好，在价格相同的成员之间起作用。",
     "Whole provider free": "整个供应商免费",
     "On: every model of it is counted at 0, and Price rate no longer applies; a price you set for a model still comes first. The grey numbers in a model's price boxes are still its list price.": "打开后这个供应商的所有模型按 0 计价，价格倍率不再起作用；你给单个模型设的价格仍然优先。模型价格框里的灰色数字仍是列表价。",
     "You priced every model of it at {price} (input,output,cache read,cache write, $ per 1M tokens) with the command line. To change it here, first run: magpie model price \"{id}/*\" --reset": "你已用命令行给这个供应商的所有模型设了价格 {price}（输入,输出,缓存读,缓存写，每百万 token 美元）。要在这里改，先运行：magpie model price \"{id}/*\" --reset",
@@ -17,6 +21,8 @@ magpie.strings({
     "free: you priced every model of this provider at 0": "免费：你给这个供应商的所有模型设的价格是 0",
   },
   "zh-TW": {
+    "Paid members keep their listed order too: the order of the members is your preference among those the routing ranks the same.": "付費成員也按列出的順序：成員的順序就是你的偏好，在路由排得一樣的成員之間起作用。",
+    "The order of the members is your preference among those that cost the same.": "成員的順序就是你的偏好，在價格相同的成員之間起作用。",
     "Whole provider free": "整個供應商免費",
     "On: every model of it is counted at 0, and Price rate no longer applies; a price you set for a model still comes first. The grey numbers in a model's price boxes are still its list price.": "開啟後這個供應商的所有模型按 0 計價，價格倍率不再起作用；你給單個模型設的價格仍然優先。模型價格框裡的灰色數字仍是列表價。",
     "You priced every model of it at {price} (input,output,cache read,cache write, $ per 1M tokens) with the command line. To change it here, first run: magpie model price \"{id}/*\" --reset": "你已用命令列給這個供應商的所有模型設了價格 {price}（輸入,輸出,快取讀,快取寫，每百萬 token 美元）。要在這裡改，先執行：magpie model price \"{id}/*\" --reset",
@@ -25,6 +31,8 @@ magpie.strings({
     "free: you priced every model of this provider at 0": "免費：你給這個供應商的所有模型設的價格是 0",
   },
   ja: {
+    "Paid members keep their listed order too: the order of the members is your preference among those the routing ranks the same.": "有料のメンバーも設定順のままです。メンバーの順序が、ルーティングで同じ順位になるもの同士でのあなたの優先順位です。",
+    "The order of the members is your preference among those that cost the same.": "メンバーの順序が、同じ価格のもの同士でのあなたの優先順位です。",
     "Whole provider free": "プロバイダー全体を無料に",
     "On: every model of it is counted at 0, and Price rate no longer applies; a price you set for a model still comes first. The grey numbers in a model's price boxes are still its list price.": "オンにすると、このプロバイダーの全モデルを 0 として計算し、価格倍率は適用されません。モデルごとに設定した価格が引き続き優先されます。モデルの価格欄の灰色の数字は定価のままです。",
     "You priced every model of it at {price} (input,output,cache read,cache write, $ per 1M tokens) with the command line. To change it here, first run: magpie model price \"{id}/*\" --reset": "コマンドラインでこのプロバイダーの全モデルに価格 {price}（入力,出力,キャッシュ読み取り,キャッシュ書き込み、100 万トークンあたりのドル）を設定済みです。ここで変更するには、先に次を実行してください：magpie model price \"{id}/*\" --reset",
@@ -33,6 +41,8 @@ magpie.strings({
     "free: you priced every model of this provider at 0": "無料：このプロバイダーの全モデルの価格を 0 に設定しています",
   },
   de: {
+    "Paid members keep their listed order too: the order of the members is your preference among those the routing ranks the same.": "Auch bezahlte Mitglieder behalten ihre Reihenfolge: Die Reihenfolge der Mitglieder ist deine Vorliebe unter denen, die das Routing gleich einstuft.",
+    "The order of the members is your preference among those that cost the same.": "Die Reihenfolge der Mitglieder ist deine Vorliebe unter denen, die gleich viel kosten.",
     "Whole provider free": "Ganzer Anbieter kostenlos",
     "On: every model of it is counted at 0, and Price rate no longer applies; a price you set for a model still comes first. The grey numbers in a model's price boxes are still its list price.": "An: Alle Modelle werden mit 0 berechnet, der Preisfaktor gilt nicht mehr; ein Preis, den du für ein Modell gesetzt hast, geht weiter vor. Die grauen Zahlen in den Preisfeldern eines Modells bleiben sein Listenpreis.",
     "You priced every model of it at {price} (input,output,cache read,cache write, $ per 1M tokens) with the command line. To change it here, first run: magpie model price \"{id}/*\" --reset": "Du hast allen Modellen dieses Anbieters per Kommandozeile den Preis {price} gegeben (Eingabe,Ausgabe,Cache-Lesen,Cache-Schreiben, $ pro 1M Token). Um ihn hier zu ändern, führe zuerst aus: magpie model price \"{id}/*\" --reset",
@@ -47,6 +57,16 @@ magpie.strings({
 function pricedSays(priced) {
   return priced === "model" ? t("free: you priced it at 0")
     : priced === "provider" ? t("free: you priced every model of this provider at 0") : "";
+}
+
+// groupOrderSays: what a group's member order decides under its routing,
+// added to the Routing page's hint for it (routing/client.js gHint and the
+// row's menu); "" where the hint says it already. The order is the user's
+// preference among members the routing ranks the same (routes.FreeFirst,
+// routes.Cheapest's sameCost).
+function groupOrderSays(routing) {
+  return routing === "free" ? t("Paid members keep their listed order too: the order of the members is your preference among those the routing ranks the same.")
+    : routing === "cheap" ? t("The order of the members is your preference among those that cost the same.") : "";
 }
 
 // wholeFreeField: the key provider editor's Off/On that prices every model

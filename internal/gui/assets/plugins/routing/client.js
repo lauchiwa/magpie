@@ -5947,7 +5947,8 @@ function routingPage(part) {
       e.stopPropagation(); // the card opens the editor; this its routing
       if (b.classList.contains("open")) return closeProtoMenu();
       const opts = withJS(GROUP_ROUTE_OPTS, cur);
-      openProtoMenu(b, opts.map(([id, n]) => ({ v: id, name: n, note: "", title: GROUP_HINT[id] ? t(GROUP_HINT[id]) : modeOf(id)[1] })), cur, async (v) => {
+      // fork: groupOrderSays (freeprice.js) adds what the member order decides
+      openProtoMenu(b, opts.map(([id, n]) => ({ v: id, name: n, note: "", title: GROUP_HINT[id] ? [t(GROUP_HINT[id]), groupOrderSays(id)].join(" ").trim() : modeOf(id)[1] })), cur, async (v) => {
         closeProtoMenu();
         if (v === cur || (groupDirty() && !(await confirmDiscard()))) return b.focus({ preventScroll: true });
         const n = opts.find(([id]) => id === v)?.[1] || v;
@@ -6502,7 +6503,8 @@ function routingPage(part) {
     listW.append(listPick, listHint);
     ed.append(el("label", "", t("Model lists")), listW);
 
-    const gHint = (v) => GROUP_HINT[v] ? t(GROUP_HINT[v]) : MODES[v] || !v ? t(GROUP_HINT[""]) : modeOf(v)[1];
+    // fork: groupOrderSays (freeprice.js), as on the row's menu
+    const gHint = (v) => GROUP_HINT[v] ? [t(GROUP_HINT[v]), groupOrderSays(v)].join(" ").trim() : MODES[v] || !v ? t(GROUP_HINT[""]) : modeOf(v)[1];
     const rHint = el("div", "hint", gHint(d.routing));
     const rw = el("div");
     rw.append(routingSegs(withJS(GROUP_ROUTE_OPTS, d.routing).map(([id, n, js]) => [id, t(n), , js]), d.routing, (v) => { d.routing = v; rHint.textContent = gHint(v); draw(); drawRules(); drawSink(); }), rHint);
