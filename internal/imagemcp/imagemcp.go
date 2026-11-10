@@ -231,7 +231,7 @@ func callLongest() time.Duration {
 // Run serves MCP on stdin/stdout until stdin closes.
 func Run(args []string) error {
 	if len(args) > 0 && args[0] != "image" {
-		return fmt.Errorf("unknown MCP server %q (there are: image, browser)", args[0])
+		return fmt.Errorf("unknown MCP server %q (there are: image, browser, search, vision)", args[0])
 	}
 	if len(args) > 1 {
 		w, err := options(args[1:])
@@ -441,6 +441,7 @@ type args struct {
 	N          int      `json:"n"`
 	References []string `json:"reference_images"`
 	Quality    string   `json:"quality"`
+	Complexity string   `json:"complexity"`
 	Background string   `json:"background"`
 }
 
@@ -468,7 +469,7 @@ func (s *server) generate(raw json.RawMessage, used *string, c caller) (string, 
 		}
 		req["model"] = m
 	}
-	for k, v := range map[string]string{"size": a.Size, "quality": a.Quality, "background": a.Background} {
+	for k, v := range map[string]string{"size": a.Size, "quality": a.Quality, "complexity": a.Complexity, "background": a.Background} {
 		if v != "" {
 			req[k] = v
 		}
@@ -798,6 +799,9 @@ func extOf(mt string) string {
 		return ".webp"
 	case "image/gif":
 		return ".gif"
+	case "image/svg+xml":
+		// Recraft's vector models at OpenRouter
+		return ".svg"
 	}
 	return ".png"
 }

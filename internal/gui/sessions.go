@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
@@ -25,6 +26,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -79,6 +81,31 @@ func gatewayListed(g usage.GatewaySession, title func(agent, id string) string) 
 	return e
 }
 
+// listedExternal are the gateway's sessions a list of n rows can show:
+// those native doesn't hold (nativeKeys), as listedGateway keeps them and
+// gatewayListed makes them, newest first as EachGatewaySession gives them,
+// and no more than n, as a merge with the natives shows the newest n at
+// most. Each of ~10k gateway sessions past the natives' cap was copied
+// three times on every poll while a session grew, ~20 MB of a poll's
+// ~150 MB, and each was looked for in the store of what was asked
+// (GatewayTitler).
+func listedExternal(nativeKeys map[string]bool, n int) []sessions.ExternalSession {
+	hidden := sessions.GatewayHidden()
+	title := sessions.GatewayTitler()
+	var ext []sessions.ExternalSession
+	usage.EachGatewaySession(nativeKeys, func(g usage.GatewaySession) bool {
+		if len(ext) == n {
+			return false
+		}
+		// one a list leaves out (externalSessions) takes no room
+		if g.Agent != "" && g.ID != "" && !hidden(g.Agent, g.ID, g.Last) {
+			ext = append(ext, gatewayListed(g, title))
+		}
+		return true
+	})
+	return ext
+}
+
 func gatewaySession(g usage.GatewaySession) sessions.Session {
 	return sessions.MergeExternal(nil, []sessions.ExternalSession{gatewayListed(g, sessions.GatewayTitle)})[0]
 }
@@ -100,15 +127,38 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			n = sessions.All
 		}
 		agents := map[string]*agent.Agent{}
+		// what a row is named and drawn as, beside the list, for listTag
+		var drawn strings.Builder
 		for _, a := range agent.Clients() {
 			agents[a.ID] = a
+			drawn.WriteString(a.ID + "\x00" + a.SharedName() + "\x00" + a.Icon + "\x00")
 		}
-		out := sessionsJSON{Sessions: []sessionJSON{}, Terminal: runtime.GOOS == "darwin" && !isWeb(w),
+		out := sessionsJSON{Sessions: []sessionJSON{}, Terminal: terminalHere() && !isWeb(w),
 			Dirs: []string{}}
 		for _, d := range sessions.Dirs() {
 			out.Dirs = append(out.Dirs, tilde(d))
+			drawn.WriteString("\x01" + out.Dirs[len(out.Dirs)-1])
 		}
-		list := sessions.List(sessions.All)
+		// the page has this very answer when the listing, the usage log,
+		// the aliases and the agents are what they were when it was sent:
+		// told so without the rows being made, encoded and hashed again,
+		// ~60% of an unchanged poll's ~22 MB over ~17k real sessions
+		logV, logKnown := usage.LogVersion()
+		aliases := provider.UsageAliases()
+		now := listTag{log: logV, drawn: drawn.String(), aliases: aliases}
+		made := -1
+		listTags.Lock()
+		if t, ok := listTags.m[n]; ok && logKnown && t.same(now) && r.Header.Get("X-Magpie-Had") == t.tag {
+			made = t.made
+		}
+		listTags.Unlock()
+		list, made, same := sessions.ListUnless(sessions.All, made)
+		if same {
+			rw.Header().Set("X-Magpie-Tag", r.Header.Get("X-Magpie-Had"))
+			rw.Header().Set("X-Magpie-Same", "1")
+			rw.WriteHeader(http.StatusOK)
+			return
+		}
 		nativeKeys := make(map[string]bool, len(list))
 		for _, s := range list {
 			// its copies' and subagents' ids among them
@@ -116,51 +166,60 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 				nativeKeys[k] = true
 			}
 		}
-		gateway := listedGateway(usage.GatewaySessions(time.Time{}, nativeKeys))
-		ext := make([]sessions.ExternalSession, 0, len(gateway))
-		title := sessions.GatewayTitler()
-		for _, g := range gateway {
-			ext = append(ext, gatewayListed(g, title))
-		}
-		list = sessions.MergeExternal(list, ext)
-		if len(list) > n {
-			list = list[:n]
-		}
-		var modelEffort map[string][]sessions.ModelEffort
-		for _, s := range list {
-			if s.Agent == "codex" {
-				modelEffort = usage.CodexModelEffort(usage.All)
-				break
+		ext := listedExternal(nativeKeys, n)
+		// made to size: up to sessions.All rows, grown by append each poll
+		// was copied through every size on the way, ~140 MB of eight (#2278).
+		// The rows are made from the list and the gateway's sessions as
+		// they merge, not from a merged copy of the list.
+		out.Sessions = make([]sessionJSON, 0, min(n, len(list)+len(ext)))
+		codex := false
+		sessions.EachMerged(list, ext, func(s *sessions.Session) bool {
+			if len(out.Sessions) == n {
+				return false
 			}
-		}
-		for i := range list {
-			addCodexModelEffort(&list[i], modelEffort)
+			codex = codex || s.Agent == "codex"
+			out.Sessions = append(out.Sessions, sessionJSON{Session: *s})
+			return true
+		})
+		var modelEffort map[string][]sessions.ModelEffort
+		if codex {
+			modelEffort = usage.CodexModelEffort(usage.All)
 		}
 		since := time.Now()
-		for _, s := range list {
+		for i := range out.Sessions {
+			s := &out.Sessions[i].Session
+			addCodexModelEffort(s, modelEffort)
 			if !s.Start.IsZero() && s.Start.Before(since) {
 				since = s.Start
 			}
 		}
 		vias := usage.Vias(since.Add(-time.Minute))
-		// made to size: up to sessions.All rows, grown by append each poll
-		// was copied through every size on the way, ~140 MB of eight (#2278)
-		out.Sessions = make([]sessionJSON, 0, len(list))
-		for _, s := range list {
+		for i := range out.Sessions {
+			j := &out.Sessions[i]
+			s := j.Session
 			// drawn as the agent it ran in: Claude Desktop's Code tab's
 			// sessions are in Claude Code's folder (Session.App)
-			j := sessionJSON{Session: s, Name: s.Agent, Icon: "generic", Via: viaOf(vias, s)}
+			j.Name, j.Icon, j.Via = s.Agent, "generic", viaOf(vias, s)
 			if a := agents[cmp.Or(s.App, s.Agent)]; a != nil {
 				j.Name, j.Icon = a.SharedName(), a.Icon
 			}
 			j.Name = wslName(j.Name, s)
 			j.Path = tilde(j.Path)
-			out.Sessions = append(out.Sessions, j)
 		}
-		writeJSONRows(rw, r, "sessions", out.Sessions, struct {
+		listsRowed.Add(1)
+		tag := writeJSONRows(rw, r, "sessions", out.Sessions, struct {
 			Terminal bool     `json:"terminal"`
 			Dirs     []string `json:"dirs"`
 		}{out.Terminal, out.Dirs})
+		if tag != "" && logKnown {
+			now.made, now.tag = made, tag
+			listTags.Lock()
+			if listTags.m == nil || len(listTags.m) >= statsMemoMost {
+				listTags.m = map[int]listTag{}
+			}
+			listTags.m[n] = now
+			listTags.Unlock()
+		}
 	}))
 	// stats is every session's usage by day over the last ?days=N days
 	// (every day when 0 or none), cut by agent, folder and model for the
@@ -350,12 +409,15 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		if runtime.GOOS != "darwin" || isWeb(w) {
-			fail(rw, errors.New("opening Terminal is only for the Mac app"))
+		if !terminalHere() || isWeb(w) {
+			fail(rw, errors.New("opening a terminal is only for the desktop app"))
 			return
 		}
 		s, ok := sessions.Find(in.Agent, in.ID)
 		run := s.Resume
+		if ok && in.In == "" {
+			run = sessions.ResumeNow(s)
+		}
 		if in.In != "" {
 			run = ""
 			for _, c := range s.Carry {
@@ -383,8 +445,8 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		if runtime.GOOS != "darwin" || isWeb(w) {
-			fail(rw, errors.New("opening Terminal is only for the Mac app"))
+		if !terminalHere() || isWeb(w) {
+			fail(rw, errors.New("opening a terminal is only for the desktop app"))
 			return
 		}
 		run, name := "", ""
@@ -417,8 +479,8 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		if in.Open && (runtime.GOOS != "darwin" || isWeb(w)) {
-			fail(rw, errors.New("opening Terminal is only for the Mac app"))
+		if in.Open && (!terminalHere() || isWeb(w)) {
+			fail(rw, errors.New("opening a terminal is only for the desktop app"))
 			return
 		}
 		s, ok := sessions.Find(in.Agent, in.ID)
@@ -540,6 +602,31 @@ type statsTag struct {
 	gen    uint64
 	agents map[string]string
 	tag    string
+}
+
+// listTags is, by ?limit, what the last list sent was made from and its
+// tag: an ask with that tag while all of it stands gets X-Magpie-Same
+// without the list being made. What a row shows beyond these (a Codex
+// thread's effort, a gateway session's title) is bounded by the listing,
+// made again at least once in sessions' listKeptFor.
+var listTags struct {
+	sync.Mutex
+	m map[int]listTag
+}
+
+// listsRowed counts the lists made into rows and sent, for tests.
+var listsRowed atomic.Int64
+
+type listTag struct {
+	made    int    // sessions.ListUnless's listing
+	log     uint64 // usage.LogVersion
+	drawn   string // the agents' names and icons, and the folders
+	aliases map[string]string
+	tag     string
+}
+
+func (t listTag) same(u listTag) bool {
+	return t.log == u.log && t.drawn == u.drawn && maps.Equal(t.aliases, u.aliases)
 }
 
 // sameStats is whether a and b would be sent the same: a read again
@@ -932,33 +1019,65 @@ func afterNextGC(fn func()) {
 
 // agentCommand is the shell line that starts a: its Launch where it has
 // one (agy, Claude Science, Cursor Private Inference), else its own
-// program, quoted; "" for one in a WSL distro or with no program here (a
-// desktop app). Nothing of the page's goes into it.
+// program, quoted; on Windows a PowerShell line, one in a WSL distro
+// through wsl.exe; "" for one in a WSL distro elsewhere or with no
+// program here (a desktop app). Nothing of the page's goes into it.
 func agentCommand(a *agent.Agent) string {
-	if a.WSL != "" {
-		return ""
-	}
+	launch := ""
 	if a.Launch != nil {
-		if run := a.Launch(); run != "" {
-			return run
+		launch = a.Launch()
+	}
+	return agentLine(a, launch, runtime.GOOS)
+}
+
+// agentLine is agentCommand with a's Launch already asked, for goos.
+func agentLine(a *agent.Agent, launch, goos string) string {
+	if a.WSL != "" {
+		if goos != "windows" || !plainBin.MatchString(a.Bin) {
+			return ""
 		}
+		if launch == "" {
+			launch = a.Bin
+		}
+		ps := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+		return "wsl.exe -d " + ps(a.WSL) + " -e sh -lc " + ps(`exec "${SHELL:-sh}" -lic `+shellQuote(launch))
+	}
+	if launch != "" {
+		return launch
 	}
 	if bin := a.BinPath(); bin != "" {
+		if goos == "windows" {
+			return "& '" + strings.ReplaceAll(bin, "'", "''") + "'"
+		}
 		return shellQuote(bin)
 	}
 	return ""
 }
+
+// plainBin is a program name a distro's shell takes as it is.
+var plainBin = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 
 // agentTerminal is openTerminal, a var so a test opens no terminal.
 var agentTerminal = openTerminal
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-// openTerminal runs a command in the chosen Mac terminal through a .command
-// file, as it would open from Finder: no Automation consent; in Rex,
-// through its CLI, in a tab labelled label (terminal_rex.go).
-// The shell is left open when the agent quits.
+// openTerminal runs a command in the chosen terminal, the shell left open
+// when the agent quits: on Windows and Linux as terminal_open.go says.
 func openTerminal(command, label, choice string) error {
+	switch runtime.GOOS {
+	case "windows":
+		return openWinTerminal(command, choice)
+	case "linux":
+		return openLinuxTerminal(command, choice)
+	}
+	return openMacTerminal(command, label, choice)
+}
+
+// openMacTerminal runs a command in the chosen Mac terminal through a
+// .command file, as it would open from Finder: no Automation consent; in
+// Rex, through its CLI, in a tab labelled label (terminal_rex.go).
+func openMacTerminal(command, label, choice string) error {
 	var found terminalDiscovery
 	if choice != terminalBundleID {
 		var err error

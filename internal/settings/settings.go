@@ -39,6 +39,11 @@ import (
 // auto-review on the session's own model.
 const CodexAutoReviewSession = "session"
 
+// CodexSubagentLead is CodexSubagentModel's value that puts every Codex
+// subagent on the model its lead's own turns go on, whatever the lead
+// names for it in spawn_agent.
+const CodexSubagentLead = "lead"
+
 // Settings is what the user chose. "" and "system" both mean "follow the OS".
 type Settings struct {
 	Theme string `json:"theme,omitempty"` // system | light | dark
@@ -62,9 +67,11 @@ type Settings struct {
 	// the user records one. This computer's own (KeepOwn): a Mac's Cmd is
 	// another keyboard's Win key, and what is free differs per computer.
 	PanelShortcut string `json:"panelShortcut,omitempty"`
-	// SessionTerminal is the Mac app that opens a resumed session, by bundle
-	// id. "" and "system" follow the .command file association. This
-	// computer's own (KeepOwn): another Mac may not have that app.
+	// SessionTerminal is the terminal that opens a resumed session or an
+	// agent: a Mac app by bundle id, on Windows wt, pwsh or powershell, on
+	// Linux the terminal's program. "" and "system" are the system's (a
+	// Mac's .command file association). This computer's own (KeepOwn):
+	// another computer may not have that terminal.
 	SessionTerminal string `json:"sessionTerminal,omitempty"`
 	// Currency is what a cost — the Usage page's, the tray panel's, the
 	// TUI's and the CLI's — is shown converted to: usd (its native
@@ -208,6 +215,20 @@ type Settings struct {
 	// from wherever (gateway.publicClient). In settings.json only; it names
 	// this computer's own network, so it isn't synced (KeepOwn).
 	FetchPrivate []string `json:"fetchPrivate,omitempty"`
+	// RouterNote is what this computer's MCP router says of itself to the
+	// agents that connect to it (packinggoodsllc_07668 on Discord: two
+	// magpies, one in China and one in Los Angeles, serve the same tools,
+	// and an agent fetching Google should pick the one in Los Angeles):
+	// in its initialize instructions, its serverInfo title, and before each
+	// tool's description (gateway.hubWhere). "" is this computer's name, said
+	// only to an agent on another computer. This computer's own (KeepOwn).
+	RouterNote string `json:"routerNote,omitempty"`
+	// RouterAllTools gives every agent the router's tools whole. Off, an
+	// agent that doesn't search its MCP tools itself and is given more
+	// than a few is given two in their place, one that finds a tool and
+	// one that runs it (gateway.hubOnDemand; ArvinCharl on X: the tools
+	// filled the context). This computer's own (KeepOwn).
+	RouterAllTools bool `json:"routerAllTools,omitempty"`
 	// Port is the gateway's port on this computer, 0 for DefaultPort.
 	// MAGPIE_ADDR, where it is set, comes first (GatewayAddr).
 	Port int `json:"port,omitempty"`
@@ -306,6 +327,12 @@ type Settings struct {
 	// fallback not on its credits, instead of in its place. Not one of
 	// CodexNoCredits: an account set not to spend them is held.
 	CodexCreditsLast []string `json:"codexCreditsLast,omitempty"`
+	// CodexCreditsFirst are the ChatGPT accounts (lower-case) that spend
+	// their credits before routing moves to another account: a window used
+	// up doesn't send requests or Codex's sign-in elsewhere while the
+	// account goes on on its credits (jojonas_xyz on X). Not one of
+	// CodexNoCredits nor CodexCreditsLast.
+	CodexCreditsFirst []string `json:"codexCreditsFirst,omitempty"`
 	// WorkBuddyCheckin presses WorkBuddy's daily check-in (签到) for each
 	// signed-in WorkBuddy (China) account once a Beijing day, claiming the
 	// credits it gives while its event runs.
@@ -338,16 +365,23 @@ type Settings struct {
 	// "<provider>|<display name>", which provider.adoptLegacyPluginCheckins
 	// carries over).
 	CheckinOff []string `json:"checkinOff,omitempty"`
-	// MemberModel has a reply's model name the routing group's member
-	// that answered, as magpie's provider/model id (workbuddy/glm-5.3-flash),
-	// for agents that count usage by the reply's model (#822). Off, as by
-	// default, a reply sent under another name than the one asked for (a
-	// group's member, a model's own id, a provider/model id) names the
-	// model the agent asked for (issennknight on Discord: an agent warned
-	// that deepseek-v4.1-flash came back as deepseek-v4.1-flash-1017);
-	// one the vendor named as asked keeps the vendor's name, a dated one
-	// too. Claude Code, Claude Desktop and Codex never get the member's
-	// id: they read the name themselves (gateway's replyNamingOf).
+	// ReplyModel is what a reply's model name says when the request went
+	// out under another name than the one asked for (a group's member, a
+	// model's own id, a provider/model id): "" the model the agent asked
+	// for (issennknight on Discord: an agent warned that
+	// deepseek-v4.1-flash came back as deepseek-v4.1-flash-1017), "member"
+	// magpie's provider/model id of the member that answered
+	// (workbuddy/glm-5.3-flash), for agents that count usage by it (#822),
+	// "vendor" the vendor's own text, as every reply said before the
+	// asked-for name (ZoeCats on Discord). One the vendor named as asked
+	// keeps the vendor's name, a dated one too. Each is for every agent,
+	// Claude Code, Claude Desktop and Codex included (gateway's
+	// replyNamingOf). A request's X-Magpie-Response-Model says it for
+	// that request alone. "asked" is read as "".
+	ReplyModel string `json:"replyModel,omitempty"`
+	// MemberModel is ReplyModel "member" as a magpie before ReplyModel
+	// kept it: read as that when ReplyModel isn't set, and written beside
+	// it for such a magpie (normal).
 	MemberModel bool `json:"memberModel,omitempty"`
 	// NoLoopGuard lets a streamed reply run on when its reasoning or text
 	// is stuck in a loop of the same few lines (#1359). Off, as by
@@ -361,18 +395,15 @@ type Settings struct {
 	// default, the run is the shape every Claude Code run has.
 	ClaudeLeanPrompt bool `json:"claudeLeanPrompt,omitempty"`
 	// ClaudePrintMode runs a Claude subscription's Claude Code as `claude
-	// -p` always. Off, as by default, a run is Claude Code's interactive
-	// mode, as a person runs it, where it can be (macOS and Linux, no
-	// images, safeguards or client cache marks): the plan counts a -p
-	// request at about twice an interactive one.
+	// -p` always. Off, as by default, a model request runs in Claude
+	// Code's interactive mode, as a person runs it, and never as -p: the
+	// plan counts a -p request at about twice an interactive one, and a -p
+	// run starts without the interactive mode's cache. A request it can't
+	// take (safeguards, a JSON schema, …), or one it doesn't start for,
+	// fails saying why. Reading the plan's allowance (/usage, no model
+	// request) is -p either way. (An "Interactive only" claudeTUIOnly,
+	// v0.1.2448, is what Off is now, and is no longer read.)
 	ClaudePrintMode bool `json:"claudePrintMode,omitempty"`
-	// ClaudeTUIOnly has a Claude subscription's model requests never run
-	// as `claude -p`: one the interactive mode can't take (safeguards, a
-	// JSON schema, …), or whose interactive mode doesn't come up, fails,
-	// saying why, where it would otherwise be -p. Reading the plan's
-	// allowance (/usage, no model request) is still -p. ClaudePrintMode,
-	// when set too, wins.
-	ClaudeTUIOnly bool `json:"claudeTUIOnly,omitempty"`
 	// ClaudeRunsMost is how many Claude Code processes a Claude
 	// subscription may have running at once: conversations' runs, those
 	// waiting for a next turn or on tool results, and one-off tests and
@@ -389,6 +420,12 @@ type Settings struct {
 	// the vendor's own reply, stop_reason "refusal", which Claude Code
 	// answers by switching to its fallback model itself (DD on Discord).
 	RefusalRetries *int `json:"refusalRetries,omitempty"`
+	// RetryAfterCap is the longest Retry-After, in seconds, an agent is
+	// told (#5371, tlerbao): a plan's quota running out rests its account
+	// until the plan's reset, hours away, and an agent with a fallback
+	// chain of its own waited that long before it moved on. The account
+	// rests as long either way. Unset, the wait goes out as it is.
+	RetryAfterCap *int `json:"retryAfterCap,omitempty"`
 	// NoAccountDiscovery leaves every agent's sign-in unread (#1535,
 	// MaxHaiCom): no credential file, Keychain item or agent CLI is asked
 	// who is signed in, and no subscription is offered; API-key providers
@@ -473,12 +510,24 @@ type Settings struct {
 	// haiku needed more than 8): from 1 to ClassifyTimeoutMost, 0 for
 	// ClassifyTimeoutDefault. ClassifyWait reads it.
 	ClassifyTimeout int `json:"classifyTimeout,omitempty"`
+	// BusyLoad puts a model whose plugin reports it busier than this
+	// percent behind the others it could go to (plugin.ModelLoad,
+	// axelburks on Discord): from 1 to BusyLoadMost-1, past 100 for a
+	// vendor that queues, 0 for off. A model with no
+	// load reported, or one older than plugin.LoadFresh, keeps its place.
+	BusyLoad int `json:"busyLoad,omitempty"`
 	// Searcher is the provider that searches the web for a model that
 	// can't: "<provider>" with the small model magpie picks of it,
 	// "<provider>/<model>", or empty for the one magpie picks
 	// (gateway.searcher). "off" allows only configured search APIs.
 	// One that is gone, off or can't search gives way to magpie's pick.
 	Searcher string `json:"searcher,omitempty"`
+	// SearcherThen are the searchers asked in turn, in this order, when
+	// the one Searcher names fails or finds nothing, each written as
+	// Searcher is (axelburks on Discord: a second provider when the first
+	// fails). Read only while Searcher names one; magpie's own pick hands
+	// on to the next it would pick by itself.
+	SearcherThen []string `json:"searcherThen,omitempty"`
 	// SearcherEffort is how hard the searcher's model thinks as it searches
 	// (MOMO on Discord): a level of catalog.EffortRank, fitted to the
 	// model's own levels when it is asked, or empty to send none, the
@@ -495,6 +544,12 @@ type Settings struct {
 	// as for a model that can't, and the provider is sent no search tool.
 	// Only while magpie can search for it (gateway.magpieSearches).
 	SearchAll bool `json:"searchAll,omitempty"`
+	// SearchCount is how many pages a client's search is answered with
+	// when it names no count, as Claude Code's WebSearch and Codex's
+	// web_search never do (#5545, mdwsk88): from 1 to SearchCountMost, 0
+	// for SearchCountDefault. A web_search call that names a count (the
+	// web-search MCP server's) is answered with that.
+	SearchCount int `json:"searchCount,omitempty"`
 	// TrayUsages are the subscriptions and plans whose windows are shown
 	// beside the tray icon, in the order shown, each by its provider and
 	// account ("claude|a@b.c"); none when empty.
@@ -514,6 +569,10 @@ type Settings struct {
 	// cards are there, the cards alone (KevinXC on Discord); a click on one
 	// still opens the panel, and with no cards the bird is shown.
 	TrayNoBird bool `json:"trayNoBird,omitempty"`
+	// TrayNoNumber keeps magpie's icon in Windows' tray while cards are
+	// picked; off by default, the icon is the first card's figure
+	// (Benjaminliang_1 on X), as Windows' tray shows no text beside it.
+	TrayNoNumber bool `json:"trayNoNumber,omitempty"`
 	// TrayPace puts each window's Pace number beside its figure in the
 	// menu bar ("42% +12%"), as the Usage page's cards have it (fflake33
 	// on Discord); off by default, as it widens every card.
@@ -538,6 +597,12 @@ type Settings struct {
 	// opening was too slow to have by default (the owner, 10-21: "太卡");
 	// one who turned it on keeps it on (LightweightOn).
 	Lightweight *bool `json:"lightweight,omitempty"`
+	// QuitNoAsk lets a Quit the user chooses quit at once while agents go
+	// through magpie, without the question that names them (gui's
+	// quitask.go). Off by default, it asks; the question's "Don't ask
+	// again" sets it, and Settings › General › Ask before quitting turns
+	// it back off (zhujiu on Discord).
+	QuitNoAsk bool `json:"quitNoAsk,omitempty"`
 	// KeepAwake keeps this computer from going to sleep by itself while
 	// agents work through the gateway and for a while after (xiao_wang24004
 	// on X; internal/awake). This computer's own (KeepOwn).
@@ -654,7 +719,8 @@ type Settings struct {
 	// whatever model its lead asked for in spawn_agent: a model a ChatGPT
 	// account in magpie serves (provider/model), since a subagent's task
 	// is sealed for one (willz on Discord). "" leaves each on the model its
-	// lead asked for.
+	// lead asked for; CodexSubagentLead puts each on the model its lead's
+	// own turns go on, even when the lead names another.
 	CodexSubagentModel string `json:"codexSubagentModel,omitempty"`
 	// DesktopSubagentModel is the model the gateway puts Claude Desktop's
 	// subagent tool turns on. "" leaves them on the model their lead asks
@@ -686,6 +752,11 @@ type Settings struct {
 	// off, in tokens: 0 is WorkingWindow (#876: 272K was the only one).
 	// A provider's or a model's own (ModelCompacts) comes before it.
 	CompactAt int `json:"compactAt,omitempty"`
+	// AgentCompacts is Long conversations of an agent's own, by its kind
+	// (CompactAgents), over CompactAt and FullContext for that agent alone
+	// (molianyin4227 on Discord: models differ, so one size for every
+	// agent fits none). An agent with none follows those two (ForAgent).
+	AgentCompacts map[string]AgentCompact `json:"agentCompacts,omitempty"`
 	// CodexAsyncCompact has Codex (0.163 on) compact a long conversation
 	// in the background, while its turn goes on, once it is past
 	// CodexAsyncCompactPercent of the model's window (#2490, lantern2077
@@ -724,6 +795,11 @@ type Settings struct {
 	AgentOrder   []string `json:"agentOrder,omitempty"`
 	AgentsHidden []string `json:"agentsHidden,omitempty"`
 	AgentsShown  []string `json:"agentsShown,omitempty"`
+	// AgentsHere are the agents, by id, whose picks (model, effort…) stay
+	// on this computer (chenxiang0010 on Discord), as an MCP server can:
+	// sync, a Restore and a backup file neither bring another computer's
+	// picks in for one nor take this computer's up. This computer's own.
+	AgentsHere []string `json:"agentsHere,omitempty"`
 	// UsageOrder is how the Usage page's cards are listed, by provider id,
 	// as they were dragged there; one it doesn't name follows in magpie's
 	// own order. Only the page's: the order providers are tried in is the
@@ -939,7 +1015,8 @@ type ModelPrice struct {
 	CacheWrite *float64 `json:"cache_write,omitempty"`
 	// CacheWrite1h is a 1-hour cache write's price, absent where none is
 	// given: such a write is then counted at 2× input for a Claude model,
-	// else at the 5-minute price (catalog.OneHourFor).
+	// else at the 5-minute price (catalog.OneHourFor), and on Copilot,
+	// which bills an hour's write as a 5-minute one, at the 5-minute price.
 	CacheWrite1h *float64 `json:"cache_write_1h,omitempty"`
 	// Tiers are the prices of a request whose input is over a size, each
 	// whole: "magpie model price … --tier 272k …" (PAMI on Discord).
@@ -1027,6 +1104,16 @@ const AnyProvider = "*/"
 // at once.
 const UpdateStable = "stable"
 
+// What a reply's model name says (ReplyModel): the model asked for is "".
+const (
+	ReplyAsked  = "asked" // read as ""
+	ReplyMember = "member"
+	ReplyVendor = "vendor"
+)
+
+// ReplyModels are ReplyModel's values besides its default "".
+var ReplyModels = []string{ReplyMember, ReplyVendor}
+
 // anArticle is the article a word takes where a message names it, so that an
 // input price is not "a input price".
 func anArticle(word string) string {
@@ -1091,14 +1178,21 @@ func (s Settings) ImageWait() time.Duration {
 
 // CodexResetLeadDefault is CodexResetLead's minutes when it is unset, and
 // CodexResetLeadLeast and CodexResetLeadMost the range it can be set in;
-// CodexResetLeads the choices the app and the CLI's words offer.
+// CodexResetLeads the choices the app's menu offers, besides its Custom…
+// (any minutes in range, as the CLI takes). Three minutes is the least
+// (shangyuan0818 on Discord asked for less than 15): the loop wakes at the
+// lead's start, a try is bounded at two minutes (the pass's), and a
+// failed one is tried again a minute after it began, or at once when that
+// is past, so a try hung to its bound still leaves a retry with ~56s before
+// the reset runs out; at two a hung try leaves none. app.js's RESET_LEADS
+// and resetLeadMinutes, and Custom…'s words, say it too.
 const (
 	CodexResetLeadDefault = 30
-	CodexResetLeadLeast   = 15
+	CodexResetLeadLeast   = 3
 	CodexResetLeadMost    = 24 * 60
 )
 
-var CodexResetLeads = []int{15, 30, 60, 120, 180, 360, 720, 1440}
+var CodexResetLeads = []int{3, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440}
 
 // ResetLead is how long before a Codex reset about to run out unused it
 // is spent by itself: CodexResetLead's minutes, CodexResetLeadDefault's
@@ -1110,6 +1204,28 @@ func (s Settings) ResetLead() time.Duration {
 	}
 	return time.Duration(m) * time.Minute
 }
+
+// SearchCountDefault is the pages a search is answered with when
+// SearchCount is 0, and SearchCountMost the most it can be set to: Brave
+// and Tavily return no more than 20.
+const (
+	SearchCountDefault = 6
+	SearchCountMost    = 20
+)
+
+// SearchPages is how many pages a search that names no count is answered
+// with: SearchCount, SearchCountDefault when it is 0 (or below), and no
+// more than SearchCountMost when settings.json was written by hand past it.
+func (s Settings) SearchPages() int {
+	if s.SearchCount < 1 {
+		return SearchCountDefault
+	}
+	return min(s.SearchCount, SearchCountMost)
+}
+
+// BusyLoadMost is past the highest BusyLoad: plugin.LoadMost, the most a
+// plugin's reported load is kept at, so a threshold at it moves nothing.
+const BusyLoadMost = 10000
 
 // ClassifyTimeoutDefault is the seconds a classifier is given when
 // ClassifyTimeout is 0, and ClassifyTimeoutMost the most it can be set to:
@@ -1259,6 +1375,29 @@ func (s Settings) Working(n int) int {
 	return n
 }
 
+// AgentCompact is one agent's Long conversations: Full its FullContext,
+// At its CompactAt (0 is WorkingWindow).
+type AgentCompact struct {
+	At   int  `json:"at,omitempty"`
+	Full bool `json:"full,omitempty"`
+}
+
+// CompactAgents are the agents whose configs magpie writes a compaction
+// window into, by the key each reads: Codex's model catalog
+// (auto_compact_token_limit), Claude Code's settings.json
+// (CLAUDE_CODE_AUTO_COMPACT_WINDOW, autoCompactWindow) and Grok Build's
+// model tables (context_window). Only these take an AgentCompact.
+var CompactAgents = []string{"codex", "claude", "grok"}
+
+// ForAgent is s as the agent of that kind reads Long conversations: its
+// own AgentCompact in CompactAt and FullContext, when it has one.
+func (s Settings) ForAgent(kind string) Settings {
+	if c, ok := s.AgentCompacts[kind]; ok {
+		s.CompactAt, s.FullContext = c.At, c.Full
+	}
+	return s
+}
+
 // Compact is where a conversation on a longer window is compacted when
 // neither its model nor its provider says (ModelCompacts): CompactAt,
 // else WorkingWindow, and 0 under FullContext, the model's whole window.
@@ -1275,9 +1414,9 @@ func (s Settings) Compact() int {
 // KeepOwn puts back cur's settings that are this computer's own, which a
 // sync or a restored backup never brings from another: the window's size,
 // place and whether it was maximised, the proxy, the gateway's port, whether it
-// is shared on the local network and the addresses let in to it, the
-// Dock, gateway mode, whether WSL is looked in, whether agents' sign-ins
-// are read, when allowances are read, the terminal app a session resumes
+// is shared on the local network and the addresses let in to it, what
+// its MCP router says of itself, the Dock, gateway mode, whether WSL is
+// looked in, whether agents' sign-ins are read, when allowances are read, the terminal app a session resumes
 // in, the quick panel's shortcut, whether the local masking model is on
 // (it is downloaded on this computer alone), how many Claude Code processes may run (its memory),
 // and what the menu bar or tray shows beside magpie's icon (yoooo on
@@ -1293,12 +1432,13 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.WindowMaximised, s.KeepAwake, s.KeepAwakeDisplay = cur.WindowMaximised, cur.KeepAwake, cur.KeepAwakeDisplay
 	s.WindowAt = cur.WindowAt
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird, s.TrayPace, s.TrayNoCost = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird, cur.TrayPace, cur.TrayNoCost
-	s.TrayWindows = cur.TrayWindows
+	s.TrayWindows, s.TrayNoNumber = cur.TrayWindows, cur.TrayNoNumber
 	s.GatewayMode = cur.GatewayMode
 	s.NoWSLAgents = cur.NoWSLAgents
 	s.QuotaReads = cur.QuotaReads
 	s.NoAccountDiscovery = cur.NoAccountDiscovery
 	s.LAN, s.AllowIPs = cur.LAN, cur.AllowIPs
+	s.RouterNote, s.RouterAllTools = cur.RouterNote, cur.RouterAllTools
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
 	s.PanelShortcut = cur.PanelShortcut
@@ -1306,6 +1446,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.RedactModelOff, s.RedactModelAuto = cur.RedactModelOff, cur.RedactModelAuto
 	s.ClaudeRunsMost = cur.ClaudeRunsMost
 	s.RequestArchiveLocal, s.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
+	s.AgentsHere = cur.AgentsHere
 }
 
 // Wires is ModelWires with the provider's own id of each model the user
@@ -1574,6 +1715,13 @@ func loadChecked() (Settings, error) {
 	return parse(b)
 }
 
+// Defaults are the settings of a new install, with no settings.json:
+// what `magpie settings list` shows as each one's default, and what
+// `magpie settings reset` puts back.
+func Defaults() Settings {
+	return Settings{DockSettled: true}.normal()
+}
+
 // settleDock reads a Dock choice written before With window was the
 // default (DockSettled unset) as that magpie did: no choice is Hide.
 func (s Settings) settleDock() Settings {
@@ -1759,6 +1907,57 @@ func SetGatewayConversations(on bool) error {
 	defer lockFile()()
 	s := load()
 	s.GatewayConversations = on
+	return save(s, true)
+}
+
+// SetQuitNoAsk sets QuitNoAsk alone, from what the file holds now (the
+// Quit question's "Don't ask again"). A settings file that can't be read
+// is left as it is, with the error.
+func SetQuitNoAsk(on bool) error {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	s.QuitNoAsk = on
+	return save(s, false)
+}
+
+// RouterNoteMost is how many characters RouterNote keeps: a few words,
+// said before every tool's description.
+const RouterNoteMost = 80
+
+// CleanRouterNote is note as RouterNote keeps it: one line, its spaces
+// collapsed, RouterNoteMost characters at most.
+func CleanRouterNote(note string) string {
+	note = strings.Join(strings.Fields(note), " ")
+	if r := []rune(note); len(r) > RouterNoteMost {
+		note = strings.TrimSpace(string(r[:RouterNoteMost]))
+	}
+	return note
+}
+
+// SetRouterNote sets RouterNote alone, from what the file holds now. A
+// settings file that can't be read is left as it is, with the error.
+func SetRouterNote(note string) error {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	s.RouterNote = CleanRouterNote(note)
+	return save(s, true)
+}
+
+// SetRouterAllTools sets RouterAllTools alone, from what the file holds
+// now. A settings file that can't be read is left as it is, with the error.
+func SetRouterAllTools(on bool) error {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	s.RouterAllTools = on
 	return save(s, true)
 }
 
@@ -1960,6 +2159,12 @@ func saveOwn(s Settings, recording, reads bool) error {
 	if s.ClassifyTimeout < 0 || s.ClassifyTimeout > ClassifyTimeoutMost {
 		return fmt.Errorf("a routing group's classifier is given from 1 to %d seconds, or 0 for %d, not %d", ClassifyTimeoutMost, ClassifyTimeoutDefault, s.ClassifyTimeout)
 	}
+	if s.SearchCount < 0 || s.SearchCount > SearchCountMost {
+		return fmt.Errorf("a search is answered with from 1 to %d results, or 0 for %d, not %d", SearchCountMost, SearchCountDefault, s.SearchCount)
+	}
+	if s.BusyLoad < 0 || s.BusyLoad >= BusyLoadMost {
+		return fmt.Errorf("busy models go last over a load from 1 to %d%%, or 0 for off, not %d", BusyLoadMost-1, s.BusyLoad)
+	}
 	if s.UsageAlert < 0 || s.UsageAlert > 100 {
 		return fmt.Errorf("a usage alert is at a percentage from 1 to 100, or 0 for off, not %d", s.UsageAlert)
 	}
@@ -1971,6 +2176,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 	}
 	if math.IsNaN(s.BalanceAlert) || math.IsInf(s.BalanceAlert, 0) || s.BalanceAlert < 0 {
 		return fmt.Errorf("a balance alert is at an amount of 0 or more (0 for off), not %v", s.BalanceAlert)
+	}
+	if s.ReplyModel != "" && !slices.Contains(ReplyModels, s.ReplyModel) {
+		return fmt.Errorf("a reply's model names %q (the model asked for), %q or %q, not %q", ReplyAsked, ReplyMember, ReplyVendor, s.ReplyModel)
 	}
 	if s.QuotaReads != "" && s.QuotaReads != "asked" {
 		return fmt.Errorf(`allowances are read "" (whenever magpie needs them) or "asked" (only when asked), not %q`, s.QuotaReads)
@@ -2013,7 +2221,7 @@ func saveOwn(s Settings, recording, reads bool) error {
 		return fmt.Errorf("the model for Codex's auto-review must be a model's id such as openai/gpt-5-mini, not %q", s.CodexAutoReview)
 	}
 	s.CodexSubagentModel = strings.TrimSpace(s.CodexSubagentModel)
-	if s.CodexSubagentModel != "" && !strings.Contains(s.CodexSubagentModel, "/") {
+	if s.CodexSubagentModel != "" && s.CodexSubagentModel != CodexSubagentLead && !strings.Contains(s.CodexSubagentModel, "/") {
 		return fmt.Errorf("the model for Codex's subagents must be a model's id such as codex/gpt-5.5, not %q", s.CodexSubagentModel)
 	}
 	s.RedactRouteTo = strings.TrimSpace(s.RedactRouteTo)
@@ -2029,6 +2237,13 @@ func saveOwn(s Settings, recording, reads bool) error {
 		return fmt.Errorf("%q is not a reasoning effort for Claude Desktop's subagents", e)
 	}
 	s.Searcher = strings.TrimSpace(s.Searcher)
+	var then []string
+	for _, v := range s.SearcherThen {
+		if v = strings.TrimSpace(v); v != "" && v != "off" && v != s.Searcher && !slices.Contains(then, v) {
+			then = append(then, v)
+		}
+	}
+	s.SearcherThen = then
 	for _, e := range []*string{&s.VisionEffort, &s.SearcherEffort} {
 		if *e = strings.ToLower(strings.TrimSpace(*e)); *e != "" && !slices.Contains(catalog.EffortRank, *e) {
 			return fmt.Errorf("a model's reasoning must be one of %s, or empty for the default, not %q", strings.Join(catalog.EffortRank, ", "), *e)
@@ -2042,7 +2257,7 @@ func saveOwn(s Settings, recording, reads bool) error {
 	}
 	s.ImageGen = strings.TrimSpace(s.ImageGen)
 	if s.ImageGen != "" && s.ImageGen != "off" && !strings.Contains(s.ImageGen, "/") {
-		return fmt.Errorf("the image generation model must be a model's id such as openai/gpt-image-1, or off, not %q", s.ImageGen)
+		return fmt.Errorf("the image generation model must be a model's id such as openai/gpt-image-2, or off, not %q", s.ImageGen)
 	}
 	rules, err := redact.CheckRules(s.RedactRules)
 	if err != nil {
@@ -2056,6 +2271,7 @@ func saveOwn(s Settings, recording, reads bool) error {
 		return err
 	}
 	s.AgentOrder, s.AgentsHidden, s.AgentsShown = ids(s.AgentOrder), ids(s.AgentsHidden), ids(s.AgentsShown)
+	s.AgentsHere = ids(s.AgentsHere)
 	s.UsageOrder = ids(s.UsageOrder)
 	s.PanelUsageHidden = ids(s.PanelUsageHidden)
 	s.UsageAgentsHidden = ids(s.UsageAgentsHidden)
@@ -2086,6 +2302,10 @@ func saveOwn(s Settings, recording, reads bool) error {
 		s.CodexCreditsLast[i] = strings.ToLower(u)
 	}
 	s.CodexCreditsLast = ids(s.CodexCreditsLast)
+	for i, u := range s.CodexCreditsFirst {
+		s.CodexCreditsFirst[i] = strings.ToLower(u)
+	}
+	s.CodexCreditsFirst = ids(s.CodexCreditsFirst)
 	s.TrayUsage = ""
 	if len(s.TrayUsages) > 0 {
 		s.TrayUsage = s.TrayUsages[0]
@@ -2207,6 +2427,18 @@ func (s Settings) normal() Settings {
 			*w.at = (*w.ats)[0]
 		}
 	}
+	// a reply's model name: memberModel, as a magpie before replyModel
+	// kept it, when replyModel isn't set, and kept beside it for that
+	// magpie
+	switch s.ReplyModel {
+	case "":
+		if s.MemberModel {
+			s.ReplyModel = ReplyMember
+		}
+	case ReplyAsked:
+		s.ReplyModel = ""
+	}
+	s.MemberModel = s.ReplyModel == ReplyMember
 	// an account's own, by its name in lower case; one with none follows
 	// CodexWarmAt and isn't kept
 	if s.CodexWarmAtOf != nil {

@@ -15,6 +15,13 @@ separate projection paths; changing only a visible row does not change them
 all. [Gateway sessions](gateway-sessions.md) describes session ownership and
 deduplication.
 
+A reliably different served model is valued at that model's applicable user
+price, then its list price; the requested model's price, even zero, cannot
+substitute for an unknown served tariff. `priceModels` preserves the existing
+wire, listed-name and vendor aliases and is shared with the dormant biller's
+published reference. Reported `OwnCost` still wins for active spend, never for
+published reference. This does not activate a persisted bill or quota policy.
+
 [`budget`](../../internal/budget/budget.go) holds caller-key and issuer
 reservations, accumulates eligible local calls and reconstructs windows from
 the ledger. Its limits are estimates, not a guarantee about a vendor's final
@@ -27,9 +34,13 @@ A window the budget can't read is unknown, never 0 used (fork, Billing D4).
 When `usage.jsonl` fails to read with anything but "no log" (a stat or
 open error, a path that isn't a file, a read error before EOF), the usage
 index's `logSnapshot.err` is set (`log_index.go`, `log_read_fork.go`), and
+`LogVersion` does not expose a known version for that failed read (including
+a nil file-info result), so Sessions cannot reuse an unchanged empty result.
+Then
 `budget.read` returns the error and keeps nothing, so the next request
-reads again. `All` gives each limit in that window an `Unavailable` status
-with its counts and what is left 0, `Binding` picks it over any spent one,
+reads again. `All` gives each affected limit an `Unavailable` status with
+zero available budget; known partial charges and pending estimates can
+remain visible but are not a known total. `Binding` picks it over a spent one,
 and `reserve` refuses every limited key, token caps included, with a
 `Refusal` that unwraps to `gwbudget.ErrUsageUnread`. The gateway answers
 that 503 `gateway_key_usage_unread`, X-Should-Retry false, and nothing is
@@ -55,15 +66,14 @@ unwraps to `gwbudget.ErrUsageUnrecorded`, which the gateway answers 503
 `keyLimited` reserves under an id of its own (`gwbudget.HoldLimiter`,
 `reserveHeld` in `key_hold_fork.go`) and `appendUsage` writes it on the
 call's records as `hold`. A call `usage.jsonl` refuses (`AppendErr`) is
-kept whole as a `rec` line, and then its request's `done` isn't written.
+kept whole as a `rec` line; if both writers fail, its `done` isn't written.
 `budget.read` counts, besides `usage.jsonl`'s calls, the `rec` lines, and
 every `open` with no `done`, no record naming its hold and not in flight
 in this process, at its reservation: a request cut off by a crash, a kill
 or a handover (`Status.Pending`). The journal is written without fsync,
-so it outlives the process, not a power cut. It is written again, by
-temp file and rename, once a process and past 256 KB, dropping each
-`open` with its `done` and lines older than `access.MaxDays`; a journal
-written to meanwhile is left as it is. Limits: a cut-off request counts
+so it outlives the process, not a power cut. Coherent legacy open/done pairs
+may be compacted; unresolved, conflicting and version-2 evidence is retained,
+not expired by age. Limits: a legacy cut-off request counts
 at its estimate (body/4 plus the window's mean output), which can be
 less than the vendor billed; the other gateway of a handover counts the
 first's requests in flight at their estimate until their records are
@@ -77,6 +87,87 @@ pending. `TestCutOffRequestCountsAtItsReservation`,
 `TestKeyLimitRefusesWhileReservationsUnwritable`,
 `TestGatewayKeyLimitPendingCLI`, `gateway-key-limit-pending.test.cjs`
 and `key-page.test.cjs`'s cut-off case fail without it.
+
+## Scoped admission integration (fork)
+
+The in-progress sync candidate keeps request-level admission when neither
+caller nor issuer has scoped limits. With scopes, `gwbudget.ScopedLimiter`
+reserves each selected provider/model invocation in all applicable caller
+and issuer windows atomically before sending. `attempt_fork.go` writes a v2
+open set including principal, model aliases, scope definition and window
+bounds. Whole and scoped windows sharing a start each hold the invocation
+once, not once per redundant limit. A selected model with no applicable
+cap never becomes dependent on an optional usage write.
+
+The lease distinguishes never-sent, recorded, known-nonbillable and unknown.
+There is currently no generic nonbillable proof adapter: HTTP errors, missing
+tokens and transport failures after sending are unknown. A sent-unknown lease
+keeps affected windows unavailable both live and after restart, even when a
+pending estimate is small. A bare primary row is not completion evidence.
+Replay requires the exact open set and a matching complete receipt; primary
+occurrences retain their multiplicity and only proven journal mirrors are
+deduplicated. Partial diagnostics retain known charges but cannot settle.
+Orphan primary rows and orphan or contradictory diagnostic envelopes also
+keep their eligible known charges, while affected totals remain unknown.
+A malformed terminal cannot settle by carrying a row of its own; a v2 Hold
+with a missing/downgraded version cannot be compacted as a legacy done pair.
+The shared usage writer and its observers run outside the budget lock.
+
+`BudgetTime` reads scoped admission time from the opaque Hold; visible
+request Time remains unchanged. `VisitBudgetRead` uses a separate maximum
+budget-time bound on each packed block, including disk metadata, so a
+fallback admitted after midnight is not lost behind its earlier display
+time. Malformed envelopes are visited rather than silently skipped. Legacy
+rows retain their previous since-Time semantics. Warm sums also validate
+the shared ledger version and the journal's file stamp after external writes.
+
+The shared retrieval sender has scoped adapters for embeddings/rerank and
+the speech/transcription/translation aliases. `audioBudgetReply` requires
+both nonnegative input and output token counters (explicit zeros count),
+with any stated total consistent with them. A complete bounded JSON reply
+or speech's final complete `speech.audio.done` SSE frame supplies evidence;
+binary audio, plain transcripts, duration-only usage and missing counters
+do not. `copyAnswerTail` forwards and flushes without holding the reply,
+retaining only the existing bounded tail. A stream cut preserves available
+diagnostic counters but cannot settle. Counterless audio may answer once,
+then its affected windows stay unknown: this is not vendor metering support.
+Requests without scoped limits retain their previous integer-count path.
+
+Each fallback acquires its own lease; an unknown prior attempt does not lend
+its reservation to the next. An independent model outside that scope can
+still be admitted, but a whole-key window or shared scope affected by the
+unknown cannot. Hidden transport replay and redirects are not performed
+inside a scoped invocation. Other counted scoped adapters (including chat,
+native, Codex, drawing, video and model subcalls) remain integration blockers
+and fail before dispatch, not a delivered replacement for upstream routing.
+Journal v2 compaction is conservative and still needs bounded-growth
+validation. These are candidate implementation contracts, not claims of
+tested or completed upstream sync. D4 visibility, unreliable-price admission
+and dormant Billing activation are not added here.
+
+The budget tests include separate writer/reader test binaries with inherited
+isolated test homes: a writer exits before lease cleanup, and the reader
+uses only persisted evidence. This differs from the older `Forget`-based
+same-process simulations. It covers process termination, not power loss or
+simultaneous multi-process admission, and is evidence only when executed.
+
+## Packed row contract (fork)
+
+`packedRow` is exactly 160 bytes on supported 64-bit targets, asserted twice
+in `row_shape_test.go`. Its six varied string IDs keep Hold separate from the
+message ID and shared shapes; zones remain pointer-free IDs. All upstream
+counters and full 64-bit Order/RouteID remain. Existing saturation bounds
+still apply; values outside them are not arbitrarily lossless.
+
+Compared with upstream's 152 bytes, direct row arrays cost 8 more bytes per
+row (5.26%), or 6,000,000 bytes (about 5.72 MiB) at 750,000 rows. This is not
+an RSS or compressed-size measurement. `rowChunk.add`, unpacking and
+`within` use `unsafe.Sizeof` in byte accounting; `rowBuffer`, its four kept
+slots and all row slice capacities inherit the new size. Other allocation
+budgets remain unchanged. Disk codecs encode fields/varints, not raw structs;
+the package-source fingerprint invalidates derived caches, which rebuild
+without changing original JSONL history. Heap/archive/disk/mapping/spill,
+shape-sharing, zone and full-Order tests cover this contract when executed.
 
 ## Dormant accounting component (fork)
 

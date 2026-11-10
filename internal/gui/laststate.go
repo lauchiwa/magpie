@@ -83,6 +83,8 @@ func keptFile(s stateJSON) stateFile {
 	s.Settings = settings.Settings{}
 	// and what is told once: a notice, a file recovered after a crash
 	s.Notice, s.Connected, s.Recovered = "", nil, nil
+	// and the magpie serving the gateway now, which the next start asks
+	s.GatewayOther = nil
 	return stateFile{Version: Version, State: s}
 }
 

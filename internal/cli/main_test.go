@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -15,6 +16,9 @@ import (
 // off the network (testenv.Offline): the plugin tests start plugin hosts,
 // and a host started in a home without a models.dev catalog fetched the
 // real one for up to 30s (#1922).
+//
+// With MAGPIE_CLI_TEST_SERVE set, inside a test's sandbox, the test binary
+// is `magpie serve` of a released version (serve_update_test.go).
 func TestMain(m *testing.M) {
 	// fork: and with no WSL but a test's FakeWSL (agent.NoWSL): run's
 	// start-up ran the real wsl.exe on a Windows machine with a distro up,
@@ -23,6 +27,18 @@ func TestMain(m *testing.M) {
 	// fork: and never the npm registry for an npx server (library's own
 	// tests have it so)
 	library.NoNpxInstall()
+	if os.Getenv("MAGPIE_CLI_TEST_SERVE") != "" {
+		if os.Getenv(testenv.Marker) == "" {
+			os.Exit(2)
+		}
+		testenv.Offline()
+		version = "0.1.9999"
+		if err := serve(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	os.Exit(testenv.RunIn(m, func(string) { testenv.Offline() }))
 }
 

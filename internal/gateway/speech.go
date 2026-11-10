@@ -110,30 +110,40 @@ const speechTail = 16 << 10
 // gives the tokens its last event says it counted, and the error that cut
 // it short, if any.
 func copyAnswer(w http.ResponseWriter, body io.Reader) (in, out int, err error) {
+	tail, _, err := copyAnswerTail(w, body)
+	if err != nil {
+		return 0, 0, err
+	}
+	in, out = speechUsage(tail)
+	return in, out, nil
+}
+
+// copyAnswerTail keeps only bounded accounting evidence, including bytes
+// already received when a downstream write fails. It never delays forwarding.
+func copyAnswerTail(w http.ResponseWriter, body io.Reader) (tail []byte, clipped bool, err error) {
 	rc := http.NewResponseController(w)
-	var tail []byte
 	buf := make([]byte, 32<<10)
 	for {
 		n, rerr := body.Read(buf)
 		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				return 0, 0, werr
-			}
-			rc.Flush()
 			tail = append(tail, buf[:n]...)
 			if len(tail) > speechTail {
 				tail = append(tail[:0], tail[len(tail)-speechTail:]...)
+				clipped = true
 			}
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return tail, clipped, werr
+			}
+			rc.Flush()
 		}
 		if rerr == io.EOF {
 			break
 		}
 		if rerr != nil {
-			return 0, 0, rerr
+			return tail, clipped, rerr
 		}
 	}
-	in, out = speechUsage(tail)
-	return in, out, nil
+	return tail, clipped, nil
 }
 
 // speechUsage is the usage an answer's last JSON line or SSE data line

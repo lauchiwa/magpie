@@ -56,10 +56,14 @@ type Provider struct {
 	// Gave are ids it had that another provider took after it (a rename
 	// onto one, a provider added under one), each with when: the calls
 	// recorded under such an id before then were this one's (Renames).
-	Gave   []Gave `json:"gave,omitempty"`
-	Icon   string `json:"icon,omitempty"`
-	Preset string `json:"preset,omitempty"` // preset this was created from, if any
-	Key    string `json:"key"`              // API key, as typed by the user
+	Gave []Gave `json:"gave,omitempty"`
+	Icon string `json:"icon,omitempty"`
+	// IconFrom is the picture's address a custom provider's Icon was
+	// fetched from in its editor, shown there again (hoobnn): only a
+	// record, never fetched again
+	IconFrom string `json:"iconFrom,omitempty"`
+	Preset   string `json:"preset,omitempty"` // preset this was created from, if any
+	Key      string `json:"key"`              // API key, as typed by the user
 
 	// AccessKeyID and SecretAccessKey are a Volcengine account's access
 	// key (TakesVolcAccessKey), what Ark tells its Coding or Agent Plan's
@@ -95,6 +99,10 @@ type Provider struct {
 	// under it, with the key in x-goog-api-key, and models under it lists
 	// them (#1346).
 	Gemini string `json:"gemini,omitempty"`
+	// GeminiFilled is that magpie filled Gemini in once, for a provider
+	// at AI Studio's OpenAI-compatible URL (aiStudioNative): a Gemini URL
+	// the user cleared after that stays empty.
+	GeminiFilled bool `json:"geminiFilled,omitempty"`
 	// Decide is the base of a decision API (TypeSafe's System One, which
 	// Jev answers), for routing groups' choices of model and effort. The
 	// provider may also serve conversations on the other endpoints.
@@ -134,6 +142,16 @@ type Provider struct {
 	// goes round already. See gateway.sink.
 	Sink bool `json:"sink,omitempty"`
 
+	// UseFirst puts its keys or accounts ahead of the other providers'
+	// where Smart weighs them together: a group of several providers'
+	// models (hzh_1119 on Discord: an OpenAI API key's monthly credit
+	// spent before the ChatGPT subscription serving the same models). One
+	// resting after a failure, out of credit or out of quota (a 429
+	// insufficient_quota) is passed over as ever, and one all but used up
+	// goes with the others that are. Off, the default, Smart goes as it
+	// always has (routes.Seat.Lead).
+	UseFirst bool `json:"useFirst,omitempty"`
+
 	// Affinity is how long a conversation stays with the key or account
 	// that answered it, so the vendor's prompt cache it filled is read
 	// again rather than lost (see Affinities): "" auto, "session",
@@ -158,6 +176,24 @@ type Provider struct {
 	// Code's own sign-in, which magpie still moves: the gateway serves no
 	// request on them (KeptToAgent; myduso on Discord).
 	SwitchOnly bool `json:"switchOnly,omitempty"`
+	// RestartApp, on Codex's subscription, has magpie restart the Codex
+	// app's own app-server for a change it makes by itself that the app
+	// works without: the switch back once the account it moved off has
+	// room (SwitchWhenSpent), and giving Codex its account back at the
+	// reset. The ChatGPT app shows an ended app-server as an error and
+	// relaunches (#4550), so it is off unless the user turns it on
+	// (atom0964 on Discord); the app then stays on its account until it
+	// is restarted, from the switch notice or by hand. A switch the user
+	// makes, a Connect or Disconnect, and whatever leaves the app on a
+	// used-up account (a switch off it, becoming its provider for it)
+	// restart it either way: the app greys Send there (8b0132b3d).
+	RestartApp bool `json:"restartApp,omitempty"`
+	// KeepSelf, on a Remote magpie that turned out to be this magpie
+	// (SelfAnswered), keeps it in routing anyway: left alone, such a
+	// provider is left out (SelfLeftOut). It is this computer's own, as
+	// sync's copy of the provider on the other computer points at a
+	// magpie that is not that one (hanslin1666 on Discord).
+	KeepSelf bool `json:"keepSelf,omitempty"`
 
 	// MaxConcurrency is how many requests may be out at the vendor at once
 	// on each of its keys or accounts (Discord, Lemon: a Codex account is
@@ -270,6 +306,16 @@ type Provider struct {
 	// act on magpie's address, never is (ReplyHeaderPassable).
 	ReplyHeaders []string `json:"replyHeaders,omitempty"`
 
+	// PassHeaders are headers of the agent's request passed on to the
+	// vendor as it sent them, whatever their case (3jRzfF52Qx on X): a
+	// value that changes per request or per client, which a fixed Header
+	// can't give. The client's stands over a Header of the same name;
+	// with none sent the Header goes. Every API, count_tokens, a group's
+	// member, a plugin's fetch; a signed-in account's signing has the
+	// last word. One that carries magpie's key or the connection's own
+	// never is (RequestHeaderPassable).
+	PassHeaders []string `json:"passHeaders,omitempty"`
+
 	// Searches says the vendor answers a web search tool offered on its
 	// Anthropic or Responses API by itself (web_search_20250305,
 	// web_search): a relay in front of Anthropic's or OpenAI's API, which
@@ -286,6 +332,12 @@ type Provider struct {
 	// fitting, which a backend that isn't OpenAI's needs (#350).
 	CodexAsSent bool `json:"codexAsSent,omitempty"`
 
+	// ImageFilesOff, `image-files=off`, has DeepSeek's own API sent an
+	// agent's inline images inline on every turn. By default each goes up
+	// once through DeepSeek's Files API, for a day, and the turns name it
+	// by its file id (gateway's deepseek_files.go, #5407).
+	ImageFilesOff bool `json:"imageFilesOff,omitempty"`
+
 	// PromptAsWritten, on Antigravity's subscription, has the system prompt
 	// go to Google exactly as the agent wrote it. By default the few lines
 	// Google answers with a 429 "Resource has been exhausted" whatever
@@ -301,10 +353,27 @@ type Provider struct {
 	// additional_tools input item, as OpenAI's does: a deferred tool an
 	// Anthropic client's tool search loaded goes to it in such an item
 	// where the search loaded it, not in the top-level tools, which keeps
-	// the prompt's cached prefix (#2660). OpenAI's own API is sent one
-	// without it; another vendor isn't unless this is set, since xAI's
-	// turns the item away (#350).
+	// the prompt's cached prefix (#2660). OpenAI's own API and a ChatGPT
+	// (Codex) account are sent one without it (#4738: the ChatGPT backend
+	// takes the item where it was loaded, and its cache is kept); another
+	// vendor isn't unless this is set, since xAI's turns the item away
+	// (#350).
 	AdditionalTools bool `json:"additionalTools,omitempty"`
+	// AdditionalToolsOff, `additional-tools=off`, sends a loaded tool in
+	// the top-level tools even where magpie's default would send the item.
+	AdditionalToolsOff bool `json:"additionalToolsOff,omitempty"`
+
+	// PassErrors, `errors=pass`, is the user's word that the client, not
+	// magpie, deals with what the provider's errors say (ne9ko9 on
+	// Discord): a request to it is asked once, its error goes to the
+	// agent as it came (its status, and its body as written where the
+	// agent's API is the provider's own, else in the agent's shape with
+	// the vendor's type, code and words), nothing about it is inferred
+	// (a prompt too long, a busy relay), it is not asked again in place
+	// or of a fallback or a group's next member, and none of its keys
+	// rests for it. Off, the default, magpie handles them. Only a provider
+	// of a key takes it (TakesPassErrors).
+	PassErrors bool `json:"passErrors,omitempty"`
 
 	// Patience is how many seconds more a request to this provider alone,
 	// not through a group, may be kept once it has failed in a way that
@@ -373,6 +442,14 @@ type Provider struct {
 	// base URLs (UncheckedHosts); see Via.
 	InsecureTLS bool `json:"insecureTLS,omitempty"`
 
+	// HTTP1 has magpie speak HTTP/1.1 to the provider's own hosts, never
+	// HTTP/2 (kepner_53726 on Discord: a company gateway whose HTTP/2
+	// connections broke mid-reply with "tls: bad record MAC" while
+	// HTTP/1.1 to it held). Only a provider the user added takes it
+	// (TakesInsecureTLS), for the hosts of its own base URLs
+	// (UncheckedHosts); see Via.
+	HTTP1 bool `json:"http1,omitempty"`
+
 	// Proxy is the proxy magpie's requests to this provider go through
 	// (#237: Codex through one, a vendor at home without): "" follows
 	// the global one (Settings' Proxy, the environment's, the system's),
@@ -390,6 +467,11 @@ type Provider struct {
 	// an account by its name in lower case, a key by its KeyID. One not in
 	// it serves every model the provider does (see account_models.go).
 	AccountModels map[string][]string `json:"accountModels,omitempty"`
+	// AccountModelsAll is the keys, by KeyID, the user set back to every
+	// model (All models, or `accountmodels` with none): a Fetch models
+	// that ticks a key's own list for it (key_models_refresh.go) leaves
+	// these as the user set them.
+	AccountModelsAll map[string]bool `json:"accountModelsAll,omitempty"`
 	// AccountCaps is, for a subscription, the share (1–99) of its usage
 	// windows each account the user capped is used to at most, by its name
 	// in lower case: past it, routing takes the account for used up until
@@ -418,6 +500,11 @@ type Provider struct {
 	// It is magpie's own: the vendor's or plugin's sign-in never sees it
 	// (see account_names.go).
 	AccountNames map[string]string `json:"accountNames,omitempty"`
+	// KeySpendCaps is, for a provider of API keys, how much each key the
+	// user capped may spend, in USD as the Usage page prices its calls,
+	// a day, a month or in all, by its KeyID: past it, routing takes the
+	// key for used up until the period renews (see key_spend.go).
+	KeySpendCaps map[string]SpendCap `json:"keySpendCaps,omitempty"`
 
 	// BalanceURL, when set, is where the vendor tells what is left on a
 	// key, asked with the key the way a chat request carries it; BalancePath
@@ -480,6 +567,15 @@ type Provider struct {
 	// up), and the user's picks came back with it no more. Every save keeps
 	// it but for what it picks again; Select none clears it.
 	Delisted []string `json:"delisted,omitempty"`
+	// DelistedAt is when the list left out the last pick still in Models,
+	// so that every pick is in Delisted: none is served until then and
+	// pickWait after it (waitsForPicks), and the list is served as if none
+	// were picked from then on. A vendor takes a model off for good too:
+	// WorkBuddy AI's free deepseek-v4.1-flash, a Free plan account's one
+	// pick, left its list for hy3, and the account was served none
+	// (maxleebeta on Discord). Zero, while some pick is still in Models, or
+	// for picks set aside before it was kept.
+	DelistedAt time.Time `json:"delistedAt,omitzero"`
 	// RefreshEvery, for a provider of the user's own, is how often the
 	// gateway fetches its model list by itself ("6h", "1d"; none, only when
 	// asked), as Fetch models does (#2135). See autolist.go.
@@ -503,6 +599,13 @@ type Provider struct {
 	// one still draws with it, and so does the one Settings › Images
 	// names: a hidden pick is shown as picked, and said to be hidden.
 	HiddenDrawers []string `json:"hiddenDrawers,omitempty"`
+	// HiddenVideomakers are its video models unticked in its editor, as
+	// HiddenDrawers are its image models (axelburks on Discord: a
+	// Volcengine Ark key lists a dozen Seedance models): left out of
+	// what lists video models to pick from (generate_video's, another
+	// magpie's, /v1/models' ?kind=video) and of Automatic's choice. A
+	// request that names one still makes its video.
+	HiddenVideomakers []string `json:"hiddenVideomakers,omitempty"`
 	// Off switches the provider off without removing it: its keys and
 	// settings stay, but agents aren't given its models, no request,
 	// routing group or fallback goes to it, and its balance isn't asked,
@@ -716,21 +819,39 @@ func store(f file) error { return commit(f, intent{}) }
 // item or a CLI's among them, and Codex's /models asked for it seven times
 // over, past the 5 s Codex waits for the list (#746).
 func All() []Provider {
-	notUnderCommit("All") // before heldOf: a cache hit is still a read entry
+	shared := sharedAll()
+	out := make([]Provider, len(shared))
+	for i, p := range shared {
+		out[i] = p.clone() // callers change theirs, Keys[i] and Headers included
+	}
+	return out
+}
+
+// sharedAll is All without its copies, only for reading: the providers a
+// request holds, less the accounts discovery off leaves out. Find, a
+// model's price and a value resolved each copied every provider, every
+// account's keys and headers, to read one (~15 MB in 2 minutes of an
+// idle magpie with its window open).
+func sharedAll() []Provider {
+	notUnderCommit("sharedAll") // a cached read still enters the lifecycle boundary
 	held := heldOf("all", allProviders)
-	out := make([]Provider, 0, len(held))
 	// asked once, from the settings a held look has read already: asked for
 	// each account, settings.json was parsed for every account of every
 	// model's price (agent.magpieModels, the GUI's drift every 15s and dsh's
 	// round every 30s), most of an idle magpie's CPU (xsw on Discord)
 	off := sync.OnceValue(func() bool { return settings.AccountDiscoveryOffIn(heldSettings()) })
-	for _, p := range held {
+	for i, p := range held {
 		if p.Account != nil && off() && !p.publicAccount() {
-			continue
+			out := held[:i:i] // the first append copies
+			for _, p := range held[i+1:] {
+				if p.Account == nil || p.publicAccount() {
+					out = append(out, p)
+				}
+			}
+			return out
 		}
-		out = append(out, p.clone()) // callers change theirs, Keys[i] and Headers included
 	}
-	return out
+	return held
 }
 
 // clone is p with its settings unshared: slices, maps and pointers copied.
@@ -746,9 +867,11 @@ func (p Provider) clone() Provider {
 	p.Headers = maps.Clone(p.Headers)
 	p.ExtraBody = maps.Clone(p.ExtraBody)
 	p.ReplyHeaders = slices.Clone(p.ReplyHeaders)
+	p.PassHeaders = slices.Clone(p.PassHeaders)
 	p.AccountProxies = maps.Clone(p.AccountProxies)
 	p.AccountCaps = maps.Clone(p.AccountCaps)
 	p.AccountNames = maps.Clone(p.AccountNames)
+	p.KeySpendCaps = maps.Clone(p.KeySpendCaps)
 	if p.AccountWindowCaps != nil {
 		m := make(map[string]map[string]int, len(p.AccountWindowCaps))
 		for k, v := range p.AccountWindowCaps {
@@ -759,6 +882,7 @@ func (p Provider) clone() Provider {
 	p.AccountConcurrency = maps.Clone(p.AccountConcurrency)
 	p.AccountWeights = maps.Clone(p.AccountWeights)
 	p.Contexts = maps.Clone(p.Contexts)
+	p.AccountModelsAll = maps.Clone(p.AccountModelsAll)
 	if p.AccountModels != nil {
 		m := make(map[string][]string, len(p.AccountModels))
 		for k, v := range p.AccountModels {
@@ -788,8 +912,14 @@ func (p Provider) clone() Provider {
 // AllBuilt counts the times All built the list anew, for tests.
 var AllBuilt atomic.Int64
 
+// AllBuiltAt is when the build All last counted was asked for (allProviders
+// entered, the hold's rule read at once after), for a test to judge a build
+// by when it was asked, not by when the request that asked began (#2965).
+var AllBuiltAt atomic.Int64
+
 func allProviders() []Provider {
 	AllBuilt.Add(1)
+	AllBuiltAt.Store(time.Now().UnixNano())
 	return allProvidersFrom(lifeLoad())
 }
 
@@ -838,24 +968,45 @@ func ownOf(f file) (own []Provider, picks map[string]Provider) {
 // the provider keeps the same settings (#1899: a second WorkBuddy AI
 // account queued 62s with the wait set to 1s).
 func withPicks(a, pk Provider) Provider {
-	a.PickedFrom, a.Delisted = pk.PickedFrom, pk.Delisted
+	return accountSettings(a, pk)
+}
+
+// accountSettings is a with every setting a signed-in account keeps in
+// providers.json taken from pk. It is the one list both ways go through:
+// Save writes what it copies, and withPicks reads the same back. Two lists
+// drifted apart, and a setting on one alone was lost: #4738's
+// additional-tools=on on a Codex account was on neither, PaulT's price
+// rate on neither, an account's extraBody and reply headers were read
+// back but never written, and its rests out of quota and after failures
+// written but never read back.
+func accountSettings(a, pk Provider) Provider {
+	a.PickedFrom, a.Delisted, a.DelistedAt = pk.PickedFrom, pk.Delisted, pk.DelistedAt
 	a.Models, a.Unlisted, a.Off, a.Fallback, a.Routing, a.Affinity, a.KeepLogin, a.KeepLoginAs, a.Contexts, a.Family = pk.Models, pk.Unlisted, pk.Off, pk.Fallback, pk.Routing, pk.Affinity, pk.KeepLogin, pk.KeepLoginAs, pk.Contexts, pk.Family
-	a.SwitchOnly = pk.SwitchOnly
+	a.SwitchOnly, a.RestartApp = pk.SwitchOnly, pk.RestartApp
 	a.Sink, a.NoModels, a.BestInFamily = pk.Sink, pk.NoModels, pk.BestInFamily
 	a.NativeCompaction = pk.NativeCompaction
 	a.PromptAsWritten = pk.PromptAsWritten
+	// a deferred tool a tool search loaded goes where it was loaded, set
+	// with `magpie provider set <id> additional-tools=on` (#2660, #4738)
+	a.AdditionalTools, a.AdditionalToolsOff = pk.AdditionalTools, pk.AdditionalToolsOff
 	// Send requests unmasked, the user's for a subscription and a
 	// plugin's provider too (isee1_1 on Discord)
 	a.Unredacted = pk.Unredacted
-	a.Proxy, a.AccountProxies, a.AccountModels = pk.Proxy, pk.AccountProxies, pk.AccountModels
+	a.Proxy, a.AccountProxies, a.AccountModels, a.AccountModelsAll = pk.Proxy, pk.AccountProxies, pk.AccountModels, pk.AccountModelsAll
 	a.AccountCaps, a.AccountWindowCaps = pk.AccountCaps, pk.AccountWindowCaps
 	a.CapStop, a.CapCareful = pk.CapStop, pk.CapCareful
+	a.UseFirst = pk.UseFirst
 	a.AccountNames = pk.AccountNames
 	a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
 	a.MaxAccounts = pk.MaxAccounts
 	a.AccountConcurrency, a.QueueLimit, a.QueueWait = pk.AccountConcurrency, pk.QueueLimit, pk.QueueWait
 	a.AccountWeights = pk.AccountWeights
 	a.MaxRPM = pk.MaxRPM
+	// how long a request to it alone is kept while it is busy
+	a.Patience = pk.Patience
+	// how long its accounts rest out of quota, and the most they rest
+	// while they keep failing (#2008); or not at all for a limit
+	a.QuotaRest, a.QuotaResetAt, a.RestCap, a.LimitRestOff = pk.QuotaRest, pk.QuotaResetAt, pk.RestCap, pk.LimitRestOff
 	// what it bills against the official price (#819): an account's editor
 	// sets it as a key provider's does (PaulT on Discord, Codex)
 	a.PriceRate = pk.PriceRate
@@ -870,8 +1021,11 @@ func withPicks(a, pk Provider) Provider {
 	a.ExtraBody = pk.ExtraBody
 	// the image models unticked in its editor (HiddenDrawers)
 	a.HiddenDrawers = pk.HiddenDrawers
+	a.HiddenVideomakers = pk.HiddenVideomakers
 	// and the headers of its replies passed on (#4145)
 	a.ReplyHeaders = pk.ReplyHeaders
+	// and the headers of the agent's requests passed on
+	a.PassHeaders = pk.PassHeaders
 	return a
 }
 
@@ -903,7 +1057,12 @@ func find(ps []Provider, id string) (Provider, bool) {
 
 // Find looks a provider up by id (or name, case-insensitively).
 func Find(id string) (*Provider, error) {
-	return findIn(All(), id)
+	p, err := findIn(sharedAll(), id)
+	if p != nil {
+		c := p.clone() // the caller's to change, as All's are
+		p = &c
+	}
+	return p, err
 }
 
 func findIn(all []Provider, id string) (*Provider, error) {
@@ -967,6 +1126,10 @@ func Save(p Provider, opts ...WriteOption) error {
 	}
 	p = normalize(p)
 	p.IconURL = "" // import-only: never stored
+	// where a picture came from goes only with that picture
+	if p.IconFrom = strings.TrimSpace(p.IconFrom); !strings.HasPrefix(p.Icon, iconPrefix) {
+		p.IconFrom = ""
+	}
 	if p.ID == "" {
 		p.ID = Slug(p.Name)
 	}
@@ -1008,7 +1171,7 @@ func Save(p Provider, opts ...WriteOption) error {
 		if p.ID == "kiro" {
 			key = p.Key
 		}
-		p = Provider{ID: p.ID, Key: key, Models: p.Models, NoModels: p.NoModels, BestInFamily: p.BestInFamily, RateWindows: p.RateWindows, PickedFrom: p.PickedFrom, Delisted: p.Delisted, Unlisted: p.Unlisted, HiddenDrawers: p.HiddenDrawers, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, CapStop: p.CapStop, CapCareful: p.CapCareful, AccountNames: p.AccountNames, MaxConcurrency: p.MaxConcurrency, MaxAccounts: p.MaxAccounts, AccountConcurrency: p.AccountConcurrency, AccountWeights: p.AccountWeights, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, PriceRate: p.PriceRate, CountFree: p.CountFree, QuotaRest: p.QuotaRest, QuotaResetAt: p.QuotaResetAt, RestCap: p.RestCap, PinUpstream: p.PinUpstream, NativeCompaction: p.NativeCompaction, PromptAsWritten: p.PromptAsWritten, Unredacted: p.Unredacted, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
+		p = accountSettings(Provider{ID: p.ID, Key: key, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}, p)
 	} else {
 		p.AccountProxies = keyProxies(p) // a provider of keys proxies each key apart
 		if subscriptionID(p.ID) && !stored(p.ID) {
@@ -1027,6 +1190,9 @@ func Save(p Provider, opts ...WriteOption) error {
 		}
 		if p.InsecureTLS && !p.TakesInsecureTLS() {
 			return fmt.Errorf("%s is a preset's: only a provider you added with your own base URL can skip the certificate check", p.Name)
+		}
+		if p.HTTP1 && !p.TakesInsecureTLS() {
+			return fmt.Errorf("%s is a preset's: only a provider you added with your own base URL can be held to HTTP/1.1", p.Name)
 		}
 		if strings.Contains(p.Decide, WorkspaceID) {
 			return errors.New("Bailian's decision model is asked at your workspace's host: give its workspace ID (workspace=… or the editor's Workspace ID), or pick the Token Plan")
@@ -1048,6 +1214,7 @@ func Save(p Provider, opts ...WriteOption) error {
 	p.PickedFrom = listedWith(p, was)
 	p.Delisted = delistedWith(p, was)
 	unchanged := false
+	p.DelistedAt = delistedAtWith(p, was)
 	if was != nil {
 		if p.Was == nil {
 			p.Was = was.Was
@@ -1109,6 +1276,19 @@ func delistedWith(p Provider, was *Provider) []string {
 	return d
 }
 
+// delistedAtWith is what p.DelistedAt is saved as: zero while some pick is
+// in Models or none is set aside; else p's, or what was kept before when p
+// has none, as a save of another setting keeps the wait going.
+func delistedAtWith(p Provider, was *Provider) time.Time {
+	if len(p.Models) > 0 || len(p.Delisted) == 0 {
+		return time.Time{}
+	}
+	if p.DelistedAt.IsZero() && was != nil {
+		return was.DelistedAt
+	}
+	return p.DelistedAt
+}
+
 // listedWith is what p.PickedFrom is saved as: none without picks; what was
 // kept with the picks when they are the same picks; and the models listed
 // now when the picks are new, as the user picked them from that list. While
@@ -1117,17 +1297,24 @@ func delistedWith(p Provider, was *Provider) []string {
 // left unpicked isn't new when the list that left it out for a while has it
 // again (an Our Free Model channel not read yet when the picks were saved).
 // A list short of no pick is taken as it is: what it left out and lists
-// again later is new (TestClaudePicksOfEveryModelTakeOnesListedSince).
+// again later is new (TestClaudePicksOfEveryModelTakeOnesListedSince). A
+// provider of keys saved before PickedFrom was kept is given it at its next
+// Save, the same picks too, as withNewlyListed serves those picks as they
+// are until it has one (TestLegacyPicksOfEveryModelGetPickedFromAtSave).
 func listedWith(p Provider, was *Provider) []string {
 	if len(p.Models) == 0 {
 		return nil
 	}
-	if was != nil && slices.Equal(normalModels(was.Models), normalModels(p.Models)) {
+	same := was != nil && slices.Equal(normalModels(was.Models), normalModels(p.Models))
+	if same && was.PickedFrom != nil {
 		return was.PickedFrom
 	}
 	from := p
 	if q, err := Find(p.ID); err == nil {
 		from = *q // with its account, whose list it is
+	}
+	if same && (from.Account != nil || p.Account != nil) {
+		return was.PickedFrom // a subscription keeps the date rule
 	}
 	var ids []string
 	for _, m := range from.Available() {
@@ -1165,11 +1352,15 @@ func add(p Provider, once bool, opts ...WriteOption) (string, error) {
 		// nothing: the id is the site's instead
 		p.ID = hostID(p)
 	}
-	// the same key on the same host with the same headers is the one
-	// already here, not another: adding it twice would only split its usage.
-	// A copy the user asked for is taken (AddCopy).
+	// the same key on the same host with the same headers, at the same
+	// addresses, is the one already here, not another: adding it twice
+	// would only split its usage. One key a relay takes in both formats,
+	// added once for its OpenAI API and once for its Anthropic API, is two
+	// providers the user asked for (energetic_wolf_99424 on Discord: the
+	// second was refused as the key already used). A copy the user asked
+	// for is taken (AddCopy).
 	for _, h := range All() {
-		if once && h.Account == nil && sameProvider(h, normalize(p)) {
+		if once && h.Account == nil && sameProvider(h, normalize(p)) && servesAll(h, normalize(p)) {
 			return "", fmt.Errorf("%s is already added with that key (%s); magpie provider key %s <key> changes its key", h.Name, h.ID, h.ID)
 		}
 	}
@@ -1184,6 +1375,17 @@ func add(p Provider, once bool, opts ...WriteOption) (string, error) {
 		CountPartner(PartnerAdded, p.Preset)
 	}
 	return p.ID, nil
+}
+
+// servesAll says h is asked at every address p is added with, each for the
+// same API: p brings no API, and no address of one, that h lacks.
+func servesAll(h, p Provider) bool {
+	for _, u := range [][2]string{{h.Chat, p.Chat}, {h.Responses, p.Responses}, {h.Anthropic, p.Anthropic}, {h.Gemini, p.Gemini}} {
+		if u[1] != "" && u[0] != u[1] {
+			return false
+		}
+	}
+	return true
 }
 
 // AddCopy adds p, a copy the user made of the provider from (#268), beside
@@ -1229,6 +1431,9 @@ func AddCopy(p Provider, from string, opts ...WriteOption) (string, error) {
 	p.Unlisted = p.Unlisted || src.Unlisted
 	if p.HiddenDrawers == nil {
 		p.HiddenDrawers = slices.Clone(src.HiddenDrawers)
+	}
+	if p.HiddenVideomakers == nil {
+		p.HiddenVideomakers = slices.Clone(src.HiddenVideomakers)
 	}
 	p.Searches = p.Searches || src.Searches
 	p.Unredacted = p.Unredacted || src.Unredacted
@@ -1477,9 +1682,11 @@ func normalize(p Provider) Provider {
 	p.Proxy = strings.TrimSpace(p.Proxy)
 	p.AccountProxies = normalAccountProxies(p.AccountProxies)
 	p.AccountModels = normalAccountModels(p.AccountModels)
+	p.AccountModelsAll = normalModelsAll(p.AccountModelsAll, p.AccountModels)
 	p.AccountCaps = normalAccountCaps(p.AccountCaps)
 	p.AccountWindowCaps = normalWindowCaps(p.AccountWindowCaps)
 	p.AccountNames = normalAccountNames(p.AccountNames)
+	p.KeySpendCaps = normalKeySpendCaps(p.KeySpendCaps)
 	if len(p.Models) > 0 {
 		p.NoModels = false // a pick is no longer Select none
 	}
@@ -1517,6 +1724,7 @@ func normalize(p Provider) Provider {
 		}
 	}
 	p.Gemini = GeminiBase(p.Gemini)
+	p.aiStudioNative()
 	// a pick whose URL is gone (cleared from the CLI) is no pick
 	if p.BaseAPI != "" && p.baseOf(p.BaseAPI) == "" {
 		p.BaseAPI = ""
@@ -1531,6 +1739,9 @@ func normalize(p Provider) Provider {
 	if a, ok := presetAliases[p.Preset]; ok {
 		p.Preset = a.preset
 	}
+	// a preset's endpoints its vendor has moved since (Tencent Cloud's
+	// Token Plan 个人版, ysm119) are where they are now
+	p.moveEndpoints()
 	// OpenCode Zen serves its free models (-free) signed out, to the key
 	// OpenCode itself sends then: a Zen provider saved with no key of its
 	// own asks with that one
@@ -1597,6 +1808,7 @@ func normalize(p Provider) Provider {
 	p.Headers = cleanHeaders(p.Headers)
 	p.ExtraBody = cleanExtraBody(p.ExtraBody)
 	p.ReplyHeaders = cleanReplyHeaders(p.ReplyHeaders)
+	p.PassHeaders = cleanRequestHeaders(p.PassHeaders)
 	if pr := Preset(p.Preset); pr != nil {
 		if p.Icon == "" {
 			p.Icon = pr.Icon
@@ -1654,10 +1866,65 @@ func cleanHeaders(h map[string]string) map[string]string {
 			out[k] = strings.TrimSpace(v)
 		}
 	}
+	out = userIDHeader(out)
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// userIDHeader is h with a header named by digits alone and no value
+// read as the new-api user id it is, New-Api-User: the user id typed in
+// a header's name box, where magpie's old hint asked for a header
+// (zxc56823 on Discord, "272298" with its value left empty). Sent as it
+// was, the relay is told a header it never reads and still no user. One
+// with a New-Api-User of its own already has it; the digits are dropped.
+// h itself when it has none.
+func userIDHeader(h map[string]string) map[string]string {
+	var out map[string]string
+	for k, v := range h {
+		if strings.TrimSpace(v) != "" || !allDigits(strings.TrimSpace(k)) {
+			continue
+		}
+		if out == nil {
+			out = maps.Clone(h)
+		}
+		delete(out, k)
+		has := false
+		for n, w := range out {
+			if strings.EqualFold(n, NewAPIUserHeader) && strings.TrimSpace(w) != "" {
+				has = true
+			}
+		}
+		if !has {
+			for n := range out {
+				if strings.EqualFold(n, NewAPIUserHeader) {
+					delete(out, n)
+				}
+			}
+			out[NewAPIUserHeader] = strings.TrimSpace(k)
+		}
+	}
+	if out == nil {
+		return h
+	}
+	return out
+}
+
+// NewAPIUserHeader is where a new-api relay's /api/user/self wants the
+// user's id, beside the access token.
+const NewAPIUserHeader = "New-Api-User"
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func contains(xs []string, x string) bool {
@@ -2085,9 +2352,10 @@ func (p Provider) Ready() bool {
 	return p.Account != nil || p.Key != "" || keyOptional(p)
 }
 
-// On is whether the provider takes requests: ready, not switched off and
-// not kept to its agent's own sign-in (KeptToAgent).
-func (p Provider) On() bool { return p.Ready() && !p.Off && !p.KeptToAgent() }
+// On is whether the provider takes requests: ready, not switched off,
+// not kept to its agent's own sign-in (KeptToAgent) and not a Remote
+// magpie that is this magpie (SelfLeftOut).
+func (p Provider) On() bool { return p.Ready() && !p.Off && !p.KeptToAgent() && !p.SelfLeftOut() }
 
 // KeptToAgent is whether the provider is Claude's subscription with
 // SwitchOnly on: its accounts are Claude Code's own sign-in alone, which
@@ -2117,12 +2385,12 @@ func SetOff(id string, off bool, opts ...WriteOption) error {
 func SwitchedOff(id string) (Provider, bool) {
 	id = strings.TrimSuffix(strings.TrimSpace(id), "[1m]")
 	if pid, _, ok := strings.Cut(id, "/"); ok {
-		if p, err := Find(pid); err == nil && (p.Off || p.KeptToAgent()) {
+		if p, err := Find(pid); err == nil && (p.Off || p.KeptToAgent() || p.SelfLeftOut()) {
 			return *p, true
 		}
 	}
 	for _, p := range All() {
-		if !p.Off && !p.KeptToAgent() || !p.Ready() {
+		if !p.Off && !p.KeptToAgent() && !p.SelfLeftOut() || !p.Ready() {
 			continue
 		}
 		if slices.ContainsFunc(p.Exposed(), func(m catalog.Model) bool { return m.ID == id }) {

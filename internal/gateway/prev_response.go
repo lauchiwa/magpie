@@ -35,7 +35,7 @@ import (
 // A client that says store false (Codex over HTTP, whose requests never
 // name a previous response: codex-rs/codex-api/src/common.rs keeps
 // previous_response_id to its websocket's response.create) has nothing
-// kept.
+// kept, but for another magpie asking its turns kept (remote_delta.go).
 
 const (
 	prevTTL = 6 * time.Hour
@@ -255,16 +255,25 @@ func previousResponse(w http.ResponseWriter, r *http.Request, from provider.Prot
 		r = r.WithContext(context.WithValue(r.Context(), prevAskKey{}, ask))
 	}
 	var store bool
-	if json.Unmarshal(q["store"], &store) == nil && !store {
+	if json.Unmarshal(q["store"], &store) == nil && !store && !keepsTurnFor(r) {
 		return w, r, body, nothing // the client asked that nothing be kept
 	}
-	// what this turn adds: its whole body, which its items hold
-	own := len(body)
+	if keepsTurnFor(r) {
+		// another magpie asked it kept, store false or not, and is told
+		// it is (remote_delta.go)
+		w.Header().Set(KeptTurnHeader, "1")
+	}
+	// what this turn adds: its input, copied out of the body. A view held
+	// the whole body, tools and instructions with it, on every turn kept,
+	// while own counted only the items, so the cap bounded far less than
+	// was held.
+	kept := ownItems(fresh)
 	if ask.known {
-		own = 0
-		for _, it := range fresh {
-			own += len(it)
-		}
+		kept = append(prior[:len(prior):len(prior)], kept...)
+	}
+	own := 0
+	for _, it := range fresh {
+		own += len(it)
 	}
 	if ask.id == "" {
 		// the answer note is wanted for a request naming none too
@@ -289,7 +298,7 @@ func previousResponse(w http.ResponseWriter, r *http.Request, from provider.Prot
 		for _, it := range output {
 			own += len(it)
 		}
-		t := &prevTurn{key: prevKey{scope, id}, items: append(input[:len(input):len(input)], output...), own: own}
+		t := &prevTurn{key: prevKey{scope, id}, items: append(kept, output...), own: own}
 		ask.mu.Lock()
 		if ask.answered != "" {
 			t.upstreamID, t.route = id, ask.answered
@@ -301,8 +310,8 @@ func previousResponse(w http.ResponseWriter, r *http.Request, from provider.Prot
 
 // prevInput is a Responses input as items: a string is one user message.
 // fresh is nil for an input that is neither. The items share the body's
-// bytes, which nothing writes once read: a turn kept holds its body, not
-// a copy of it.
+// bytes, which nothing writes once read; what is kept past the request
+// copies them (ownItems).
 func prevInput(raw json.RawMessage) (all, fresh []json.RawMessage) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {

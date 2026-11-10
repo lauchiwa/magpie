@@ -1,5 +1,13 @@
 # Dropdown browser regression
 
+`agent-details-ready.test.cjs` holds the first settings read and the lazy
+Long conversations module on the main window's Agents → Details path. It
+checks a complete first and warm opening without a final height jump in all
+five languages, wide and narrow, Chromium and WebKit. It also covers Claude
+Code and Grok Build, failed-read retry, a superseding agent click, navigation
+away and reduced motion. `MAGPIE_ASSETS` selects older assets for the failing
+regression comparison; `ARTIFACT_DIR` retains Chinese desktop screenshots.
+
 `modal-backdrop.test.cjs` checks the modal's computed backdrop filter using
 the real stylesheet and platform marker: Windows desktop windows and panels
 keep the dimming veil without filtering, while browser pages, macOS and Linux
@@ -11,6 +19,13 @@ and WebKit. It uses local API fixtures, saves options through the real page, and
 checks that request hooks have no provider badge. `MAGPIE_GATEWAY_ASSETS` selects
 an older asset directory for a failing regression comparison; user settings and
 live gateways are never accessed.
+
+`plugin-provider-options.test.cjs` checks the same JSON options editor on a
+provider plugin's Installed row (plugins#592: Devin's keep-alive interval and
+pings): shown when its package suggests options, starting from them; absent
+for a plugin with none and one switched off; Save and a confirmed Clear post
+through the real page, in all five languages, at 980px and 420px, on Chromium
+and WebKit. The API is faked.
 
 `settings-proxy-auth.test.cjs` checks a proxy's optional username and
 password in Settings, in fields of their own for SOCKS5/SOCKS5h, HTTP,
@@ -337,6 +352,21 @@ leaving it off; Save posting each changed one by the plugin's provider id
 before the provider, and none switched back. Chromium and WebKit, 1100 and
 420 wide, every language.
 
+`plugin-option-words.test.cjs` checks a plugin option in the reader's
+language (plugins#590): its `labels`, `descriptions` and `confirms` by the
+window's language, zh-TW falling back to zh and the rest to the plain
+words; and, while a `filtersModels` switch is on as saved, the note under
+the Models field's chips that the list is filtered, inside the editor; off,
+none. A WorkBuddy moved onto its plugin, Chromium and WebKit, 1100 and 420
+wide, every language.
+
+`plugin-option-placement.test.cjs` checks a plugin option that says
+`placement: "top"` (#5269): drawn under the accounts, above Routing, while
+the rest stay under the models; a plugin with no placement, or one magpie
+doesn't know, drawn as before; the note with the first block only; the top
+switch saved like any other. Chromium and WebKit, 1100 and 420 wide, every
+language.
+
 `plugin-move-overflow.test.cjs` checks a Plugins card that offers a
 built-in's accounts: the button is one word beside the name, as Install is
 ("Move", its title saying whose accounts and how many), on one line, and it
@@ -371,6 +401,12 @@ why one didn't load, updates one and removes one. The add sheet's
 "More in Plugins" row (the providers list has no button of its own) and
 "look for a plugin" link lead there. English and Chinese, Chromium and WebKit,
 with the API faked.
+
+`plugin-npm-unknown.test.cjs` checks that a suggested plugin npm said
+nothing of (npm or the dist branch not read in time) offers Install, not
+Coming soon, and that the page asks again and then shows its version,
+while one npm said it doesn't have still reads Coming soon. Every
+language, Chromium and WebKit, wide and narrow, with the API faked.
 
 `plugins-more-discover.test.cjs` checks that the add sheet's "More in
 Plugins" row and its "look for a plugin" link open Plugins on Discover,
@@ -610,22 +646,31 @@ model's name (#968): a new group named "GPT 6.1 Sol" is said and sent as
 `group/gpt-6.1-sol`, and `groupSlug` folds a run of dots and trims them at the
 ends as `provider.GroupSlug` does, in English and Chinese, Chromium and WebKit.
 
-`group-new-head.test.cjs` checks that a routing group of any models can be
-made from the top of the Routing page, in Chromium and WebKit, English and
+`group-new-head.test.cjs` checks that a routing group of any models is made
+from the Routing groups page's toolbar, in Chromium and WebKit, English and
 Chinese (mintonight, #944: the groups' New group sat below the requests, so
-only found groups were used). The page's head has New group with a plus and a
-tooltip saying what a group is, in sight while the groups are below the fold;
-its click opens an empty group's editor, brings it into view and focuses its
-name. The groups' own New group has the plus too. No left-border accent.
+only found groups were used). New group is in sight on arrival, with a plus
+and a tooltip saying what a group is; its click opens an empty group's
+editor, brings it into view and focuses its name, and a draft is replaced
+only after Discard. No left-border accent.
+
+`routing-groups-page.test.cjs` checks that routing groups have a page of
+their own, after Routing in the sidebar: its toolbar holds the filter, how
+many groups there are and how many are on, Import, Select and New group as
+the one filled button, in sight on arrival; the list follows, then Settings
+(found groups, the names in agents' lists). The Routing page has no groups
+and no jump to them. A request's group opens the groups page on its row, and
+`?view=groups&newgroup=` opens a new group there. Every language, Chromium
+and WebKit, at 1280px, 640px and 420px, with no sideways scroll.
 
 `name-suffix-where-named.test.cjs` checks the setting that says whether a
 provider's name or "· routing group" follows a name in the agents' lists (#868)
 where names are given, in Chromium and WebKit, English and Chinese. The
-provider editor's Names & levels has its three choices and says what the lists
-show. For the groups it is one setting for all of them, so it sits over the
-groups on Routing (PAMI on Discord: in one group's editor it read as that
-group's): a group's editor has no choices, only what its group will be called
-and that it is set above; a pick there posts settings/plain-names once and the
+provider editor's Names, prices & levels has its three choices and says what the lists
+show. For the groups it is one setting for all of them, so it sits under the
+list on the Routing groups page (PAMI on Discord: in one group's editor it read
+as that group's): a group's editor has no choices, only what its group will be
+called and that it is set under the list; a pick there posts settings/plain-names once and the
 open editor's line follows it with its unsaved name. No click scrolls, nothing
 native, no left border, and every string has its Chinese, Japanese and German.
 
@@ -677,13 +722,6 @@ without the provider" (love1sbug on X): off by default, On posts
 back, neither click scrolls the page, the row is drawn in gateway mode, and
 nothing runs out of the row or the page sideways at 420px and 900px. Every
 language, Chromium and WebKit.
-
-`routing-steady.test.cjs` scrolls the Routing page down to its routing groups,
-opens one in its editor and types into its name, then streams six requests in
-from the trace (new agents and accounts on the stage, failures and retries in
-the story, the lists growing): the groups and the editor stay where they are
-on the screen on every layout and scroll, the view's scrollTop moving by just
-what grew above them, and the field keeps its focus and what was typed.
 
 `routing-flood.test.cjs` takes the Routing page out of sight three ways
 (#302): the window hidden, the window covered and drawing no frames
@@ -1223,6 +1261,15 @@ status; its models are the one asked for, the one sent as asked and the one that
 do the same, text selected in the details is not a click, and the rows stay open
 when the list is asked for again; in English and Chinese.
 
+`usage-ledger-bytes.test.cjs` checks that Requests says what a request sent
+up and got back (faithleysath): a row's details name "Sent upstream",
+"Received" and what DeepSeek's image files saved (#5407), a row from before
+they were kept shows none of them, and a saving below 0 shows none. Under
+the Requests card the period reads "↑ up · ↓ down" with the saving beside
+it, and nothing for a period with no bytes. At 1180 and 420 wide nothing
+scrolls sideways; Chromium and WebKit, every language. The old page.js
+shows it failing.
+
 `ledger-cache-tokens.test.cjs` (#1839) opens a request's details and finds its
 tokens there at every width: in, out, cache read and cache creation, 0 said as
 0 for a prompt that missed the cache, with what was written for an hour; a
@@ -1421,6 +1468,21 @@ found skill with a byte copy in another agent shows both agents' icons and
 no "differs in"; one that really differs still says so. Chromium and
 WebKit, in English and Chinese, with `/api/plugins` faked.
 
+`library-problems-hide.test.cjs` opens the Library with Grok Build's
+AGENTS.md failing to stat at every sync (Zachary-wW, #3745), the API
+answering as `library.go` does, the error texts as magpie's own sync gave
+them in a sandbox. The card's × hides what it lists on every tab, sends
+nothing and moves no view; a read, and in the window an Instructions
+change and a chip's change that fail only on what was hidden, keep it
+hidden, the toast still naming the failure, and so does the same failure
+under a temp file named anew at each write. A failure not hidden, one whose item was written in
+between, or one after none stood brings the card back with all it lists.
+An agent's own skills stay, under their own title, with no ×, and the
+keyboard's focus goes to the card's next button or the tab open. The × is
+named and inside the card in English, Chinese (both), Japanese and German,
+in a browser at 980, 440 and 320px (44px wide on a phone) and in the
+window at 980 and 560px, the title's words whole. Chromium and WebKit.
+
 `model-pick.test.cjs` picks Claude Code's model with the Agents page
 scrolled while a faked `/api/set` takes 2.5s to answer: the row shows the
 new model at once, in the window and in the tray panel's opened row and its
@@ -1469,7 +1531,7 @@ Chromium and WebKit, English and Chinese: Detect APIs' "Each picked model"
 posts provider/detect with every model picked (detectModels) and shows model
 by API, each a ✓ with the time or a ✗ with why; "Use these" sets the URLs
 that answered and gives each model that answered on one API only that API in
-Names & levels, unsaved, sending nothing until the Save carries them as
+Names, prices & levels, unsaved, sending nothing until the Save carries them as
 modelPrefs, while a model answering on two stays Auto. A chip's right-click
 Test says the API it was asked on ("answered via Responses"). No click moves
 the page, nothing has a left-border accent, and every string has its
@@ -1917,9 +1979,9 @@ groups" (只通过路由分组使用; 悠悠哥 on Discord: hy4 vanished from th
 The model picker's filter, finding such a model, says why it isn't offered:
 hy3, in the group Mine, is reached by picking Mine ("Pick Mine" sets it);
 hy4, in no group, can't be used, and "Make a routing group of it" opens the
-Routing page on a new group of it, added with `members: ["hunyuan/hy4"]`.
+Routing groups page on a new group of it, added with `members: ["hunyuan/hy4"]`.
 The provider's editor names its models in no group under the tick (not once
-unticked), each a click from a group; `?view=routing&newgroup=` opens the
+unticked), each a click from a group; `?view=groups&newgroup=` opens the
 window on one, and the tray panel asks `window/main` for it. The page doesn't
 move, no left-border accent; English and Chinese, Chromium and WebKit.
 
@@ -2008,6 +2070,13 @@ nothing without one, a key magpie refuses is said in the row with the API
 and what was typed kept, and Remove posts `{vendor, remove: true}`. No click
 moves the page. English and Chinese, Chromium and WebKit, with `/api/plugins`
 faked.
+
+`search-signs-in.test.cjs` checks a plugin's search API that signs in as the
+plugin's provider (axelburks on Discord): the add row says "Signs in with
+{provider}" where the key field and Get a key were, Add posts it with no key,
+and each added one's row says how many of the provider's accounts are on, or,
+as an error, that none is signed in or none is on. All five languages, 980px
+and 420px, Chromium and WebKit, the API faked.
 
 `searcher-pick.test.cjs` checks the Web search section's "Searches for other
 models" row (01huadalang on Discord: pick which provider searches for a model
@@ -2640,3 +2709,15 @@ hasn't.
 ```sh
 node --test internal/gui/tests/nav-timeout.test.cjs
 ```
+
+## Logos that show on both grounds
+
+`icon-one-tone.test.cjs` draws every logo that `icon()` shows as a picture
+(`*-color.svg` and the PNG set) on the dark and the light card, and measures
+from a screenshot how much of each stands apart from the ground. It also
+opens the Plugins page's Installed row for Open Design, whose picture
+(`fixtures/opendesign-favicon.svg`, the real open-design.ai favicon) is one
+tone, #26251E. It checks that the row draws that picture as a mask in the
+text colour, and that it shows in both themes, all five languages, at 980px
+and 420px, in Chromium and WebKit (chen2652). `ARTIFACT_DIR` keeps the row's
+screenshots.

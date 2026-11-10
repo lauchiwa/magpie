@@ -14,10 +14,11 @@ package agent
 //
 //	"active_model": {"provider_id": "…", "model": "…"}
 //
-// beside fallback_models, subagent_model and thinking_level, which magpie
-// leaves alone. Only an agent whose backend is "qwenpaw" (the default)
-// runs that model (app/routers/agents.py); one on an ACP backend runs
-// another program. QwenPaw reads agent.json again when it changes
+// beside fallback_models and subagent_model, which magpie leaves alone,
+// and thinking_level, which is the agent's effort field. Only an agent
+// whose backend is "qwenpaw" (the default) runs that model
+// (app/routers/agents.py); one on an ACP backend runs another program.
+// QwenPaw reads agent.json again when it changes
 // (load_agent_config's fingerprint), and asks for the model on every turn
 // (agents/model_factory.py create_model_and_formatter), so a model picked
 // there is used from the next message.
@@ -454,6 +455,49 @@ func qwenpawAt(at place, work string, p qwenpawProfile) *Agent {
 			Options: func(cur map[string]string) []Option {
 				return append(qwenpawOwn(providers, cur["model"]), viaMagpie("qwenpaw", magpieID+"/")...)
 			},
+		}, {
+			// the agent's thinking_level (config.py's AgentProfileConfig),
+			// held by QwenPaw to the levels its model's card has; "" is
+			// its inherit, the model's own
+			Key: "effort", Label: "effort",
+			Get: func() string {
+				l := get("thinking_level").String()
+				if l == "inherit" {
+					return ""
+				}
+				return l
+			},
+			Set: func(v string) error {
+				if !isFile(path) {
+					return fmt.Errorf("QwenPaw has no %s yet: start QwenPaw once (qwenpaw app) so it writes its agents' settings", path)
+				}
+				if l := get("thinking_level").String(); v == l && (v == "budget" || v == "off") {
+					return nil
+				}
+				if v != "" && !slices.Contains(qwenpawLevels, v) {
+					return fmt.Errorf("QwenPaw has no thinking level %q", v)
+				}
+				b, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				// a budget goes with the budget level alone (config.py's
+				// validate_thinking_budget)
+				out, err := edit.PatchJSON(b, []edit.KV{{Path: "thinking_level", Value: cmp.Or(v, "inherit")}}, []string{"thinking_budget"})
+				if err != nil || bytes.Equal(out, b) {
+					return err
+				}
+				return edit.WriteAtomic(path, out)
+			},
+			Options: func(cur map[string]string) []Option {
+				// no off: magpie's models declare none (qwenpawModelJSON);
+				// a level set in QwenPaw is listed as it is
+				o := static(qwenpawLevels...)
+				if l := cur["effort"]; l == "off" || l == "budget" {
+					o = append(o, Option{Value: l})
+				}
+				return o
+			},
 		}},
 	}, path, prov)
 }
@@ -543,7 +587,7 @@ var qwenpawOwned = []string{"id", "name", "base_url", "api_key", "chat_model", "
 // qwenpawModelOwned are the keys of one of magpie's models that are
 // magpie's to say, unless the user changed one in QwenPaw (the model's
 // config_overrides names it).
-var qwenpawModelOwned = []string{"id", "name", "source", "supports_image", "supports_multimodal", "supports_tool_calling", "max_input_length", "max_input_length_configured", "max_output_length"}
+var qwenpawModelOwned = []string{"id", "name", "source", "supports_image", "supports_multimodal", "supports_tool_calling", "max_input_length", "max_input_length_configured", "max_output_length", "thinking_param_style", "reasoning_effort_options"}
 
 // qwenpawProviderJSON is magpie's provider file as it should be, from raw,
 // the file as it is (nil: none yet): OpenAI Chat at gw with key (the one
@@ -601,6 +645,13 @@ func qwenpawProviderJSON(raw []byte, gw, key string, keep bool, models []catalog
 				}
 			}
 		}
+		// a null of magpie's takes back what it said before, and is
+		// written nowhere it said nothing
+		for k, v := range e {
+			if _, had := was[m.ID][k]; v == nil && !had {
+				delete(e, k)
+			}
+		}
 		extra = append(extra, e)
 	}
 	out["extra_models"] = extra
@@ -638,7 +689,35 @@ func qwenpawModelJSON(m catalog.Model) map[string]any {
 	if n := maxTokens(m); n > 0 {
 		e["max_output_length"] = n
 	}
+	// QwenPaw applies an agent's thinking level (agent.json thinking_level)
+	// only to a model whose card declares how it thinks: with neither
+	// thinking_param_style nor thinking_control, resolve_thinking drops
+	// the level (providers/provider.py thinking_control, Pkh on Discord).
+	// "effort" makes it send the level as Chat's reasoning_effort, held to
+	// the levels the model has; none is left out, as QwenPaw turns an off
+	// into Qwen's and DeepSeek's switches (extra_body enable_thinking,
+	// thinking), not the reasoning_effort magpie hands every vendor.
+	e["thinking_param_style"], e["reasoning_effort_options"] = nil, nil
+	if levels := qwenpawEfforts(m.Efforts); len(levels) > 0 {
+		e["thinking_param_style"], e["reasoning_effort_options"] = "effort", levels
+	}
 	return e
+}
+
+// qwenpawLevels are the thinking levels QwenPaw names (thinking.py's
+// ThinkingControl.efforts), weakest first.
+var qwenpawLevels = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+
+// qwenpawEfforts are a model's reasoning levels that QwenPaw names, in
+// its order.
+func qwenpawEfforts(efforts []string) []string {
+	var out []string
+	for _, l := range qwenpawLevels {
+		if slices.ContainsFunc(efforts, func(e string) bool { return catalog.EffortLevel(e) == l }) {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // what qwenpaw says after a change (notice.go)

@@ -273,6 +273,22 @@ func TestRepoDefaultsToTheFork(t *testing.T) {
 	}
 }
 
+func TestForkNotesTotalUsesForkReleasesBeforeCapping(t *testing.T) {
+	var releases []ghRelease
+	for i := 1; i <= MaxNotes+3; i++ {
+		releases = append(releases, rel(fmt.Sprintf("v0.1.3217-rc.%d", i), "fork note"))
+	}
+	newFakeGitHub(t, "fork/magpie", releases...)
+	upto := fmt.Sprintf("0.1.3217-rc.%d", MaxNotes+3)
+	notes, total, err := NotesBetweenTotal(context.Background(), "0.1.3217-rc.0", upto, "")
+	if err != nil || len(notes) != MaxNotes || total != MaxNotes+3 {
+		t.Fatalf("fork notes kept %d of %d: %v", len(notes), total, err)
+	}
+	if notes[0].Version != upto || notes[0].Notes != "fork note" {
+		t.Fatalf("wrong fork note: %+v", notes[0])
+	}
+}
+
 // A JSON feed still works when one is named: a test's server, or a feed run
 // by whoever deploys this.
 func TestAFeedIsUsedWhenOneIsNamed(t *testing.T) {

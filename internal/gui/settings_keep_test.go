@@ -110,6 +110,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		AgentOrder:           []string{"codex"},
 		AgentsHidden:         []string{"goose"},
 		AgentsShown:          []string{"pi"},
+		AgentsHere:           []string{"codex"},
 		Visible:              map[string][]string{"claude": {"anthropic"}},
 		HiddenModels:         map[string][]string{"claude": {"p/m"}, "codex": {"p/n", "group/g"}},
 		DisabledModels:       []string{"*fable*", "p/m"},
@@ -129,6 +130,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		ModelOutputs:         map[string]int{"p/m": 131072},
 		ModelCompacts:        map[string]int{"p/*": 500000},
 		CompactAt:            400000,
+		AgentCompacts:        map[string]settings.AgentCompact{"claude": {At: 600000}},
 		ModelPrices:          map[string]settings.ModelPrice{"p/m": {Input: &one, Output: &two}},
 		ModelWires:           map[string]string{"p/m": "vendor-c/m"},
 		ModelAPIs:            map[string]string{"p/m": "anthropic"},
@@ -174,6 +176,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		CodexResetLead:       180,
 		CodexNoCredits:       []string{"me@example.com"},
 		CodexCreditsLast:     []string{"two@example.com"},
+		CodexCreditsFirst:    []string{"three@example.com"},
 		CodexWarmAtOf:        map[string]string{"me@example.com": "09:00"},
 		TextSize:             125,
 		UpdateSkip:           "0.1.500",
@@ -186,6 +189,8 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		GuideHidden:          true,
 		GatewayMode:          "off",
 		QuotaReads:           "asked",
+		SearchAll:            true,
+		SearchCount:          9,
 		NoAccountDiscovery:   true,
 		RedactModel:          true,
 		RedactModelName:      "astrlink-guard",
@@ -194,12 +199,17 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 	}
 	was.RedactModelOff, was.RedactModelAuto = true, true
 	was.DesktopSubagentEffort = "high"
+	was.ReplyModel = settings.ReplyMember // memberModel, its mirror, is kept with it
 	was.CodexAsyncCompact, was.CodexAsyncCompactPercent = true, 70
 	was.ClaudeRunsMost = 3
 	was.RequestArchiveLocal, was.RequestArchiveLocalMB = true, 256
 	was.ProxyCustom = "http://me:secret@proxy.example:8080"
 	was.PanelShortcut = "Ctrl+Alt+K"
-	was.SearchAll = true // fork: upstream added it (b09349d17) and left it out here
+	was.SearchAll = true                              // fork: upstream added it (b09349d17) and left it out here
+	was.SearcherThen = []string{"fake/m1", "fake/m2"} // set in its own row
+	was.RouterNote = "Los Angeles"                    // the Library's servers/hub-note
+	was.RouterAllTools = true                         // the Library's servers/hub-tools
+	was.BusyLoad = 150                                // the Routing page's busy-load
 	if err := settings.Save(was); err != nil {
 		t.Fatal(err)
 	}

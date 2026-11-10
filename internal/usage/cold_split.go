@@ -139,6 +139,7 @@ func (c *rowChunk) within(lo, hi time.Time) *rowChunk {
 		if t := p.Time(); t.After(out.Latest) {
 			out.Latest = t
 		}
+		out.noteBudgetTime(open.row(i).Record)
 	}
 	if len(out.Rows) == 0 {
 		return nil

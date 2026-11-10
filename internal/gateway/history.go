@@ -363,6 +363,7 @@ func appendRoute(routes []Route, line []byte) []Route {
 	}
 	r.routedAgain()
 	r.Prompt.skillsApart()
+	r.Canceled = usage.CanceledBy(r.Status, r.Error) // kept before Canceled was
 	return append(routes, r)
 }
 
@@ -436,7 +437,7 @@ func (r *Route) routedAgain() {
 	for i := range r.Tries {
 		if tr := &r.Tries[i]; tr.Swapped && usage.GroupRouted(tr.Model, tr.Served) {
 			tr.Swapped, tr.Routed = false, true
-		} else if tr.Swapped && (usage.SameSpelled(tr.Model, tr.Served) || usage.ServingName(tr.Model, tr.Served) || usage.VendorAlias(tr.Model, tr.Served) || usage.ListedAs(tr.ID, tr.Model, tr.Served)) {
+		} else if tr.Swapped && (usage.SameSpelled(tr.Model, tr.Served) || usage.ServingName(tr.Model, tr.Served) || usage.VendorAlias(tr.Model, tr.Served) || usage.RegionTail(tr.Model, tr.Served) || usage.ListedAs(tr.ID, tr.Model, tr.Served)) {
 			tr.Swapped = false
 		}
 	}
@@ -508,7 +509,8 @@ type Tally struct {
 	Tried    int            `json:"tried"`
 	OK       int            `json:"ok"`
 	Fails    map[string]int `json:"fails,omitempty"`
-	Last     int64          `json:"last,omitempty"` // ms, of its latest answer
+	Last     int64          `json:"last,omitempty"`   // ms, of its latest answer
+	AuthAt   int64          `json:"authAt,omitempty"` // ms, of its latest try refused for its sign-in (failAuth)
 	Models   []string       `json:"models,omitempty"`
 	Rest     *Rest          `json:"rest,omitempty"`   // how its latest try left it
 	RestAt   int64          `json:"restAt,omitempty"` // ms, of when it did
@@ -677,10 +679,16 @@ func foldTally(tallies map[string]*Tally, line []byte) {
 			if f == "" {
 				f = "other"
 			}
+			if f == failQuota && tr.Rest != nil && tr.Rest.Rate {
+				f = failRate // counted as the vendor called it
+			}
 			if a.Fails == nil {
 				a.Fails = map[string]int{}
 			}
 			a.Fails[f]++
+			if f == failAuth {
+				a.AuthAt = max(a.AuthAt, end)
+			}
 		}
 		if tr.Rest != nil && tr.Rest.Model == "" && end >= a.RestAt {
 			rest := *tr.Rest
@@ -707,6 +715,7 @@ func HistoryRoute(id int64, day time.Time) (Route, bool) {
 				}
 				found.routedAgain()
 				found.Prompt.skillsApart()
+				found.Canceled = usage.CanceledBy(found.Status, found.Error)
 				return false
 			})
 			if found.ID != 0 {

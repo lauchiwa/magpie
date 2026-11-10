@@ -29,10 +29,11 @@ import (
 	"github.com/yetone/magpie/internal/usage"
 )
 
-// jevSure is how confident Jev must be of an intent for it to count.
-// Confidence runs from 0, every option as likely, to 1, one certain, as
-// System One gives it (provider.Confidence), read from the answer's
-// probabilities wherever it has them (sureOf).
+// jevSure is how confident Jev must be of an intent for it to count, a
+// group setting its own (provider.Group.IntentSure). Confidence runs from
+// 0, every option as likely, to 1, one certain, as System One gives it
+// (provider.Confidence), read from the answer's probabilities wherever it
+// has them (sureOf).
 const jevSure = 0.4
 
 // sureOf is how sure an answer is of its choice on jevSure's scale: from
@@ -234,7 +235,13 @@ func effortAsk(prev before) string {
 }
 
 // readJev is the verdict in a System One reply to jevBody, the answer
-// without "none of these" counting when the intents are levels.
+// without "none of these" counting when the intents are levels. The sure
+// an intent needs is the group's own (rulesOf applies it): Jev's likeliest
+// intent is kept as it said it (Said), and the intents' own answer as Said
+// with Topic marking it a topic — a message may be none of those — rather
+// than a level every message is at, whose torn pick holds (the level half
+// below). Whether an intent came of it is decided where the group's own
+// sure is known, so the answer still tells why it went as it did.
 func readJev(b []byte, intents []string, levels bool, prev before) (verdict, error) {
 	var out struct {
 		Model   string `json:"model"`
@@ -255,7 +262,9 @@ func readJev(b []byte, intents []string, levels bool, prev before) (verdict, err
 	var v verdict
 	if a, ok := out.Answers["intent"]; ok && len(intents) > 0 && !levels {
 		v.Sure = sureOf(a.Confidence, a.Probabilities)
-		if a.Choice != noIntent && v.Sure >= jevSure {
+		v.Said = a.Choice // as it said it, no intent come of it or not (#4598)
+		v.Topic = true
+		if a.Choice != noIntent {
 			v.Intent = intentNamed(intents, a.Choice)
 		}
 	}
@@ -265,6 +274,7 @@ func readJev(b []byte, intents []string, levels bool, prev before) (verdict, err
 		// (继续，再加一个基准测试 after a 复杂任务 came out 0.54 to 0.46),
 		// and a turn with none before takes the likelier
 		v.Sure = sureOf(a.Confidence, a.Probabilities)
+		v.Said = a.Choice
 		v.Intent = intentNamed(intents, a.Choice)
 		if was := intentNamed(intents, prev.Intent); v.Sure < jevSure && was != "" {
 			v.Intent = was
@@ -276,6 +286,30 @@ func readJev(b []byte, intents []string, levels bool, prev before) (verdict, err
 		v.Effort, v.Score = jevLevels[i].effort, a.Score
 	}
 	return v, nil
+}
+
+// sureNeeded is how sure a group asks its classifier to be of an intent:
+// the group's own (IntentSure), or 0.4 as groups have always asked.
+func sureNeeded(g provider.Group) float64 {
+	if g.IntentSure != nil {
+		return *g.IntentSure
+	}
+	return jevSure
+}
+
+// intentOf v is the intent of v's answer at the group's own sure
+// (sureNeeded): a topic answer counts once Jev is sure enough of it —
+// "none of these", said or picked, never being an intent — while a level
+// is the level it said, every message being at one. A topic answer unsure
+// at the group's sure is no intent.
+func intentOf(v verdict, g provider.Group) string {
+	if !v.Topic {
+		return v.Intent
+	}
+	if v.Sure < sureNeeded(g) || v.Said == noIntent || v.Intent == "" {
+		return ""
+	}
+	return v.Intent
 }
 
 // intentNamed is the one of intents named, or "".
@@ -414,10 +448,25 @@ func maskedState(ctx context.Context, text, user, reply string) (string, string,
 
 // systemOne posts body to p's System One API and returns the answer,
 // counting it in the usage as magpie's own. A gateway serving Jev is asked
-// and answers in its own way (decideAsk, decideAnswer).
+// and answers in its own way (decideAsk, decideAnswer). With the request
+// archive on it keeps the call as it keeps one a client sent (wangb on
+// Discord: 请求存档开启, 但是 systemone 的请求没有记录下来), its usage row
+// naming it.
 func (s *Server) systemOne(ctx context.Context, p provider.Provider, model string, body []byte) ([]byte, error) {
 	start := time.Now()
-	status, b, header, err := s.postDecide(ctx, p, model, body)
+	d, err := s.postDecideSent(ctx, p, model, body)
+	status, b, header := d.status, d.answer, d.header
+	archived := ""
+	if d.sent != nil {
+		c := Call{Time: start, From: provider.Chat, To: provider.Chat, Model: p.ID + "/" + model, Provider: p.ID,
+			Agent: usage.AgentOf(RouterAgent), Kind: "routing", Millis: time.Since(start).Milliseconds()}
+		if err != nil {
+			c.Error = err.Error()
+		} else if status >= 300 {
+			c.Error = provider.APIError(b, fmt.Sprintf("%d %s", status, http.StatusText(status)))
+		}
+		archived = archiveOwn(c, d.sent, d.body, status, header, b)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, errNoAnswer
@@ -441,31 +490,42 @@ func (s *Server) systemOne(ctx context.Context, p provider.Provider, model strin
 	}
 	usage.Append(usage.Record{Time: start, Agent: usage.AgentOf(RouterAgent), Kind: "routing", Provider: p.ID, Host: p.Where(), Model: model, Requested: model, Served: use.Model,
 		ProviderKeyID: keyID, ProviderKeyName: keyName, ProviderAccount: accountOf(p),
-		Input: use.Usage.Input, Output: use.Usage.Output, Millis: time.Since(start).Milliseconds(), Status: status})
+		Input: use.Usage.Input, Output: use.Usage.Output, Millis: time.Since(start).Milliseconds(), Status: status, Archive: archived})
 	return b, nil
 }
 
-// postDecide posts body to p's decision API and returns the status, body
-// and headers (its Content-Type, a refusal's Retry-After). A success is rewritten into System One's shape when
-// the provider answers in another one. DecideURL and Sign errors are as
-// they are; a transport error is named with p.
-func (s *Server) postDecide(ctx context.Context, p provider.Provider, model string, body []byte) (int, []byte, http.Header, error) {
+// decided is a decision call as it went and came back: the request magpie
+// sent and its body (in the provider's own shape), for the request archive,
+// and the answer's status, body and headers.
+type decided struct {
+	sent   *http.Request
+	body   []byte
+	status int
+	answer []byte
+	header http.Header
+}
+
+// postDecideSent posts body to p's System One API as model (DecideAsk),
+// and turns its answer back into Jev's shape when the provider answers in
+// another one. DecideURL and Sign errors are as they are; a transport
+// error is named with p. The request it sent is there once one was.
+func (s *Server) postDecideSent(ctx context.Context, p provider.Provider, model string, body []byte) (decided, error) {
 	// every decision call goes through here — System One, a group rule's
 	// classifier, a decision group's members: a model the user disabled
 	// (#1867) is never asked
 	if msg, off := modelOff(p, model, p.ID+"/"+model); off {
-		return 0, nil, nil, errors.New(msg)
+		return decided{}, errors.New(msg)
 	}
 	ctx = s.metered(p.Via(ctx), p, "") // counted against its MaxRPM (rpm.go)
 	u, err := p.DecideModelURL(ctx, model)
 	if err != nil {
-		return 0, nil, nil, err
+		return decided{}, err
 	}
 	via := p.DecideVia()
 	body = provider.DecideAsk(via, model, body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
-		return 0, nil, nil, err
+		return decided{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", RouterAgent)
@@ -473,6 +533,7 @@ func (s *Server) postDecide(ctx context.Context, p provider.Provider, model stri
 		req.Header.Set("User-Agent", "magpie/"+Version)
 		passOnCaller(ctx, req)
 	}
+	p.DecideHeaders(req.Header)
 	if via == provider.ViaVercelEval {
 		// what the AI SDK's gateway provider sends with an evaluation
 		req.Header.Set("ai-gateway-protocol-version", "0.0.1")
@@ -481,18 +542,18 @@ func (s *Server) postDecide(ctx context.Context, p provider.Provider, model stri
 		req.Header.Set("ai-evaluation-model-specification-version", "4")
 	}
 	if err := p.Sign(ctx, req, provider.Chat, body); err != nil {
-		return 0, nil, nil, err
+		return decided{}, err
 	}
 	res, err := p.Do(s.client, req)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("%s: %v", p.Name, err)
+		return decided{sent: req, body: body}, fmt.Errorf("%s: %v", p.Name, err)
 	}
 	defer res.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if res.StatusCode < 300 {
 		b = provider.DecideAnswer(via, b)
 	}
-	return res.StatusCode, b, res.Header, nil
+	return decided{sent: req, body: body, status: res.StatusCode, answer: b, header: res.Header}, nil
 }
 
 // maxSystemOneBody is the most a System One request may be; larger is 413
@@ -550,7 +611,8 @@ func (s *Server) serveSystemOne(w http.ResponseWriter, r *http.Request) {
 	// a gateway key held to some models (#882) is refused another; a
 	// decision model is a model, and System One asks one directly
 	if keyWho, held := keyHolds(r); held && !modelAllowed(keyWho, p, model) {
-		writeError(w, provider.Chat, http.StatusForbidden, keyModelError(keyWho, asked))
+		st, msg := keyModelRefusal(w, keyWho, p.ID+"/"+model)
+		writeError(w, provider.Chat, st, msg)
 		return
 	}
 	// its keys or accounts in its routing's order, each asked until one
@@ -675,6 +737,20 @@ func requestEffort(proto provider.Protocol, body []byte) string {
 		return e
 	}
 	return effortOfBudget(v.Thinking.Budget)
+}
+
+// outputConfigEffort is the effort an Anthropic request's output_config
+// names, whatever it asks of thinking; "" when it names none.
+func outputConfigEffort(body []byte) string {
+	var v struct {
+		OutputConfig struct {
+			Effort string `json:"effort"`
+		} `json:"output_config"`
+	}
+	if decodeJSON(body, &v) != nil {
+		return ""
+	}
+	return effortOf(v.OutputConfig.Effort)
 }
 
 // sentEffort is the reasoning a request goes to model at: what it asks

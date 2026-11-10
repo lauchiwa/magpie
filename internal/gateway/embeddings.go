@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yetone/magpie/internal/gwbudget"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/usage"
 )
@@ -88,7 +89,7 @@ func (j *jsonRetrieval) forModel(model string) ([]byte, string, error) {
 // provider, or over a group's members, and passes the answer back.
 func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, operation string, start time.Time, asked string, req retrieval) {
 	who := callerOf(r)
-	call := Call{Time: start, From: provider.Chat, Agent: who.agent, Via: who.via, Model: asked}
+	call := Call{Time: start, From: provider.Chat, Agent: who.agent, Via: who.via, Model: asked, headers: headerLogOf(r.Context())}
 	usage.Saw(agentOf(r))
 	// a model the user disabled (#1867), or a group of them all
 	if msg, off := idOff(asked); off {
@@ -97,8 +98,9 @@ func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, op
 		s.record(call)
 		return
 	}
-	p, model, ok := resolveRetrievalModel(asked)
-	if _, _, isGroup := provider.FindGroup(asked); ok && !isGroup {
+	kind := retrievalKind(operation)
+	p, model, ok := resolveRetrievalModel(asked, kind)
+	if _, _, isGroup := mediaMembers(asked, kind); ok && !isGroup {
 		if msg, off := modelOff(p, model, asked); off {
 			call.Status, call.Error = 403, msg
 			writeError(w, provider.Chat, 403, msg)
@@ -116,11 +118,15 @@ func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, op
 		s.record(call)
 		return
 	}
-	g, ms, isGroup := provider.FindGroup(asked)
-	if keyWho, held := keyHolds(r); held && (isGroup && !groupAllowed(keyWho, g, ms) || !isGroup && !modelAllowed(keyWho, p, model)) {
-		msg := keyModelError(keyWho, asked)
-		call.Status, call.Error = 403, msg
-		writeError(w, provider.Chat, 403, msg)
+	g, ms, isGroup := mediaMembers(asked, kind)
+	if isGroup {
+		r = heldByGroup(r, g) // held to the group's accounts, if it is
+	}
+	keyWho, keyHeld := keyHolds(r)
+	if keyHeld && (isGroup && !groupAllowed(keyWho, g, ms) || !isGroup && !modelAllowed(keyWho, p, model)) {
+		st, msg := keyModelRefusal(w, keyWho, asked)
+		call.Status, call.Error = st, msg
+		writeError(w, provider.Chat, st, msg)
 		s.record(call)
 		return
 	}
@@ -144,8 +150,16 @@ func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, op
 	// (429) or one whose vendor fails; a model is asked on its own
 	tries := []candidate{{p: p, model: model}}
 	if isGroup {
-		if cs, _ := s.planGroup(g.Live(), ms, provider.Chat); len(cs) > 0 {
+		cs, pl := s.planGroup(g.Live(), ms, provider.Chat)
+		if len(cs) > 0 {
 			tries = cs
+		} else if slices.ContainsFunc(pl.left, func(w Weighed) bool { return w.HeldBy != "" }) {
+			// every account a group in it may use is none it has
+			msg := groupsHeldError(asked, pl.left)
+			call.Status, call.Error = 403, msg
+			writeError(w, provider.Chat, 403, msg)
+			s.record(call)
+			return
 		}
 	} else {
 		// a model of one provider goes over its keys or accounts as a
@@ -159,6 +173,19 @@ func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, op
 			return
 		}
 		tries = cs
+	}
+	// a group's members the key may not go to through it are left out
+	// (groupKeeps): those a spent limit of the key's counts
+	if keyHeld && isGroup {
+		keeps := groupKeeps(keyWho, g, ms)
+		tries = slices.DeleteFunc(tries, func(c candidate) bool { return !keeps[c.p.ID+"/"+c.model] })
+		if len(tries) == 0 {
+			st, msg := keyGroupRefusal(w, keyWho, asked, ms)
+			call.Status, call.Error = st, msg
+			writeError(w, provider.Chat, st, msg)
+			s.record(call)
+			return
+		}
 	}
 	// the accounts or keys the calling key may not use are left out of
 	// the tries too (#905): a group's members through it no less
@@ -238,6 +265,21 @@ func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, op
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), retrieveTimeout)
+		ctx, lease, reserveErr := beginBudgetSend(ctx, c.p, c.model, int64(len(out)))
+		if reserveErr != nil {
+			cancel()
+			tried(http.StatusServiceUnavailable, reserveErr)
+			if !last {
+				skipped = append(skipped, c.label()+": "+reserveErr.Error())
+				continue
+			}
+			code, _ := budgetRefusal(w, reserveErr, limitClock())
+			call.Status, call.Error = code, reserveErr.Error()
+			side.end(c.p, c.model, code, reserveErr, Usage{})
+			writeError(w, provider.Chat, code, reserveErr.Error())
+			s.record(call)
+			return
+		}
 		// the headers of the vendor's reply passed on (#4145)
 		var heard heardHeaders
 		ctx = withReplySink(ctx, c.p.ID, heard.put)
@@ -257,19 +299,46 @@ func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, op
 		}
 		tried(code, err)
 		call.Millis = time.Since(start).Milliseconds()
+		in, outTokens := retrievedTokens(b), answeredTokens(b)
+		complete := err == nil && res == nil && code >= 200 && code < 300 && retrievedUsageKnown(b)
+		if lease != nil && (operation == "speech" || operation == "transcriptions" || operation == "translations") {
+			proof := audioBudgetReply(b, got, operation == "speech", false)
+			in, outTokens = proof.input, proof.output
+			complete = err == nil && res == nil && code >= 200 && code < 300 && proof.complete
+		}
+		providerKeyID, providerKeyName := "", ""
+		if c.p.Account == nil && c.p.Key != "" {
+			providerKeyID, providerKeyName = provider.KeyID(c.p.Key), c.p.KeyName
+		}
+		record := usage.Record{RouteID: side.id(), Operation: operation, Time: start, Agent: call.Agent, Via: call.Via, Provider: c.p.ID, Host: c.p.Where(), Model: c.model, Requested: asked, ProviderKeyID: providerKeyID, ProviderKeyName: providerKeyName, ProviderAccount: accountOf(c.p),
+			Input: in, Output: outTokens, Millis: call.Millis, Status: code, Session: sessionOf(r.Header)}
+		attemptRequest := r.WithContext(ctx)
 		if err != nil && !last && r.Context().Err() == nil {
+			if lease != nil {
+				// This failed invocation may still be charged. It has its
+				// own occurrence and cannot lend its hold to the next try.
+				finishBudgetRecord(attemptRequest, lease, record, false)
+			}
 			skipped = append(skipped, c.label()+": "+err.Error())
 			continue
 		}
 		call.Status = code
-		in, outTokens := retrievedTokens(b), answeredTokens(b)
 		if res != nil {
 			// passed on as it comes: audio, or SSE, is never held whole
 			heard.into(w.Header())
 			w.Header().Set("Content-Type", req.answerType(got))
 			w.WriteHeader(code)
 			var cut error
-			in, outTokens, cut = copyAnswer(w, res.Body)
+			if lease == nil {
+				in, outTokens, cut = copyAnswer(w, res.Body)
+			} else {
+				var tail []byte
+				var clipped bool
+				tail, clipped, cut = copyAnswerTail(w, res.Body)
+				proof := audioBudgetReply(tail, got, operation == "speech", clipped)
+				in, outTokens = proof.input, proof.output
+				complete = cut == nil && code >= 200 && code < 300 && proof.complete
+			}
 			res.Body.Close()
 			call.Millis = time.Since(start).Milliseconds()
 			if cut != nil {
@@ -278,14 +347,14 @@ func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, op
 		}
 		call.Usage.Input, call.Usage.Output = in, outTokens
 		call.Fallback = strings.Join(skipped, "; ")
-		providerKeyID, providerKeyName := "", ""
-		if c.p.Account == nil && c.p.Key != "" {
-			providerKeyID, providerKeyName = provider.KeyID(c.p.Key), c.p.KeyName
-		}
 		side.end(c.p, c.model, code, err, Usage{Input: in, Output: outTokens})
-		appendUsage(r, usage.Record{RouteID: side.id(), Operation: operation, Time: start, Agent: call.Agent, Via: call.Via, Provider: c.p.ID, Host: c.p.Where(), Model: c.model, Requested: asked, ProviderKeyID: providerKeyID, ProviderKeyName: providerKeyName, ProviderAccount: accountOf(c.p),
-			Input: in, Output: outTokens, Millis: call.Millis, Status: code, Session: sessionOf(r.Header)})
+		record.Input, record.Output, record.Millis = in, outTokens, call.Millis
+		finishBudgetRecord(attemptRequest, lease, record, complete)
 		if err != nil {
+			if lease != nil && (errors.Is(err, gwbudget.ErrUsageUnrecorded) || errors.Is(err, gwbudget.ErrUsageUnread) || errors.Is(err, gwbudget.ErrScopedUnsupported)) {
+				code, _ = budgetRefusal(w, err, limitClock())
+				call.Status = code
+			}
 			call.Error = err.Error()
 			s.record(call)
 			msg := err.Error()
@@ -308,10 +377,14 @@ func (s *Server) serveRetrieval(w http.ResponseWriter, r *http.Request, path, op
 	}
 }
 
-// resolveRetrievalModel also finds a preset plan's embedding model by its
-// bare id. Such models stay out of agents' chat-model lists, so the general
-// resolver does not otherwise see them there.
-func resolveRetrievalModel(id string) (provider.Provider, string, bool) {
+// resolveRetrievalModel also finds a preset plan's embedding or rerank
+// model, of kind's, by its bare id. Such models stay out of agents'
+// chat-model lists, so the general resolver does not otherwise see them
+// there.
+func resolveRetrievalModel(id, kind string) (provider.Provider, string, bool) {
+	if p, model, ok := mediaGroupFirst(id, kind); ok {
+		return p, model, true
+	}
 	if p, model, ok := provider.Resolve(id); ok {
 		return p, model, true
 	}
@@ -322,7 +395,7 @@ func resolveRetrievalModel(id string) (provider.Provider, string, bool) {
 		if !p.On() || p.DecideOnly() {
 			continue
 		}
-		for _, m := range p.PlanEmbeddings() {
+		for _, m := range p.PlanRetrieval(kind) {
 			if m.ID == id {
 				return p, id, true
 			}
@@ -350,8 +423,11 @@ func (s *Server) retrieveAs(ctx context.Context, p provider.Provider, url, ctype
 		return b, got, code, err
 	}
 	defer res.Body.Close()
-	b, err = io.ReadAll(io.LimitReader(res.Body, 256<<20))
+	b, err = readRetrievalBody(res.Body)
 	if err != nil {
+		if scopedSend(ctx) != nil {
+			return b, got, 502, err
+		}
 		return nil, "", 502, err
 	}
 	return b, got, code, nil
@@ -379,7 +455,19 @@ func (s *Server) retrieveOpen(ctx context.Context, p provider.Provider, url, cty
 	if err := p.Sign(ctx, req, provider.Chat, body); err != nil {
 		return nil, nil, "", 502, err
 	}
-	res, err := p.Do(s.client, req)
+	if err := markBudgetSent(ctx); err != nil {
+		return nil, nil, "", 503, err
+	}
+	client := s.client
+	if scopedSend(ctx) != nil {
+		// Redirects and transport retries are separate possibly billable
+		// sends, not covered by this invocation's receipt.
+		req.GetBody = nil
+		copy := *client
+		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &copy
+	}
+	res, err := p.Do(client, req)
 	heardReply(ctx, p, res)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -392,7 +480,7 @@ func (s *Server) retrieveOpen(ctx context.Context, p provider.Provider, url, cty
 		return res, nil, got, res.StatusCode, nil
 	}
 	defer res.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(res.Body, 256<<20))
+	b, err := readRetrievalBody(res.Body)
 	if err != nil {
 		return nil, nil, "", 502, err
 	}
@@ -401,6 +489,45 @@ func (s *Server) retrieveOpen(ctx context.Context, p provider.Provider, url, cty
 		hint = " — " + p.Name + " may not serve this API"
 	}
 	return nil, b, got, res.StatusCode, fmt.Errorf("%s: %d %s%s%s", provider.HostOf(url), res.StatusCode, http.StatusText(res.StatusCode), errorSaid(b), hint)
+}
+
+func readRetrievalBody(r io.Reader) ([]byte, error) {
+	const most = 256 << 20
+	b, err := io.ReadAll(io.LimitReader(r, most+1))
+	if err == nil && len(b) > most {
+		err = errors.New("retrieval answer exceeds the body limit")
+	}
+	return b, err
+}
+
+// A numeric zero is reported usage; an absent/null/malformed counter is not.
+// Only the complete non-streaming embedding/rerank response uses this proof.
+func retrievedUsageKnown(b []byte) bool {
+	var a struct {
+		Usage struct {
+			Prompt *int `json:"prompt_tokens"`
+			Input  *int `json:"input_tokens"`
+			Total  *int `json:"total_tokens"`
+		} `json:"usage"`
+		Meta struct {
+			Billed struct {
+				Input *int `json:"input_tokens"`
+			} `json:"billed_units"`
+		} `json:"meta"`
+	}
+	if json.Unmarshal(b, &a) != nil {
+		return false
+	}
+	known := false
+	for _, n := range []*int{a.Usage.Prompt, a.Usage.Input, a.Usage.Total, a.Meta.Billed.Input} {
+		if n != nil {
+			if *n < 0 {
+				return false
+			}
+			known = true
+		}
+	}
+	return known
 }
 
 // retrievedTokens is what an answer says it counted: OpenAI's

@@ -51,6 +51,11 @@ type Library struct {
 	// copy (#896, skill_how.go)
 	CopySkills bool              `json:"copySkills,omitempty"`
 	SkillHow   map[string]string `json:"skillHow,omitempty"`
+	// SharedSkills puts every skill on here in ~/.agents/skills too, as
+	// magpie's link to the library's folder, for every agent and tool
+	// that reads it (usrname1833, skills_shared.go). This computer's
+	// own: Collect doesn't carry it
+	SharedSkills bool `json:"sharedSkills,omitempty"`
 	// MCPHub gives each agent that can reach it magpie's one MCP server,
 	// which hands each call on to the library's servers ticked for it, in
 	// place of their own entries (#2679, mcp_hub.go)
@@ -58,8 +63,16 @@ type Library struct {
 	// PluginsOffered are the plugins (plugin.Name) given a server of their
 	// tools, for one the user removed not to come back (plugin_tools.go)
 	PluginsOffered []string `json:"pluginsOffered,omitempty"`
-	// SeenSkills are, by repository and ref ("owner/repo@ref"), the
-	// folders of skills there the page has offered: picked or not at
+	// BridgesOffered are the Remote magpies (provider ids) whose MCP
+	// router was given a server, for one the user removed not to come
+	// back (bridge_mcp.go)
+	BridgesOffered []string `json:"bridgesOffered,omitempty"`
+	// BridgesOn are the Remote magpies (provider ids) the user asked to
+	// give their router a server, in the editor's switch (bridge_mcp.go)
+	BridgesOn []string `json:"bridgesOn,omitempty"`
+	// SeenSkills are, by repository and ref ("owner/repo@ref", or a git
+	// address and ref), or by a folder the user added ("folder:<path>"),
+	// the folders of skills there the page has offered: picked or not at
 	// install, or set aside after a check. A check offers only the others
 	// as new (skillnew.go).
 	SeenSkills map[string][]string `json:"seenSkills,omitempty"`
@@ -75,6 +88,9 @@ type Library struct {
 	// blockedSkills are copies takeEdits couldn't scan, kept in place for
 	// this sync rather than replaced or removed. Keys are physical paths.
 	blockedSkills map[string]bool
+	// stored are the skills this sync made sure of in a WSL distro's
+	// store, by path (storeSkill), with what went wrong
+	stored map[string]error
 }
 
 // Instructions are one shared text, and for each agent whether it gets it
@@ -120,6 +136,20 @@ type Applied struct {
 	// entry (Codex's startup_timeout_sec): one there other than this is
 	// the user's
 	Startup map[string]float64 `json:"startup,omitempty"`
+	// Picked are the skills magpie picked in the agent's own list of
+	// those it uses (LiveAgent's skills-settings.json, liveagent.go): one
+	// the user unpicked since stays unpicked
+	Picked []string `json:"picked,omitempty"`
+}
+
+// empty is whether a holds nothing magpie wrote: a sync that only looked
+// at an agent — its hooks, its subagents, its MCP file, with nothing of
+// the library's to give it — makes no record, and a save drops the entry
+// it looked at the agent through (#4247).
+func (a *Applied) empty() bool {
+	return !a.Instructions && a.InstrHash == "" && len(a.MCP) == 0 && len(a.Skills) == 0 &&
+		len(a.ToolsOff) == 0 && len(a.ToolRules) == 0 && len(a.Hooks) == 0 &&
+		len(a.Subagents) == 0 && len(a.Startup) == 0 && len(a.Picked) == 0
 }
 
 var mu lock // one change at a time, from the page or the CLI's process
@@ -171,7 +201,15 @@ func (l *Library) save() error {
 	for _, s := range l.Subagents {
 		s.Agents = orNone(s.Agents)
 	}
-	for _, a := range l.Applied {
+	// an entry with nothing in it is no record of what magpie wrote, and
+	// is not kept: a sync that only looked at an agent used to leave one
+	// behind, one per agent, and the write its save brought into a file
+	// otherwise unchanged was caught red by a test of the CLI's (#4247)
+	for id, a := range l.Applied {
+		if a.empty() {
+			delete(l.Applied, id)
+			continue
+		}
 		sort.Strings(a.MCP)
 		sort.Strings(a.Skills)
 	}

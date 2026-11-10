@@ -137,6 +137,7 @@ func (h *host) makePanel() *application.WebviewWindow {
 	trayOwnClicks()
 	w.OnWindowEvent(events.Mac.WindowShow, func(*application.WindowEvent) { trayHighlight(true) })
 	w.OnWindowEvent(events.Mac.WindowHide, func(*application.WindowEvent) { trayHighlight(false) })
+	sayWailsHides(w)
 	// The system's close hides the panel, as Escape does: a title bar's X
 	// (KWin's, #1283), Alt+F4 or the window manager's close key. Closed, it
 	// was gone while the tray still opened it, and the icon did nothing
@@ -147,7 +148,7 @@ func (h *host) makePanel() *application.WebviewWindow {
 			return
 		}
 		e.Cancel()
-		w.Hide()
+		hideWebview(w)
 		if omarchy.Hyprland() {
 			go omarchy.StopClicks()
 		}
@@ -215,7 +216,10 @@ func (h *host) lighten() {
 	<-h.ready
 	var ticks [2]int // the main window's, the panel's
 	for range time.Tick(lightEvery) {
-		on := settings.Load().LightweightOn()
+		// a magpie that handed the gateway to the new version lets its
+		// hidden pages go as lightweight mode does: their polls kept it
+		// asking for usage beside the new one while it drained (#4938)
+		on := settings.Load().LightweightOn() || handedOver.Load()
 		var let []*application.WebviewWindow
 		h.winMu.Lock()
 		application.InvokeSync(func() {
@@ -275,9 +279,7 @@ func (h *host) mainShown() bool { return h.main != nil && windowUp(h.main) }
 // if lightweight mode let it go; on the main thread.
 func (h *host) openMain(url string) {
 	h.closing.Store(false) // opened again while leaving full screen: it stays
-	if h.panel != nil {
-		h.panel.Hide()
-	}
+	hideWebview(h.panel)
 	// the window a restart by itself brings back: up, not in front
 	quiet := quietShow.Swap(false)
 	h.dockFront(settings.Load(), true, !quiet)
@@ -313,9 +315,7 @@ func (h *host) reopenMain() {
 		return
 	}
 	h.closing.Store(false) // reopened while leaving full screen: it stays
-	if h.panel != nil {
-		h.panel.Hide()
-	}
+	hideWebview(h.panel)
 	activateApp()
 }
 
@@ -331,7 +331,7 @@ const spaceSettle = 500 * time.Millisecond
 // shown and left behind the app the user is in (a restart by itself).
 func showHere(w *application.WebviewWindow, focus bool) {
 	setMovesToActiveSpace(w, true)
-	w.Show()
+	showWebview(w)
 	if focus {
 		w.Focus()
 	}

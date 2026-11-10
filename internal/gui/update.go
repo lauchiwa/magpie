@@ -61,6 +61,8 @@ type updater struct {
 	asked   time.Time // when the feed was last asked, by the clock or a click
 	done    int64     // downloading: bytes so far, of total (0 when unknown)
 	total   int64
+	step    string     // downloading: the step under way (update.StepDownload, …)
+	rate    []progMark // downloading: the last few seconds' progress, for its speed
 	onReady func(version string)
 	// the waiting update's notes follow the pages' language (freecss on
 	// Discord): the one they last asked in, else the app's
@@ -84,6 +86,12 @@ type updater struct {
 	autoRestart func() bool
 	autoSkip    string
 	waitAsked   bool // the restart waiting was a click's
+	// installed: this process put an update in (install), and is leaving
+	// for it; followed: it is restarting into one another magpie put in
+	// (restartBeside). Either way what is on disk is no longer another's
+	// for followReplaced to restart into.
+	installed bool
+	followed  bool
 }
 
 type updateJSON struct {
@@ -108,6 +116,12 @@ type updateJSON struct {
 	Network bool   `json:"network,omitempty"`
 	Error   string `json:"error,omitempty"`
 	Done    int64  `json:"done,omitempty"` // downloading: bytes so far
+	// downloading: the step under way, "" before the first
+	// (update.StepDownload, StepRetry, StepVerify, StepUnpack,
+	// StepSignature), and how fast the bytes came over the last seconds,
+	// per second, left out while too little is known
+	Step  string `json:"step,omitempty"`
+	Speed int64  `json:"speed,omitempty"`
 	// blocked: the version this computer wouldn't start, and why (#894)
 	Blocked *update.Blocked `json:"blocked,omitempty"`
 	Total   int64           `json:"total,omitempty"`
@@ -139,12 +153,16 @@ func updateDue(s settings.Settings, last, now time.Time) bool {
 func (u *updater) start() {
 	u.place(runtime.GOOS, update.GUI)
 	gateway.SetRestarter(u.restartBeside) // magpie update in a terminal
+	go u.followReplaced(backendCtx)       // the app's or magpie web's update (visamzh on X)
 	if u.bundle != "" {
 		go update.ForgetOldStaging(u.bundle) // #3965
 	}
 	go func() {
 		time.Sleep(5 * time.Second) // let the app settle first
-		for {
+		// until this one has handed the gateway to the new version: the
+		// copy an update left finishing its requests checks for, and
+		// restarts into, nothing (#4938)
+		for backendCtx.Err() == nil {
 			u.mu.Lock()
 			last := u.asked
 			u.mu.Unlock()
@@ -378,8 +396,16 @@ func (u *updater) begin() bool {
 	return true
 }
 
+// checkWait bounds asking the feed. The download after it has no total
+// bound: a slow one still moving goes on, and one that stops sending is
+// ended by update's stall timer, tried again a bounded number of times
+// (#5572: an 83 MB download under ~140 KB/s failed at 10 minutes part
+// way). A var for tests.
+var checkWait = 10 * time.Minute
+
 func (u *updater) run() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx := context.Background()
+	cctx, cancel := context.WithTimeout(ctx, checkWait)
 	defer cancel()
 	s := settings.Load()
 	u.mu.Lock()
@@ -392,7 +418,7 @@ func (u *updater) run() {
 		lang = notesLang(trayLang(s.Lang, systemLang))
 	}
 	stable := s.UpdateChannel == settings.UpdateStable
-	rel, err := update.LatestIn(ctx, lang)
+	rel, err := update.LatestIn(cctx, lang)
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if err == nil && u.latest != nil && update.Newer(u.latest.Version, rel.Version) {
@@ -465,11 +491,17 @@ func (u *updater) run() {
 	}
 	// an older download is replaced by this one: until it is in, there is
 	// nothing to install
-	u.state, u.done, u.total, u.staged = "downloading", 0, 0, ""
+	u.state, u.done, u.total, u.staged, u.step, u.rate = "downloading", 0, 0, "", "", nil
 	u.mu.Unlock()
 	ctx = update.WithProgress(ctx, func(done, total int64) {
 		u.mu.Lock()
 		u.done, u.total = done, total
+		u.rate = marked(u.rate, done, time.Now())
+		u.mu.Unlock()
+	})
+	ctx = update.WithStep(ctx, func(step string) {
+		u.mu.Lock()
+		u.step = step
 		u.mu.Unlock()
 	})
 	var staged string
@@ -501,7 +533,7 @@ func (u *updater) install(ask bool) bool {
 		// another magpie updated the binary after this one started: it is
 		// in, and swapping this one's download in would move it aside (the
 		// download is left: it may be the other's, staged at the same name)
-		u.staged = ""
+		u.staged, u.installed = "", true
 		return true
 	}
 	if u.staged == "" {
@@ -532,7 +564,7 @@ func (u *updater) install(ask bool) bool {
 		}
 		return false
 	}
-	u.staged = ""
+	u.staged, u.installed = "", true
 	return true
 }
 
@@ -547,6 +579,7 @@ func (u *updater) wontStart(err error) {
 	}
 	b := update.NoteBlocked(v, err)
 	u.blocked, u.state, u.aside = &b, "blocked", ""
+	u.installed = false // this one runs on, back in its place
 	u.err = err.Error()
 }
 
@@ -608,7 +641,10 @@ func (u *updater) jsonIn(lang string) updateJSON {
 		}
 	}
 	if u.state == "downloading" {
-		j.Done, j.Total = u.done, u.total
+		j.Done, j.Total, j.Step = u.done, u.total, u.step
+		if u.step == update.StepDownload {
+			j.Speed = speedOf(u.rate, u.done, time.Now())
+		}
 	}
 	if u.state == "blocked" {
 		j.Blocked = u.blocked
@@ -682,12 +718,18 @@ func updateRoutes(mux *http.ServeMux, w Windows) {
 		out := struct {
 			Latest   string        `json:"latest,omitempty"`
 			Releases []update.Note `json:"releases"`
-			Error    string        `json:"error,omitempty"`
+			// Total: how many releases there are since this one when
+			// more than Releases holds (MostNotes keeps the newest)
+			Total int    `json:"total,omitempty"`
+			Error string `json:"error,omitempty"`
 		}{Latest: j.Latest, Releases: []update.Note{}}
 		if j.Latest != "" {
-			notes, err := fetchNotes(r.Context(), Version, j.Latest, pageLang(r))
+			notes, total, err := fetchNotes(r.Context(), Version, j.Latest, pageLang(r))
 			if len(notes) == 0 && strings.TrimSpace(j.Notes) != "" {
 				notes = []update.Note{{Version: j.Latest, Notes: j.Notes, URL: j.URL}}
+			}
+			if total > len(notes) {
+				out.Total = total
 			}
 			if len(notes) > 0 {
 				out.Releases = notes
@@ -858,4 +900,45 @@ func restartInto(web, window bool, view string, bySelf bool) bool {
 func mainShown(w Windows) bool {
 	s, ok := w.(interface{ MainShown() bool })
 	return ok && s.MainShown()
+}
+
+// progMark is how many bytes a download had at a moment.
+type progMark struct {
+	at   time.Time
+	done int64
+}
+
+// rateSpan is how far back a download's speed looks.
+const rateSpan = 5 * time.Second
+
+// marked is marks with done at now added, at most one each quarter
+// second, those older than rateSpan dropped but the newest of them, and
+// all of them when done went back (a host that sent the whole file again).
+func marked(marks []progMark, done int64, now time.Time) []progMark {
+	if n := len(marks); n > 0 && done < marks[n-1].done {
+		marks = nil
+	}
+	if n := len(marks); n > 0 && now.Sub(marks[n-1].at) < 250*time.Millisecond {
+		return marks
+	}
+	i := 0
+	for i+1 < len(marks) && now.Sub(marks[i+1].at) >= rateSpan {
+		i++
+	}
+	return append(marks[i:], progMark{now, done})
+}
+
+// speedOf is the bytes a second a download came at over about the last
+// rateSpan, done the bytes it has now: 0 while under a second is known.
+// A stalled download's falls to 0 as the seconds pass without bytes.
+func speedOf(marks []progMark, done int64, now time.Time) int64 {
+	for _, m := range marks {
+		if d := now.Sub(m.at); d <= rateSpan+time.Second {
+			if d < time.Second || done < m.done {
+				return 0
+			}
+			return int64(float64(done-m.done) / d.Seconds())
+		}
+	}
+	return 0
 }

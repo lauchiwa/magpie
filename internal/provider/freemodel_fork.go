@@ -108,7 +108,10 @@ func costsNothing(pr catalog.Price) bool {
 	if pr.Input != 0 || pr.Output != 0 || pr.CacheRead != 0 || pr.CacheWrite != 0 || pr.CacheWrite1h != 0 {
 		return false
 	}
-	for _, t := range pr.Tiers {
+	for i, t := range pr.Tiers {
+		if t.Above <= 0 || i > 0 && t.Above <= pr.Tiers[i-1].Above {
+			return false
+		}
 		if t.Input != 0 || t.Output != 0 || t.CacheRead != 0 || t.CacheWrite != 0 || t.CacheWrite1h != 0 {
 			return false
 		}

@@ -48,6 +48,34 @@ func billAmount(a *float64) string {
 
 var billListed = provider.BillingDecision{Policy: provider.BillingPolicy{Mode: provider.BillingList, Exhausted: provider.QuotaStop}, Source: provider.BillingSourceList}
 
+func TestBillerSharesActualModelButNotUserPriceWithReference(t *testing.T) {
+	billingHome(t)
+	s := settings.Load()
+	s.ModelPrices = map[string]settings.ModelPrice{
+		"relay/m":               settings.StatedPrice(catalog.Price{}),
+		"relay/claude-opus-4-1": settings.StatedPrice(catalog.Price{Input: 3, Output: 7}),
+	}
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	r := Record{Time: time.Now(), Provider: "relay", Model: "m", Served: "claude-opus-4-1", Input: 1_000_000, Output: 1_000_000, Status: 200}
+	bill := NewBiller()
+	b := bill(r, billListed, "")
+	if !billNear(b.Charge, 10) || !billNear(b.List, 90) || b.ListSource != "provider" {
+		t.Fatalf("served tariff/reference: %+v", b)
+	}
+	r.OwnCost = new(4.0)
+	b = bill(r, billListed, "")
+	if !billNear(b.Charge, 4) || !billNear(b.List, 90) {
+		t.Fatalf("reported cost changed published reference: %+v", b)
+	}
+	r.OwnCost, r.Served = nil, "unlisted-served-model"
+	b = bill(r, billListed, "")
+	if b.Charge != nil || b.List != nil {
+		t.Fatalf("unknown served identity borrowed requested zero: %+v", b)
+	}
+}
+
 // The charge is the ledger's cost of the same record at every peak edge,
 // DeepSeek's own hours and Command Code's: the biller costs it through
 // NewCoster, so the hour it was made at decides, and the list is the

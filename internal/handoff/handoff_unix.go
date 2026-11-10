@@ -154,7 +154,13 @@ func (o *Offer) Accept(ctx context.Context) (*Conn, error) {
 	}
 }
 
-// Give sends the listening socket f, with m.
+// Give sends the listening socket f, with m. The number for the send
+// comes from SyscallConn, not Fd: f is a listener's copy sharing the
+// listener's open file description (ListenerFile), and Fd puts such a
+// description in blocking mode (a socket's File hands out expecting its
+// Fd to be read) — the gateway's own accept would then sleep in the
+// syscall once nothing connected, past Close, and the handover would
+// never finish (#4107).
 func (c *Conn) Give(f *os.File, m Meta) error {
 	b, _ := json.Marshal(m)
 	b = append(b, '\n')

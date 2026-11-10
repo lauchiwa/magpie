@@ -279,11 +279,17 @@ func readLimited(r io.Reader) (string, error) {
 // forkNotes is the notes of every release of Repo() after after up to and
 // including upto, newest first, in lang.
 func forkNotes(ctx context.Context, after, upto, lang string) ([]Note, error) {
+	notes, _, err := forkNotesTotal(ctx, after, upto, lang)
+	return notes, err
+}
+
+func forkNotesTotal(ctx context.Context, after, upto, lang string) ([]Note, int, error) {
 	notes, err := forkNoteList(ctx, lang)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return Between(notes, after, upto), nil
+	all := between(notes, after, upto)
+	return capNotes(all), len(all), nil
 }
 
 // forkNotesBack is NotesBack from Repo()'s releases: upto and the n before

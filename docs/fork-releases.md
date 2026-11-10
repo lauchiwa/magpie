@@ -411,6 +411,12 @@ The sync PR records each item below as checked, with what was run:
   suite, so the tag's own reds are expected; those the branch adds are the
   fork's to fix. It runs on Linux: a change to a Windows-only path is
   tried on Windows too.
+  Every shard records its actual checkout SHA, final test counts, process
+  exit and named failures. Missing shards or summaries, mismatched SHAs,
+  crashes, cancellation and earlyoom kills make the comparison incomplete,
+  never green; a run without an upstream base fails on every fork failure.
+  Pure report scenarios are in `.github/gui-suite/compare.test.mjs` and do
+  not execute browsers. An unpublished worktree is not the ref CI tests.
 - **Provider writes** (`internal/provider`): `store` is still
   `commit(f, intent{})` in `provider.go`. `Save`, `AddCopy`, `Delete`,
   `Rename` (`rename.go`), `Mirror` (`backup.go`), `AddKeys` (`keys.go`) and
@@ -578,6 +584,9 @@ with the 10, 20, 50 or 100 releases before it (`NotesBack`). Both read
 this repository's releases (`forkNotes`, `forkNotesBack`), not upstream's
 `usemagpie.ai/api/notes`, whose versions and notes are upstream's. The
 only exception is when `MAGPIE_NOTES_FEED` names a feed.
+`NotesBetweenTotal` counts this same fork list before capping the visible
+notes. Upstream's scheduled `notes-mirror` and `docker-daily` jobs remain
+restricted to the upstream repository, so they cannot mutate fork releases.
 
 Settings' update channel (`settings.UpdateStable`) is honoured on the same
 list. Upstream's worker picks Stable's release on the server (`stableOf` in

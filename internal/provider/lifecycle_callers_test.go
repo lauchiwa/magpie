@@ -133,3 +133,26 @@ func TestSetOffChecksTheValueItWasGiven(t *testing.T) {
 		t.Fatal("SetOff by id didn't switch it off")
 	}
 }
+
+func TestSetUseFirstChecksTheValueItWasGiven(t *testing.T) {
+	h := readyHome(t, nil, "relay")
+	old := h.find("relay")
+	if err := Delete("relay"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(h.row("relay")); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetUseFirst("relay", true, Expect(old)); !errors.Is(err, ErrStale) {
+		t.Fatalf("old provider priority write: %v", err)
+	}
+	if p, _ := rawRow(t, "relay"); p.UseFirst {
+		t.Fatal("stale writer changed the replacement provider")
+	}
+	if err := SetUseFirst("relay", true); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := rawRow(t, "relay"); !p.UseFirst {
+		t.Fatal("by-id compatibility write did not set priority")
+	}
+}

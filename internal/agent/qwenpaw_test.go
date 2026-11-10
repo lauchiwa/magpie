@@ -140,7 +140,7 @@ func qwenpawHome(t *testing.T) (home, work string) {
 		t.Fatal(err)
 	}
 	if err := catalog.SaveLive("kimi", "https://api.moonshot.cn/v1", []catalog.Model{
-		{ID: "k2", Context: 262144, Output: 16384},
+		{ID: "k2", Context: 262144, Output: 16384, Efforts: []string{"none", "low", "medium", "high", "max", "ultra"}},
 		{ID: "k2-vision", Images: true},
 	}); err != nil {
 		t.Fatal(err)
@@ -531,5 +531,120 @@ func TestQwenPawNullModelRestored(t *testing.T) {
 	}
 	if got := readFile(path); got != body {
 		t.Fatalf("Disconnect left\n%s", got)
+	}
+}
+
+// QwenPaw applies an agent's thinking level only to a model whose card
+// says how it thinks (Pkh on Discord: magpie's cards said nothing, so
+// thinking_param_style was null and resolve_thinking dropped the level).
+// A model of magpie's with reasoning levels is declared "effort" with the
+// levels QwenPaw names, none and ultra left out; one without says
+// nothing. A style the user set in QwenPaw stays, and one magpie said
+// before is taken back once the model has no levels.
+func TestQwenPawModelsDeclareThinking(t *testing.T) {
+	_, work := qwenpawHome(t)
+	prov := filepath.Join(work+".secret", "providers", "custom", "magpie.json")
+	a := qwenpawFind(t, "qwenpaw")
+	if err := a.Apply("model", "magpie/kimi/k2"); err != nil {
+		t.Fatal(err)
+	}
+	p := qwenpawJSON(t, prov)
+	k2 := p.Get(`extra_models.#(id=="kimi/k2")`)
+	if k2.Get("thinking_param_style").String() != "effort" {
+		t.Fatalf("kimi/k2 declares no effort: %s", k2.Raw)
+	}
+	var levels []string
+	for _, l := range k2.Get("reasoning_effort_options").Array() {
+		levels = append(levels, l.String())
+	}
+	if !slices.Equal(levels, []string{"low", "medium", "high", "max"}) {
+		t.Errorf("kimi/k2's levels: %v", levels)
+	}
+	vision := p.Get(`extra_models.#(id=="kimi/k2-vision")`)
+	if vision.Get("thinking_param_style").Exists() || vision.Get("reasoning_effort_options").Exists() {
+		t.Errorf("a model with no levels declares some: %s", vision.Raw)
+	}
+
+	// the user's style for k2-vision, and magpie's for k2, whose levels go
+	var m map[string]any
+	json.Unmarshal([]byte(readFile(prov)), &m)
+	for _, e := range m["extra_models"].([]any) {
+		e := e.(map[string]any)
+		if e["id"] == "kimi/k2-vision" {
+			e["thinking_param_style"], e["reasoning_effort_options"] = "effort", []any{"high"}
+			e["config_overrides"] = []any{"thinking_param_style", "reasoning_effort_options"}
+		}
+	}
+	b, _ := json.MarshalIndent(m, "", "  ")
+	writeFile(t, prov, string(b))
+	if err := catalog.SaveLive("kimi", "https://api.moonshot.cn/v1", []catalog.Model{
+		{ID: "k2", Context: 262144, Output: 16384},
+		{ID: "k2-vision", Images: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	builtModels.Lock()
+	builtModels.m = nil
+	builtModels.Unlock()
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	p = qwenpawJSON(t, prov)
+	k2 = p.Get(`extra_models.#(id=="kimi/k2")`)
+	if s := k2.Get("thinking_param_style"); s.Exists() && s.Type != gjson.Null {
+		t.Errorf("kimi/k2 has no levels now and still declares them: %s", k2.Raw)
+	}
+	vision = p.Get(`extra_models.#(id=="kimi/k2-vision")`)
+	if vision.Get("thinking_param_style").String() != "effort" || vision.Get("reasoning_effort_options.0").String() != "high" {
+		t.Errorf("the user's thinking settings of kimi/k2-vision lost: %s", vision.Raw)
+	}
+}
+
+// The effort field is the agent's thinking_level in agent.json: a level
+// is written with no thinking_budget (QwenPaw refuses one beside any
+// level but budget), "" is QwenPaw's inherit, and a level QwenPaw
+// doesn't name is refused. A sync leaves the level alone.
+func TestQwenPawEffortField(t *testing.T) {
+	_, work := qwenpawHome(t)
+	path := filepath.Join(work, "workspaces", "default", "agent.json")
+	var m map[string]any
+	json.Unmarshal([]byte(readFile(path)), &m)
+	m["thinking_level"], m["thinking_budget"] = "budget", 4096
+	b, _ := json.MarshalIndent(m, "", "  ")
+	writeFile(t, path, string(b))
+	a := qwenpawFind(t, "qwenpaw")
+	if got := a.Field("effort").Get(); got != "budget" {
+		t.Fatalf("effort read %q", got)
+	}
+	if err := a.Apply("model", "magpie/kimi/k2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Apply("effort", "high"); err != nil {
+		t.Fatal(err)
+	}
+	j := qwenpawJSON(t, path)
+	if j.Get("thinking_level").String() != "high" || j.Get("thinking_budget").Exists() {
+		t.Fatalf("agent.json after effort high: %s", j.Raw)
+	}
+	if j.Get("active_model.provider_id").String() != "magpie" || j.Get("fallback_models.0.model").String() != "deepseek-reasoner" {
+		t.Errorf("other keys changed: %s", j.Raw)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if got := qwenpawJSON(t, path).Get("thinking_level").String(); got != "high" {
+		t.Errorf("a sync changed the level to %q", got)
+	}
+	if err := a.Apply("effort", "ultra"); err == nil {
+		t.Error("a level QwenPaw doesn't name was taken")
+	}
+	if err := a.Apply("effort", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := qwenpawJSON(t, path).Get("thinking_level").String(); got != "inherit" {
+		t.Errorf("effort \"\" wrote %q", got)
+	}
+	if got := a.Field("effort").Get(); got != "" {
+		t.Errorf("inherit reads as %q", got)
 	}
 }

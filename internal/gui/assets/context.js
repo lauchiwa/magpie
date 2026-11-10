@@ -206,6 +206,7 @@
     for (const e of all) {
       if (!e.target.isConnected) { cardSizes.unobserve(e.target); continue; }
       const card = e.target, w = e.contentRect.width;
+      if (!w) continue; // out of sight (#4652)
       cardWidth[card.dataset.place] = w;
       // on the next frame: a class changed in the observer's own call
       // changes the card's height, which WebKit reports as a
@@ -723,7 +724,7 @@
         parts = cur = null;
         return;
       }
-      rid = r.id;
+      rid = r;
       const window = p.window || 0;
       const full = window ? p.tokens / window : 0;
       const live = !r.done;
@@ -789,8 +790,13 @@
         if (r.agent) route.append(el("span", "ctx-sep", "›"));
         route.append(what);
       }
-      head.append(route);
-      head.append(st);
+      // the route and the state go together: where the title leaves them
+      // too little room they take a line of their own, the model id cut
+      // to fit there, and nothing is drawn over the title (packinggoods on
+      // Discord: in a narrow window the provider's icon sat on it)
+      const end = el("span", "ctx-end");
+      end.append(route, st);
+      head.append(end);
 
       // how full, and the cache
       const top = el("div", "ctx-top");
@@ -970,11 +976,7 @@
 
   // A part of the card clicked opens what the request sent there, read
   // from the request's body: an item alone (a tool, a file, a turn), or
-  // the part's items, each opened to its text. magpie keeps the last few
-  // requests' bodies, masked, in memory only, so an older one's text is
-  // gone. A long text comes a stretch at a time, so a prompt of megabytes
-  // doesn't hold the window up.
-  // in ctxtext.js, loaded when a part is first opened
+  // the part's items, each opened to its text (ctxtext.js, loaded then)
   const openCtxText = (...a) => import("./ctxtext.js").then((m) => m.open({ fmtK, partName, itemName, itemLabel, tagOf }, ...a)).catch(statusErr);
   window.openCtxText = openCtxText;
   window.ctxFmt = fmtK;
@@ -1235,16 +1237,11 @@
         : t("{value}: {tokens} more tokens over the range (+{pct})", { value: show(p.value), tokens: fmtK(extra(p)), pct: pct(extra(p) / low) });
       plot.append(dot);
     };
-    // the advice's value first, then the setting now, then the range's two
-    // ends: a value that sits too close to one before it is left off, so two
-    // labels are never drawn over each other (#1549, Ti800: 170K, the
-    // leanest, one step from the axis's 160K, read as "1170K")
+    // the advice's value, the setting now, the range's ends: one too close
+    // to one before is left off, so labels never overlap (#1549, Ti800)
     const along = (p) => pts.indexOf(p) / (pts.length - 1);
-    // the tags over the dots the same way: "Leanest" first, then the setting
-    // now, then the costliest; one beside a tag that matters more and at
-    // about its height keeps its dot and tooltip but not its tag, so a
-    // setting one step from the advice doesn't print its "+3%" over
-    // "Leanest" (#1549)
+    // the tags the same way: Leanest, the setting now, the costliest; one
+    // near a tag that matters more keeps its dot, not its tag (#1549)
     const tagged = [];
     const tag = (p, label) => {
       if (tagged.some((k) => Math.abs(along(k) - along(p)) < TICK_GAP && Math.abs(Y(k) - Y(p)) < 20)) return "";
@@ -1275,16 +1272,16 @@
   }
 
   function adviceRow(agent, a) {
-    const r = a.compact || a.ttl;
-    const ttl = !!a.ttl;
-    const show = (v) => ttl ? ttlName(v) : fmtK(+v);
+    // few: put in by tune, too few calls to advise on; kept for Undo (linkaww)
+    const r = a.compact || a.ttl || { current: a.setting.value, best: a.setting.value, cost: 0, low: 0 };
+    const ttl = a.knob != "compact";
+    const show = (v) => ttl ? (v ? ttlName(v) : t("Default")) : fmtK(+v);
     const cur = ttl ? r.current : r.current, best = r.best;
     const same = String(cur) === String(best);
     const saves = r.cost > 0 ? (r.cost - r.low) / r.cost : 0;
     const set = a.setting || {};
-    // a model's own Compact at is where Codex runs, over Long conversations:
-    // the value put in there isn't "In use", and putting another in moves
-    // nothing (hoobnn on Discord: "In use" for 170K beside "Now 430K")
+    // a model's own Compact at is where Codex runs, over Long conversations
+    // (hoobnn on Discord: "In use" for 170K beside "Now 430K")
     const own = a.own;
     const held = !!(set.locked || own);
     const applied = !own && set.ours && String(set.value) === String(best);
@@ -1325,7 +1322,8 @@
 
     const why = el("p", "ctx-tune-why");
     const f = r.facts || {};
-    if (a.compact) {
+    if (a.few) why.textContent = t("Not enough calls in this range to tune on");
+    else if (a.compact) {
       why.textContent = f.compacts
         ? t("Your conversations grow {growth} a call; a compaction leaves {after}, and reading back what it dropped costs {rework}. {n} compactions in the range.", { growth: fmtK(f.growth), after: fmtK(f.after), rework: fmtK(f.rework), n: f.compacts })
         : t("Your conversations grow {growth} a call, and none was compacted in the range.", { growth: fmtK(f.growth) });
@@ -1346,6 +1344,8 @@
       why.textContent = t("{quick} of your calls came within 5 minutes of the one before, {pause} after a pause of 5 to 60 minutes.", { quick: pct(f.quick || 0), pause: pct(f.pause || 0) });
     }
     row.append(why);
+    // one with its own Compact at, which Use doesn't move (hoobnn)
+    for (const m of a.apart || []) row.append(el("p", "ctx-tune-caveat ctx-tune-apart", t("{model} compacts at its own {value}, which this doesn't move", { model: m.model, value: fmtK(m.value) })));
     // a window advised is weighed by tokens alone: what a compaction loses of
     // the task isn't measured, and a smaller one compacts more often (#1854)
     if (a.compact && (!same || lean)) row.append(el("p", "ctx-tune-caveat", timed
@@ -1353,11 +1353,14 @@
       : t("A token estimate only: it doesn't measure how well the agent keeps the task after a compaction. The lower the window, the more often it compacts.")));
 
     const foot = el("div", "ctx-tune-foot");
+    // the advice magpie put in is "In use" in every range, Now at it too
+    // (hoobnn: over 7 and 30 days it read "Already the leanest")
     const verdict = !lean && (same || applied)
       ? el("span", "ctx-chip good", "")
       : el("span", "ctx-chip info", "");
     verdict.append(el("i"), lean ? t("Not the leanest: {range} spends the fewest tokens", { range: bandName })
-      : same ? t("Already the leanest for how you work") : applied ? t("In use") : t("{pct} fewer tokens · {tokens} over the range", { pct: pct(saves), tokens: fmtK(Math.round(r.cost - r.low)) }));
+      : applied ? t("In use") : same ? t("Already the leanest for how you work") : t("{pct} fewer tokens · {tokens} over the range", { pct: pct(saves), tokens: fmtK(Math.round(r.cost - r.low)) }));
+    verdict.hidden = !!a.few && !applied;
     foot.append(verdict, el("span", "grow"));
     const note = el("div", "ctx-tune-src");
     title.after(note);
@@ -1388,26 +1391,23 @@
       undo.onclick = () => send("undo");
       foot.append(undo);
     }
-    if (!same && !applied && !held) {
-      const go = el("button", "text primary", t("Use {value}", { value: show(best) }));
+    const use = (v, tt) => {
+      const go = el("button", "text primary", t("Use {value}", { value: show(v) }));
       go.type = "button";
       go.disabled = tuneBusy === key;
-      if (set.value && !set.ours) go.dataset.tt = t("Replaces your {value}; Undo puts it back", { value: show(set.value) });
-      go.onclick = () => send("apply", best);
+      if (tt) go.dataset.tt = tt;
+      go.onclick = () => send("apply", v);
       foot.append(go);
-    }
-    if (lean && !held) {
-      const go = el("button", "text primary", t("Use {value}", { value: show(lean.value) }));
-      go.type = "button";
-      go.disabled = tuneBusy === key;
-      go.dataset.tt = set.value && !set.ours
-        ? t("Replaces your {value}; Undo puts it back", { value: show(set.value) })
-        : t("Fewer tokens, but more compactions to wait on");
-      go.onclick = () => send("apply", lean.value);
-      foot.append(go);
-    }
+    };
+    const yours = set.value && !set.ours && t("Replaces your {value}; Undo puts it back", { value: show(set.value) });
+    if (!same && !applied && !held) use(best, yours);
+    // an hour no Undo puts back, too few calls to weigh (linkaww)
+    if (a.few && ttl && cur === "1h" && !held && !set.ours) use("5m", yours);
+    if (lean && !held) use(lean.value, yours || t("Fewer tokens, but more compactions to wait on"));
     // a window of the reader's own (#1860), from the same replay: each
-    // value's tokens past the leanest and compactions, both estimates
+    // value's tokens against the setting now, which the reader picks away
+    // from (hayden4608 on Discord: against the leanest, every line read as
+    // more), and compactions, both estimates
     const pts = (a.compact && a.compact.curve) || [];
     if (pts.length > 1 && !held) {
       const other = el("button", "text ctx-tune-pick", t("Other window…"));
@@ -1417,24 +1417,27 @@
       other.setAttribute("aria-expanded", "false");
       other.onclick = (e) => {
         e.stopPropagation();
-        // timed, the advice may spend over the cheapest to wait no
-        // longer, so each value is said against the cheapest
+        // the fewest tokens: timed, the advice may spend over the cheapest
+        // to wait no longer, so the cheapest
         const cheapest = pts.reduce((x, p) => p.cost < x.cost ? p : x, pts[0]);
-        const base = timed ? cheapest.cost : (pts.find((p) => p.value === best) || {}).cost ?? r.low;
+        const fewest = timed ? cheapest.value : best;
         const now = set.ours && set.value != null ? +set.value : cur;
         const near = pts.reduce((x, p) => Math.abs(p.value - now) < Math.abs(x.value - now) ? p : x, pts[0]);
+        // the setting now's cost: its own point, else the replay's at it
+        const base = near.value === now ? near.cost : r.cost > 0 ? r.cost : near.cost;
         const opts = pts.map((p) => {
-          const extra = Math.max(0, p.cost - base);
-          const spend = p.value === (timed ? cheapest.value : best) ? t("Fewest tokens")
-            : base > 0 && extra / base < 0.005 ? t("As few tokens")
-            : t("+{tokens} tokens (+{pct})", { tokens: fmtK(extra), pct: pct(base > 0 ? extra / base : 0) });
+          const diff = p.cost - base, share = base > 0 ? Math.abs(diff) / base : 0;
+          const spend = p.value === now ? t("Your setting now")
+            : share < 0.005 ? t("As few tokens")
+            : diff < 0 ? t("−{tokens} tokens (−{pct})", { tokens: fmtK(-diff), pct: pct(share) })
+            : t("+{tokens} tokens (+{pct})", { tokens: fmtK(diff), pct: pct(share) });
           const often = p.compacts == null ? "" : p.compacts ? count(p.compacts, "about 1 compaction", "about {n} compactions") : t("no compaction");
           const wait = timed && p.compacts ? t("about {d} waiting", { d: fmtDur(p.wait || 0) }) : "";
-          return { v: String(p.value), name: show(p.value), literalName: true, note: [spend, often, wait].filter(Boolean).join(" · ") };
+          return { v: String(p.value), name: show(p.value), literalName: true, note: [spend, p.value === fewest ? t("Fewest tokens") : "", often, wait].filter(Boolean).join(" · ") };
         });
         openProtoMenu(other, opts, String(near.value), (v) => {
           if (v !== String(now)) send("apply", v);
-        }, "Compact at · estimated from your calls of the range", "ctx-tune-menu");
+        }, "Compact at · against the setting now, from your calls of the range", "ctx-tune-menu");
       };
       foot.append(other);
     }
@@ -1466,8 +1469,8 @@
     const name = el("div", "ctx-who-box");
     name.append(who, el("div", "ctx-who-sub", count(ag.calls, "1 call", "{n} calls")));
     head.append(name, el("span", "grow"));
-    const total = ag.advice.reduce((s, a) => { const r = a.compact || a.ttl; return s + Math.max(0, r.cost - r.low); }, 0);
-    const all = ag.advice.reduce((s, a) => s + (a.compact || a.ttl).cost, 0);
+    const total = ag.advice.reduce((s, a) => { const r = a.compact || a.ttl || {}; return s + Math.max(0, r.cost - r.low || 0); }, 0);
+    const all = ag.advice.reduce((s, a) => s + ((a.compact || a.ttl)?.cost || 0), 0);
     // a share that rounds to nothing is no promise
     if (all > 0 && total / all >= 0.01) head.append(el("span", "ctx-tune-total", t("Up to {pct} fewer", { pct: pct(total / all) })));
     card.append(head);

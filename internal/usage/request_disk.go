@@ -132,6 +132,16 @@ func diskEntry(b []byte, c *rowChunk) []byte {
 		latest = c.Latest.UnixNano()
 	}
 	put(uint64(latest))
+	budgetLatest := int64(0)
+	if !c.BudgetLatest.IsZero() {
+		budgetLatest = c.BudgetLatest.UnixNano()
+	}
+	put(uint64(budgetLatest))
+	if c.BudgetInvalid {
+		put(1)
+	} else {
+		put(0)
+	}
 	put(uint64(len(locations)))
 	for _, loc := range locations {
 		name, offset := time.Unix(0, 0).In(loc).Zone()
@@ -191,6 +201,14 @@ func readDiskEntry(b []byte) (*rowChunk, error) {
 	if latest := int64(take()); latest != 0 {
 		c.Latest = time.Unix(0, latest).In(time.Local)
 	}
+	if latest := int64(take()); latest != 0 {
+		c.BudgetLatest = time.Unix(0, latest)
+	}
+	invalid := take()
+	if invalid > 1 {
+		return nil, errDiskEntry
+	}
+	c.BudgetInvalid = invalid == 1
 	n := take()
 	if b == nil || n > uint64(len(b)) {
 		return nil, errDiskEntry
@@ -494,8 +512,12 @@ func diskEntryArchive(b []byte) (size, modified int64, archive []byte, ok bool) 
 		}
 	}
 	size, modified = int64(take()), int64(take())
-	take() // count
-	take() // latest
+	take()          // count
+	take()          // latest
+	take()          // budget latest
+	if take() > 1 { // malformed budget clock present
+		return 0, 0, nil, false
+	}
 	n := take()
 	if b == nil || n > uint64(len(b)) {
 		return 0, 0, nil, false

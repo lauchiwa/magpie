@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/yetone/magpie/internal/catalog"
@@ -158,6 +159,13 @@ func openCodeSessionAt(h map[string]string, u string) map[string]string {
 	}
 	id := openCodeSession("")
 	h["X-Opencode-Session"], h["X-Opencode-Session-Id"] = id, id
+	// as OpenCode 2 asks its gateway (#3491), unless the user set their own
+	if !slices.ContainsFunc(slices.Collect(maps.Keys(h)), func(k string) bool { return strings.EqualFold(k, "User-Agent") }) {
+		h["User-Agent"] = OpenCodeUserAgent()
+	}
+	if !slices.ContainsFunc(slices.Collect(maps.Keys(h)), func(k string) bool { return strings.EqualFold(k, "x-opencode-client") }) {
+		h["X-Opencode-Client"] = "cli"
+	}
 	return h
 }
 
@@ -180,4 +188,19 @@ func (p Provider) remotePrice(model string) (catalog.Price, bool) {
 func (p Provider) RemotePriced(model string) bool {
 	_, ok := p.remotePrice(model)
 	return ok
+}
+
+// RemoteVia is the magpies a remote magpie's model passes through to its
+// vendor, as its list said, that magpie last (catalog's magpie_via.go);
+// nil for another provider's, or a list from a magpie from before.
+func (p Provider) RemoteVia(model string) []string {
+	if !p.IsRemoteMagpie() {
+		return nil
+	}
+	for _, m := range p.liveByID(model) {
+		if len(m.Via) > 0 {
+			return m.Via
+		}
+	}
+	return nil
 }

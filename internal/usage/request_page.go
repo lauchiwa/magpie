@@ -67,10 +67,9 @@ type RequestPage struct {
 }
 
 type packedRow struct {
-	// at is the row's time in unix ns, and loc its zone (Time): a
-	// time.Time was 24 of a row's bytes (#2278)
-	at  int64
-	loc *time.Location
+	// at is the row's time in unix ns, and zone its zone in rowZones
+	// (Time): a time.Time was 24 of a row's bytes (#2278)
+	at int64
 	// Varied are the strings of rowVaried, and Shape the chunk's Shapes
 	// entry that holds the row's other strings
 	Varied [len(rowVaried)]uint32
@@ -79,9 +78,9 @@ type packedRow struct {
 	// 48 of a row's bytes as int64s (#2278); one past it is kept as the
 	// most an int32 holds (tokensOf)
 	Tokens [6]int32
-	// fork: Flags sits in the 4 bytes before Order's alignment, which a
-	// sixth Varied (rowHold) took from the row's end (TestRowsOfOneSessionShareAShape)
+	// Hold adds a sixth varied string; put Flags and zone in the alignment gap.
 	Flags          uint16
+	zone           uint16
 	Order, RouteID int64
 	Cost, Credits  float64
 	// the times of the call, in ms as in Record, kept in 32 bits (msOf):
@@ -91,7 +90,74 @@ type packedRow struct {
 	Sent, Flow, FirstReasoning int32
 	Own, Retried, Queued       int32
 	Masking                    int32 // ms (Record.Masking)
-	Status, Tries              int32
+	Status                     int32
+	// Tries and ImageFiles in 16 bits: neither comes near 32767 (smallOf).
+	Tries, ImageFiles int16
+	// the bytes up and down (Record.UpBytes, DownBytes, ImageFilesSaved),
+	// in 32 bits as Masking: 2GiB is past any request a vendor takes
+	UpBytes, DownBytes, FilesSaved int32
+}
+
+// rowZones are the zones rows' times are in, by a row's zone; 0 is the
+// zero time. A row held its *time.Location, and that one pointer made
+// every []packedRow a slice the collector scans: the pages' and the kept
+// buffers' hundreds of thousands of rows, on every cycle, while calls
+// came in (#4737). A zone is known by its name and offset, not its
+// pointer: a time parsed with an offset, or a chunk read from disk, has
+// a new FixedZone each.
+var rowZones struct {
+	sync.Mutex
+	list atomic.Pointer[[]*time.Location]
+	ids  map[rowZoneKey]uint16
+	seen map[*time.Location]uint16
+}
+
+type rowZoneKey struct {
+	name   string
+	offset int
+}
+
+// zoneUTC is UTC's id. time.Local is a zone as any other: a test sets
+// it, and a row keeps the zone it was written in.
+const zoneUTC = 1
+
+func init() {
+	list := []*time.Location{nil, time.UTC}
+	rowZones.list.Store(&list)
+	rowZones.ids = map[rowZoneKey]uint16{}
+	rowZones.seen = map[*time.Location]uint16{}
+}
+
+// zoneOf is loc's id in rowZones, added when it is new. Past the most a
+// row's zone holds, a new zone's times are kept in UTC: the same
+// instants, read in another zone.
+func zoneOf(loc *time.Location) uint16 {
+	if loc == time.UTC || loc == nil {
+		return zoneUTC
+	}
+	rowZones.Lock()
+	defer rowZones.Unlock()
+	if id, ok := rowZones.seen[loc]; ok {
+		return id
+	}
+	_, offset := time.Unix(0, 0).In(loc).Zone()
+	key := rowZoneKey{loc.String(), offset}
+	id, ok := rowZones.ids[key]
+	if !ok {
+		list := *rowZones.list.Load()
+		if len(list) > math.MaxUint16 {
+			return zoneUTC
+		}
+		id = uint16(len(list))
+		next := append(list[:len(list):len(list)], loc)
+		rowZones.list.Store(&next)
+		rowZones.ids[key] = id
+	}
+	if len(rowZones.seen) >= 1024 { // a pointer each parse: kept bounded
+		clear(rowZones.seen)
+	}
+	rowZones.seen[loc] = id
+	return id
 }
 
 // msOf is a time in ms as a packedRow keeps it: one past 24 days, which
@@ -103,19 +169,28 @@ func tokensOf(n int64) int32 { return int32(max(min(n, math.MaxInt32), math.MinI
 
 // Time is the row's time, in the zone it was written in.
 func (p *packedRow) Time() time.Time {
-	if p.loc == nil {
+	if p.zone == 0 {
 		return time.Time{}
 	}
-	return time.Unix(0, p.at).In(p.loc)
+	return time.Unix(0, p.at).In((*rowZones.list.Load())[p.zone])
 }
 
 // setTime keeps t as the row's time. The zero time stays zero.
 func (p *packedRow) setTime(t time.Time) {
 	if t.IsZero() {
-		p.at, p.loc = 0, nil
+		p.at, p.zone = 0, 0
 		return
 	}
-	p.at, p.loc = t.UnixNano(), t.Location()
+	p.setTimeIn(t, zoneOf(t.Location()))
+}
+
+// setTimeIn is setTime of a time in zone, which zoneOf gave.
+func (p *packedRow) setTimeIn(t time.Time, zone uint16) {
+	if t.IsZero() {
+		p.at, p.zone = 0, 0
+		return
+	}
+	p.at, p.zone = t.UnixNano(), zone
 }
 
 // rowHandedOn is the Flags bit of Record.HandedOn, rowReasoningHidden
@@ -164,6 +239,10 @@ type rowChunk struct {
 	used   *atomic.Uint64
 	Count  int
 	Latest time.Time
+	// BudgetLatest is the admission clock's upper bound, not display Time.
+	// BudgetInvalid forces visitation so malformed holds cannot skip a cap.
+	BudgetLatest  time.Time
+	BudgetInvalid bool
 	// Computer is the other computer whose day this is (#542), by id
 	Computer string
 	// serial names the chunk as made, for the cells a page keeps of it
@@ -274,7 +353,7 @@ func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 		c.Bytes += int64(len(s) + 48)
 		return id
 	}
-	p := packedRow{Tokens: [6]int32{tokensOf(int64(r.Input)), tokensOf(int64(r.Output)), tokensOf(int64(r.CacheRead)), tokensOf(int64(r.CacheWrite)), tokensOf(int64(r.Reasoning)), tokensOf(int64(r.CacheWrite1h))}, Millis: msOf(r.Millis), TTFT: msOf(r.TTFT), FirstText: msOf(r.FirstText), FirstReasoning: msOf(r.FirstReasoning), Sent: msOf(r.Sent), Flow: msOf(r.Flow), Own: msOf(r.Own), Masking: int32(min(r.Masking, math.MaxInt32)), Retried: msOf(r.Retried), Queued: msOf(r.Queued), Order: order, RouteID: r.RouteID, Cost: r.Cost, Status: int32(r.Status), Tries: int32(r.Tries)}
+	p := packedRow{Tokens: [6]int32{tokensOf(int64(r.Input)), tokensOf(int64(r.Output)), tokensOf(int64(r.CacheRead)), tokensOf(int64(r.CacheWrite)), tokensOf(int64(r.Reasoning)), tokensOf(int64(r.CacheWrite1h))}, Millis: msOf(r.Millis), TTFT: msOf(r.TTFT), FirstText: msOf(r.FirstText), FirstReasoning: msOf(r.FirstReasoning), Sent: msOf(r.Sent), Flow: msOf(r.Flow), Own: msOf(r.Own), Masking: int32(min(r.Masking, math.MaxInt32)), Retried: msOf(r.Retried), Queued: msOf(r.Queued), Order: order, RouteID: r.RouteID, Cost: r.Cost, Status: int32(r.Status), Tries: smallOf(r.Tries), ImageFiles: smallOf(r.ImageFiles), UpBytes: bytesOf(r.UpBytes), DownBytes: bytesOf(r.DownBytes), FilesSaved: bytesOf(r.ImageFilesSaved)}
 	p.setTime(r.Time)
 	var t [rowTexts]uint32
 	for i, s := range rowText(&r) {
@@ -336,11 +415,24 @@ func (c *rowChunk) add(r Row, msg string, order int64, failed bool) {
 	if r.Time.After(c.Latest) {
 		c.Latest = r.Time
 	}
+	c.noteBudgetTime(r.Record)
 	c.Bytes += int64(unsafe.Sizeof(packedRow{}))
 }
+
+// bytesOf is n in a packed row's 32 bits, held at an int32's ends.
+func bytesOf(n int) int32 {
+	return int32(max(min(n, math.MaxInt32), math.MinInt32))
+}
+
+// smallOf is a count of tries or images in a packed row's 16 bits, one
+// past them kept as the most they hold
+func smallOf(n int) int16 {
+	return int16(max(min(n, math.MaxInt16), 0))
+}
+
 func (c *rowChunk) row(i int) Row {
 	p := &c.Rows[i]
-	r := Row{Record: Record{RouteID: p.RouteID, Time: p.Time(), Input: int(p.Tokens[0]), Output: int(p.Tokens[1]), CacheRead: int(p.Tokens[2]), CacheWrite: int(p.Tokens[3]), CacheWrite1h: int(p.Tokens[5]), Reasoning: int(p.Tokens[4]), Millis: int64(p.Millis), TTFT: int64(p.TTFT), FirstText: int64(p.FirstText), FirstReasoning: int64(p.FirstReasoning), ReasoningHidden: p.Flags&rowReasoningHidden != 0, CacheUnknown: p.Flags&rowCacheUnknown != 0, Sent: int64(p.Sent), Flow: int64(p.Flow), Own: int64(p.Own), Masking: int64(p.Masking), Retried: int64(p.Retried), Queued: int64(p.Queued), Status: int(p.Status), Tries: int(p.Tries), HandedOn: p.Flags&rowHandedOn != 0, Rejected: p.Flags&4 != 0, SessionOfficialLogin: p.Flags&8 != 0}, Cost: p.Cost, Priced: p.Flags&1 != 0, Swapped: p.Flags&2 != 0, Routed: p.Flags&32 != 0}
+	r := Row{Record: Record{RouteID: p.RouteID, Time: p.Time(), Input: int(p.Tokens[0]), Output: int(p.Tokens[1]), CacheRead: int(p.Tokens[2]), CacheWrite: int(p.Tokens[3]), CacheWrite1h: int(p.Tokens[5]), Reasoning: int(p.Tokens[4]), Millis: int64(p.Millis), TTFT: int64(p.TTFT), FirstText: int64(p.FirstText), FirstReasoning: int64(p.FirstReasoning), ReasoningHidden: p.Flags&rowReasoningHidden != 0, CacheUnknown: p.Flags&rowCacheUnknown != 0, Sent: int64(p.Sent), Flow: int64(p.Flow), Own: int64(p.Own), Masking: int64(p.Masking), Retried: int64(p.Retried), Queued: int64(p.Queued), Status: int(p.Status), Tries: int(p.Tries), UpBytes: int(p.UpBytes), DownBytes: int(p.DownBytes), ImageFilesSaved: int(p.FilesSaved), ImageFiles: int(p.ImageFiles), HandedOn: p.Flags&rowHandedOn != 0, Rejected: p.Flags&4 != 0, SessionOfficialLogin: p.Flags&8 != 0}, Cost: p.Cost, Priced: p.Flags&1 != 0, Swapped: p.Flags&2 != 0, Routed: p.Flags&32 != 0}
 	if p.Flags&rowCredits != 0 {
 		credits := p.Credits
 		r.Credits = &credits
@@ -363,8 +455,8 @@ func (c *rowChunk) row(i int) Row {
 	}
 	if r.Swapped && p.Flags&swapKnown == 0 && (SameSpelled(r.Model, r.Served) || ServingName(r.Model, r.Served) || RelayRenamed(r.Model, r.Served) || VendorAlias(r.Model, r.Served)) {
 		r.Swapped = false // kept before a name spelled otherwise, a vendor's serving name, a relay's rename or the vendor's own alias was the same
-	} else if r.Swapped && ListedAs(r.Provider, r.Model, r.Served) {
-		r.Swapped = false // the name the provider's list gives the model asked for
+	} else if r.Swapped && (RegionTail(r.Model, r.Served) || ListedAs(r.Provider, r.Model, r.Served)) {
+		r.Swapped = false // a region's deployment of the model (kept before plugins#628), or the name the provider's list gives the model asked for
 	}
 	if r.cacheNotCounted() {
 		r.CacheUnknown = true // kept before its plugin said its vendor counts no cache
@@ -545,11 +637,10 @@ func (r *chunkRows) of(c *rowChunk) *rowChunk {
 			r.b = rowBufferFor()
 		}
 		b := r.b
-		var lent *[]byte
-		if r.lent {
-			lent = &b.decoded
-		}
-		open := c.unpackReusing(&b.open, b.rows, b.strs, b.shapes, lent)
+		// the block is decoded into b's buffer either way: a pass that
+		// copies its strings took one from a sync.Pool, which each
+		// collection empties, and grew it again (#4372)
+		open := c.unpackReusing(&b.open, b.rows, b.strs, b.shapes, &b.decoded, r.lent)
 		if open == nil { // never written so: pack wrote it in this process
 			b.open = rowChunk{Source: c.Source, Computer: c.Computer}
 			open = &b.open
@@ -1895,6 +1986,20 @@ func (s *matchScratch) release() {
 // their tokens and time alone (#2097).
 const agyMatchSession = "\x00agy"
 
+// agyGateway says a gateway record of agent a, naming no session, may be
+// an agy step's: agy's own, or the Antigravity app's. An agy not connected
+// on its own row follows the app's gateway with the app's key
+// (internal/agent/antigravity.go), so the gateway records its calls as the
+// app's, and its transcript counted them a second time (Chamberlain_zyz on X).
+func agyGateway(a string) bool { return a == "agy" || a == "antigravity" }
+
+// agyLocal says a session file's call of agent a is matched as an agy
+// step is, by its tokens and a time when the step began: agy's
+// transcript's, or the Antigravity app's conversation database's
+// (#2190), whose calls name its own conversation id, never one the
+// gateway was sent.
+func agyLocal(a string) bool { return a == "agy" || a == "antigravity" }
+
 // agyStepLongest is how long after an agy step began its gateway call may
 // have ended: a transcript's created_at is when the step began, to the
 // second, where every other session file's time is when its call ended.
@@ -2036,7 +2141,7 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip refSet, respon
 		if session == "" {
 			session = gateway.Strings[gateway.text(p, 13)]
 		}
-		if session == "" && gateway.Strings[gateway.text(p, 0)] == "agy" {
+		if session == "" && agyGateway(gateway.Strings[gateway.text(p, 0)]) {
 			session = agyMatchSession
 		}
 		if session == "" {
@@ -2129,7 +2234,7 @@ func matchedBlocks(gateways []*rowChunk, chunks []*rowChunk, skip refSet, respon
 			}
 			key := matchKey{session: c.Strings[c.text(p, 13)], tokens: matchTokens(p.Tokens), failed: failed}
 			from, to := p.Time().Add(-2*time.Second), p.Time().Add(2*time.Second)
-			if c.Strings[c.text(p, 0)] == "agy" {
+			if agyLocal(c.Strings[c.text(p, 0)]) {
 				key.session, to = agyMatchSession, p.Time().Add(agyStepLongest)
 			}
 			count, at := 0, int32(0)

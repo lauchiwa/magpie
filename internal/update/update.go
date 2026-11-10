@@ -37,6 +37,7 @@ import (
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/rosetta"
 	"github.com/yetone/magpie/internal/source"
 )
 
@@ -73,8 +74,20 @@ type Asset struct {
 // client asks the feed and downloads a release through the proxy the rest
 // of magpie's requests take — Settings' Proxy, else the environment's, else
 // the system's (#294) — on a transport of its own, whatever the process has
-// done to http.DefaultTransport.
+// done to http.DefaultTransport. Its Timeout bounds the feed's small
+// answers; a release's file goes through fileClient, which has none.
 var client = &http.Client{Timeout: 10 * time.Minute, Transport: proxied()}
+
+// fileClient is client without its total Timeout, for a release's file: a
+// slow download still moving goes on however long it takes, and one that
+// stops sending is ended by fetch's stall timer (stallAfter) instead. The
+// Timeout failed an 83 MB Windows download under ~140 KB/s at 10 minutes,
+// part way and still coming (#5572).
+func fileClient() *http.Client {
+	c := *client
+	c.Timeout = 0
+	return &c
+}
 
 func proxied() http.RoundTripper {
 	t := http.DefaultTransport.(*http.Transport).Clone()
@@ -218,14 +231,35 @@ func parse(v string) *semver {
 // one.
 var GUI bool
 
-// AppAsset and BinaryAsset name the files this machine would install.
-func AppAsset() string { return "magpie-darwin-" + runtime.GOARCH + ".zip" }
-func BinaryAsset() string {
-	name := "magpie-cli-" + runtime.GOOS + "-" + runtime.GOARCH
-	if GUI && runtime.GOOS != "darwin" {
-		name = "magpie-" + runtime.GOOS + "-" + runtime.GOARCH
+// goos and goarch are the system this magpie was built for, and
+// translated says it runs under Rosetta; tests set them.
+var (
+	goos, goarch = runtime.GOOS, runtime.GOARCH
+	translated   = rosetta.Translated
+)
+
+// arch is the architecture an update installs: this build's, but Apple
+// silicon's for an Intel magpie under Rosetta. Kept on the Intel build,
+// such a Mac ran the local masking model in Go under translation, with no
+// CoreML, at 150% of a core (cdredfox on Discord), and every update
+// fetched the Intel build again. Installing Apple silicon's is the same
+// swap: the zip's magpie.app is renamed over the bundle, signed by the
+// same team (sameSigner), and the bare binary is renamed over itself.
+func arch() string {
+	if goos == "darwin" && goarch == "amd64" && translated() {
+		return "arm64"
 	}
-	if runtime.GOOS == "windows" {
+	return goarch
+}
+
+// AppAsset and BinaryAsset name the files this machine would install.
+func AppAsset() string { return "magpie-darwin-" + arch() + ".zip" }
+func BinaryAsset() string {
+	name := "magpie-cli-" + goos + "-" + arch()
+	if GUI && goos != "darwin" {
+		name = "magpie-" + goos + "-" + arch()
+	}
+	if goos == "windows" {
 		name += ".exe"
 	}
 	return name
@@ -295,6 +329,7 @@ func Stage(ctx context.Context, rel *Release, bundle string) (string, error) {
 		return "", err
 	}
 	out := filepath.Join(dir, "unzip")
+	step(ctx, StepUnpack)
 	if b, err := proc.CommandContext(ctx, "ditto", "-x", "-k", zip, out).CombinedOutput(); err != nil {
 		os.RemoveAll(dir)
 		return "", fmt.Errorf("unzip: %v: %s", err, b)
@@ -311,6 +346,7 @@ func Stage(ctx context.Context, rel *Release, bundle string) (string, error) {
 	}
 	os.Remove(out)
 	unregister(unzipped) // in case it looked in that moment
+	step(ctx, StepSignature)
 	if err := sameSigner(ctx, bundle, app); err != nil {
 		os.RemoveAll(dir)
 		return "", err
@@ -509,7 +545,7 @@ func runAfterExit(pid int, command string) error {
 	cmd := proc.Command("/bin/sh", "-c", script)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	detach(cmd)
-	return cmd.Start()
+	return proc.StartReaped(cmd)
 }
 
 // relaunchOpen is the open command Relaunch runs for bundle. -n asks
@@ -1067,6 +1103,42 @@ func WithProgress(ctx context.Context, f func(done, total int64)) context.Contex
 	return context.WithValue(ctx, progressKey{}, f)
 }
 
+type stepKey struct{}
+
+// The steps an update made under WithStep's ctx goes through, in order.
+// After the download its percent says nothing, and a Mac's unpack and
+// signature check take seconds: each says its name instead (esir_tech on
+// Discord, a percent that sat still).
+const (
+	StepDownload  = "download"  // the bytes coming in
+	StepRetry     = "retry"     // the connection broke off or stalled: waiting to try again
+	StepVerify    = "verify"    // the file checked against its SHA-256
+	StepUnpack    = "unpack"    // the Mac's zip unpacked
+	StepSignature = "signature" // the Mac app's signature checked
+)
+
+// WithStep has an update made under ctx say each step it starts.
+func WithStep(ctx context.Context, f func(step string)) context.Context {
+	return context.WithValue(ctx, stepKey{}, f)
+}
+
+func step(ctx context.Context, s string) {
+	if f, ok := ctx.Value(stepKey{}).(func(string)); ok {
+		f(s)
+	}
+}
+
+// stallAfter is how long a download waits for its next byte. A
+// connection that sends nothing for that long (GitHub's asset host from
+// some networks holds one open with no data) is broken off and tried
+// again from where it stopped, as one that drops is; before, the download
+// sat at its percent until the update's 10 minutes ran out (esir_tech on
+// Discord, at 17%). A var for tests.
+var stallAfter = 30 * time.Second
+
+// errStalled is a try that got no byte for stallAfter.
+var errStalled = errors.New("no data came for a while")
+
 // retryWaits are the pauses before each try after the first: a
 // connection that drops at the start or part way (GitHub's asset host from
 // some networks: AIMetaPhD on X, "EOF" at 0.1.1618) is tried again, from
@@ -1074,8 +1146,8 @@ func WithProgress(ctx context.Context, f func(done, total int64)) context.Contex
 var retryWaits = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second}
 
 // download fetches a to path and checks its hash. A connection that drops
-// is tried again after each of retryWaits, asking with Range for what is
-// still missing; the hash is checked over the whole file, the bytes kept
+// is tried again after each of retryWaits, over HTTP/1.1 (OverHTTP1),
+// asking with Range for what is still missing; the hash is checked over the whole file, the bytes kept
 // from the tries before included.
 func download(ctx context.Context, a Asset, path string) error {
 	if a.SHA256 == "" {
@@ -1089,15 +1161,22 @@ func download(ctx context.Context, a Asset, path string) error {
 	var err error
 	for try := 0; try <= len(retryWaits); try++ {
 		if try > 0 {
+			step(ctx, StepRetry)
 			select {
 			case <-ctx.Done():
 				return err
 			case <-time.After(retryWaits[try-1]):
 			}
 		}
+		step(ctx, StepDownload)
 		if err = fetch(ctx, a, path); err == nil || ctx.Err() != nil || !Network(err) {
 			break
 		}
+		// the tries after a connection that broke go over HTTP/1.1: a
+		// proxy that cuts HTTP/2 streams part way cuts every try made
+		// over it the same way, while HTTP/1.1 through it holds
+		// (biubiu8802 on X: "unexpected EOF" on each try)
+		ctx = netproxy.OverHTTP1(ctx)
 	}
 	if err != nil {
 		if cerr := clearFile(path); cerr != nil {
@@ -1197,22 +1276,34 @@ func fetch(ctx context.Context, a Asset, path string) error {
 		}
 		have = 0
 	}
+	// a try that hears nothing for stallAfter, from the ask to the last
+	// byte, is broken off as the network's (errStalled)
+	tctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	idle := time.AfterFunc(stallAfter, func() { cancel(errStalled) })
+	defer idle.Stop()
+	netErr := func(err error) error {
+		if errors.Is(context.Cause(tctx), errStalled) {
+			err = errStalled
+		}
+		return &NetError{File: name, Err: err}
+	}
 	var res *http.Response
 	flag := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 	for restarted := false; ; restarted = true {
-		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+		req, err := http.NewRequestWithContext(tctx, "GET", u, nil)
 		if err != nil {
 			return err
 		}
 		if have > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
 		}
-		res, err = source.Do(client, req)
+		res, err = source.Do(fileClient(), req)
 		if err != nil {
 			if ctx.Err() != nil {
 				return fail(err)
 			}
-			return fail(&NetError{File: name, Err: err})
+			return fail(netErr(err))
 		}
 		if res.StatusCode == http.StatusRequestedRangeNotSatisfiable && have > 0 && !restarted {
 			// what was kept isn't the start of the file the host has (it
@@ -1241,7 +1332,8 @@ func fetch(ctx context.Context, a Asset, path string) error {
 	}
 	// a read that fails is the network's; a write that fails (a full
 	// disk) is not, and isn't tried again
-	in := &readErr{r: res.Body}
+	idle.Reset(stallAfter)
+	in := &readErr{r: res.Body, idle: idle}
 	var body io.Reader = in
 	if report, ok := ctx.Value(progressKey{}).(func(done, total int64)); ok {
 		total := res.ContentLength
@@ -1259,11 +1351,13 @@ func fetch(ctx context.Context, a Asset, path string) error {
 	}
 	if err != nil {
 		if ctx.Err() == nil && in.err != nil {
-			err = &NetError{File: name, Err: err}
+			err = netErr(err)
 		}
 		return fail(err)
 	}
+	idle.Stop()
 	// the whole file, what earlier tries kept included, against the feed's
+	step(ctx, StepVerify)
 	if !strings.EqualFold(fileHash(path), a.SHA256) {
 		err = fmt.Errorf("%s does not match its checksum", name)
 		if u != a.URL {
@@ -1274,14 +1368,19 @@ func fetch(ctx context.Context, a Asset, path string) error {
 	return nil
 }
 
-// readErr keeps the error its reader returned, io.EOF aside.
+// readErr keeps the error its reader returned, io.EOF aside, and puts
+// idle off again with each byte.
 type readErr struct {
-	r   io.Reader
-	err error
+	r    io.Reader
+	err  error
+	idle *time.Timer
 }
 
 func (r *readErr) Read(p []byte) (int, error) {
 	n, err := r.r.Read(p)
+	if n > 0 && r.idle != nil {
+		r.idle.Reset(stallAfter)
+	}
 	if err != nil && err != io.EOF {
 		r.err = err
 	}
@@ -1315,7 +1414,7 @@ func OpenBeside(bundle string, window, quiet bool) error {
 	cmd := proc.Command("/bin/sh", "-c", retried(openBeside(bundle, window, quiet), openWaits))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	detach(cmd)
-	return cmd.Start()
+	return proc.StartReaped(cmd)
 }
 
 // openBeside is the open command OpenBeside runs for bundle.

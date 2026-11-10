@@ -12,6 +12,13 @@ import { readFileSync } from "node:fs";
 
 const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
 
+test("upstream scheduled publishing and note mutation do not run on the fork", () => {
+  for (const name of ["notes-mirror.yml", "docker-daily.yml"]) {
+    const source = readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
+    assert.match(source, /if: github\.repository == 'yetone\/magpie'/, name);
+  }
+});
+
 test("the release is built from this repository, not the upstream one", () => {
   // No step hands the release to another repository, and nothing names the
   // upstream source or the upstream release repository. The notes' read of

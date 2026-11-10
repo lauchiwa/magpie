@@ -39,6 +39,7 @@ func (t *translator) row(b []byte) {
 	var r struct {
 		Type          string          `json:"type"`
 		Subtype       string          `json:"subtype"`
+		UUID          string          `json:"uuid"`
 		IsSidechain   bool            `json:"isSidechain"`
 		IsMeta        bool            `json:"isMeta"`
 		RequestID     string          `json:"requestId"`
@@ -83,6 +84,11 @@ func (t *translator) row(b []byte) {
 			t.tap.before(m.ID)
 		}
 		line := map[string]any{"type": "assistant", "message": r.Message}
+		// the row's place in the session, as -p tells it: the bridge
+		// branches a conversation off there (cutSession)
+		if r.UUID != "" {
+			line["uuid"] = r.UUID
+		}
 		if r.RequestID != "" {
 			line["request_id"] = r.RequestID
 		}
@@ -99,11 +105,13 @@ func (t *translator) row(b []byte) {
 				text += c.Text
 			}
 		}
+		t.failed = true
+		// the error's own allowance after any an earlier reply of the
+		// turn told (tap.settle), as it is the latest
+		t.tap.settle()
 		if len(r.APIParams.RateLimitInfo) > 0 && string(r.APIParams.RateLimitInfo) != "null" {
 			t.out.emit(map[string]any{"type": "rate_limit_event", "rate_limit_info": r.APIParams.RateLimitInfo})
 		}
-		t.failed = true
-		t.tap.settle()
 		t.out.turnOver()
 		t.out.emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true,
 			"result": text, "api_error_status": r.APIStatus})

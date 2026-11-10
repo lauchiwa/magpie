@@ -5,6 +5,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // CallBilling is what one call costs under its provider's billing mode,
@@ -33,6 +34,7 @@ type CallBilling struct {
 // ledger uses, read once (NewCoster). Not safe for concurrent use.
 func NewBiller() func(r Record, d provider.BillingDecision, quota string) CallBilling {
 	cost, renamed, all := NewCoster(), provider.UsageRenames(), provider.All()
+	wires := settings.Load().Wires()
 	type key struct{ id, model string }
 	type listed struct {
 		price  *catalog.Price
@@ -83,9 +85,13 @@ func NewBiller() func(r Record, d provider.BillingDecision, quota string) CallBi
 		}
 		r.renameBy(renamed)
 		r.OwnCost = nil
-		l := listOf(r.priceID(), r.Model)
-		if l.price == nil && r.Served != "" && r.Served != r.Model {
-			l = listOf(r.priceID(), r.Served)
+		model, alias := priceModels(wires, r)
+		var l listed
+		if model != "" {
+			l = listOf(r.priceID(), model)
+		}
+		if l.price == nil && alias != "" {
+			l = listOf(r.priceID(), alias)
 		}
 		if l.price != nil {
 			var t Totals

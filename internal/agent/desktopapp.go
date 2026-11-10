@@ -64,6 +64,13 @@ var desktopApps = map[string]desktopApp{
 	// registers it under HKCU\Software\1bf39983-… (#2279, read from
 	// 0.2.0-rc.2's dsh-latest-windows-x64.exe installer script).
 	"dsh": {id: "com.deepseek.dsh", names: []string{"DeepSeek Harness.app"}, win: filepath.Join("DeepSeek Harness", "DeepSeek Harness.exe"), guid: "1bf39983-50d0-5fe0-9ef4-cece76f67c5e"},
+	// DS Bot's desktop app (app/electron-builder.yml, 0.3.0: appId
+	// io.github.fei2411.dsbot, productName DS Bot, DS Bot.app; DeepSeek
+	// Bot, its name before) runs a DSH of its own on its data folder
+	// (dsbot.go) and needs no CLI. On Windows its per-user NSIS installer
+	// puts it under %LOCALAPPDATA%\Programs by default, lets the folder be
+	// changed, and registers it under the guid its config names.
+	"ds-bot": {id: "io.github.fei2411.dsbot", names: []string{"DS Bot.app", "DeepSeek Bot.app"}, win: filepath.Join("DS Bot", "DS Bot.exe"), guid: "32c46dfc-ed78-5d41-85a4-a3c7f083f2e0"},
 	// PenguinHarness's desktop app (packages/desktop's electron-builder.yml,
 	// desktop 0.2.17: appId com.prismshadow.penguinharness, productName
 	// PenguinHarness) runs its own server on the CLI's data root,
@@ -84,6 +91,19 @@ var desktopApps = map[string]desktopApp{
 	// CLI's ~/.codebuddy/models.json for models of one's own (codebuddy.go)
 	// and needs no CLI. Its Windows install folder isn't known here, so on
 	// Windows only the rule that a desktop app's folder is never gone holds.
+	// Antigravity's app (antigravity.go), not Antigravity IDE
+	// (com.google.antigravity-ide). Its Windows and Linux installs aren't
+	// known here: there the file its backend writes finds it.
+	"antigravity": {id: "com.google.antigravity", names: []string{"Antigravity.app"}},
+	// MiniMax Code Desktop (3.1.10: MiniMax Code.app, com.minimax.agent.cn
+	// from filecdn.minimax.chat, com.minimax.agent from file.cdn.minimax.io;
+	// app-identity.js) runs the mcode runtime on ~/.minimax/config.yaml, as
+	// the CLI does, and needs no CLI. Its Windows installer is
+	// electron-builder's NSIS ("MiniMax Code Setup 3.1.10.exe"), whose
+	// per-user default is %LOCALAPPDATA%\Programs\<productName>; that
+	// folder is the default's, not read from an install.
+	"minimax-code": {id: "com.minimax.agent.cn", names: []string{"MiniMax Code.app"}, win: filepath.Join("MiniMax Code", "MiniMax Code.exe"),
+		more: []desktopApp{{id: "com.minimax.agent", names: []string{"MiniMax Code.app"}}}},
 	"codebuddy": {id: "com.tencent.codebuddy", names: []string{"CodeBuddy.app"},
 		more: []desktopApp{{id: "com.tencent.codebuddycn", names: []string{"CodeBuddy CN.app"}}}},
 }

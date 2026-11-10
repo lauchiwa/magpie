@@ -34,9 +34,17 @@ type tuneAdvice struct {
 	// window in Long conversations doesn't move it (hoobnn on Discord: a
 	// card said "In use" for 170K beside "Now 430K")
 	Own *tuneOwn `json:"own,omitempty"`
+	// Apart are the models of the range with a Compact at of their own
+	// beside others Long conversations moves: a Use moves those others,
+	// and these keep compacting where they did (hoobnn on Discord, 11-01)
+	Apart []tuneOwn `json:"apart,omitempty"`
 	// Async is Codex's background compaction at the advice, its foreground
 	// limit kept as the backstop; nil where it can't help
 	Async *tuneAsync `json:"async,omitempty"`
+	// Few: a setting tune put in, or Claude Code's cache as it is here,
+	// kept on the card with nothing to advise (too few calls in the
+	// range), so its Undo, or its way back to 5 minutes, is still there
+	Few bool `json:"few,omitempty"`
 }
 
 // tuneAsync is the advice as Codex's background compaction takes it: a
@@ -104,9 +112,22 @@ func tuneOf(cs []sessions.Call, days int, home string) tuneState {
 // adviseOf is tuneOf from each agent's calls made tune's already.
 func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 	out := tuneState{Days: days, Agents: []tuneAgent{}}
+	weigh := pricedWeights(settings.Load())
 	for _, name := range []string{"claude", "codex"} {
 		calls := by[name]
-		if len(calls) == 0 {
+		kept := agent.TuneKept(home, name)
+		if name == "claude" {
+			// the cache this computer's Claude Code keeps, with or without
+			// calls read here, its way back to 5 minutes with it
+			here := agent.TuneCacheHere(home)
+			for _, k := range kept {
+				if !slices.ContainsFunc(here, func(o agent.TuneKnob) bool { return o.Knob == k.Knob && o.Model == k.Model }) {
+					here = append(here, k)
+				}
+			}
+			kept = here
+		}
+		if len(calls) == 0 && len(kept) == 0 {
 			continue
 		}
 		ta := tuneAgent{Agent: name, Calls: len(calls), Advice: []tuneAdvice{}}
@@ -137,7 +158,7 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 					}
 				}
 				cur, _ := strconv.Atoi(s.Value)
-				o := tune.CompactOpts{Min: 100000, Max: 1000000, Step: 10000, Reserve: 33000, Window: window, Current: cur}
+				o := tune.CompactOpts{Min: 100000, Max: 1000000, Step: 10000, Reserve: 33000, Window: window, Current: cur, Weigh: weigh}
 				if r := tune.Compact(mc, o); r != nil {
 					ta.Advice = append(ta.Advice, tuneAdvice{Knob: agent.TuneCompact, Model: m, Setting: s, Compact: r})
 				}
@@ -153,7 +174,7 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 				if err != nil {
 					continue
 				}
-				if r := tune.CacheTTL(k.calls, s.Value); r != nil {
+				if r := tune.CacheTTL(k.calls, s.Value, weigh); r != nil {
 					ta.Advice = append(ta.Advice, tuneAdvice{Knob: k.knob, Setting: s, TTL: r})
 				}
 			}
@@ -162,8 +183,8 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 			if err != nil {
 				continue
 			}
-			st := settings.Load()
-			window, told, own := codexWindow(calls, st, provider.Catalog(), provider.GroupFinder())
+			st := settings.Load().ForAgent("codex")
+			window, told, own, apart := codexWindow(calls, st, provider.Catalog(), provider.GroupFinder())
 			// Long conversations' value is the setting; where Codex runs
 			// now is that as magpie tells it for these models (their
 			// windows, a provider's own Compact at)
@@ -172,11 +193,14 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 				cur = told
 			}
 			// a value the user chose is never past the last one offered
-			o := tune.CompactOpts{Min: 50000, Max: max(1000000, window, cur, st.CompactAt), Step: 10000, Window: window, Current: cur}
+			o := tune.CompactOpts{Min: 50000, Max: max(1000000, window, cur, st.CompactAt), Step: 10000, Window: window, Current: cur, Weigh: weigh}
 			if r := tune.Compact(calls, o); r != nil {
 				ad := tuneAdvice{Knob: agent.TuneCompact, Setting: s, Compact: r}
 				if own != "" && s.Source == agent.TuneLong && r.Current == told {
 					ad.Own = &tuneOwn{Model: own, Value: told}
+				}
+				if s.Source == agent.TuneLong {
+					ad.Apart = apart
 				}
 				if pct, v, ok := codexAsyncAt(r); ok {
 					as, _ := agent.TuneRead(home, name, agent.TuneAsync, "")
@@ -185,30 +209,75 @@ func adviseOf(by map[string][]tune.Call, days int, home string) tuneState {
 				ta.Advice = append(ta.Advice, ad)
 			}
 		}
+		// what tune put in stays on the card, Undo with it, when the range
+		// has too few calls to advise on it (linkaww on Discord), and so
+		// does Claude Code's cache as it is here
+		for _, k := range kept {
+			if !slices.ContainsFunc(ta.Advice, func(a tuneAdvice) bool { return a.Knob == k.Knob && a.Model == k.Model }) {
+				ta.Advice = append(ta.Advice, tuneAdvice{Knob: k.Knob, Model: k.Model, Setting: k.Setting, Few: true})
+			}
+		}
 		out.Agents = append(out.Agents, ta)
 	}
 	return out
 }
 
+// pricedWeights weighs a model's calls at what magpie bills them where the
+// agent asked for a model magpie wrote into its config (provider/model, as
+// Claude Code is given it, dashed): the price of the provider it resolves
+// to, as the usage pages count it, so a Claude model on Copilot has its
+// hour at the 5-minute write Copilot bills and one on Anthropic at 2× input
+// (#3435). By its name alone a provider/model id was weighed as no Claude
+// model, its hour costing what a 5-minute write does. A model the agent
+// named itself never went through magpie and is weighed at its maker's list
+// (tune.WeightsFor), as is one magpie has no cache price for.
+func pricedWeights(st settings.Settings) tune.Weigh {
+	memo := map[string]tune.Weights{}
+	return func(model string) tune.Weights {
+		if w, ok := memo[model]; ok {
+			return w
+		}
+		w := tune.WeightsFor(model)
+		if strings.Contains(model, "/") {
+			if p, m, ok := provider.Resolve(provider.ClaudeRead(model)); ok {
+				if pr, ok := provider.EffectivePriceIn(st, p.ID, m); ok && pr.Input > 0 && pr.Output > 0 && pr.CacheRead > 0 && pr.CacheWrite > 0 {
+					w = tune.Weights{Read: pr.CacheRead / pr.Input, Write: pr.CacheWrite / pr.Input,
+						Write1h: pr.OneHour() / pr.Input, Out: pr.Output / pr.Input}
+				}
+			}
+		}
+		memo[model] = w
+		return w
+	}
+}
+
 // codexWindow is the window Codex runs the calls' models to, and where
 // magpie has it compact them when its config.toml says nothing (told: the
-// largest of the models magpie tells a window, 0 when it tells none). A
-// model outside the catalog, or one whose window magpie doesn't know,
-// leaves told to the others: it once made told 0 for the whole range, so
-// "Now" was guessed from the prompts instead, and the same setting read
-// 380K over 7 days and 430K today (hoobnn on Discord). own is the model
-// told comes from when that is its own threshold over Long conversations
-// (provider.CompactFor with a Compact at of its own set), which Long
-// conversations doesn't move. A model of magpie's catalog
-// has the window it is listed with, one the user typed or the vendor's,
-// and is told the threshold the user set on it, else Settings › Long
-// conversations (provider.CompactFor, as codexcat writes it). One whose
-// window magpie doesn't know caps nothing (window 0): the largest prompt
-// it had been sent was taken for its window, and a 1M model set to
-// compact at 750K was offered no more than 412K (zhemu on Discord).
-// Codex's own models, outside magpie's catalog, run to 272K or the
-// largest prompt seen, as before.
-func codexWindow(calls []tune.Call, st settings.Settings, entries []provider.Entry, find func(string) (provider.Group, []provider.Member, bool)) (window, told int, own string) {
+// largest of the models Long conversations moves, 0 when magpie tells it
+// none). A model outside the catalog, or one whose window magpie doesn't
+// know, leaves told to the others: it once made told 0 for the whole
+// range, so "Now" was guessed from the prompts instead, and the same
+// setting read 380K over 7 days and 430K today (hoobnn on Discord).
+//
+// A model with a Compact at of its own (provider.CompactSetIn, on it or
+// its provider) compacts there whatever Long conversations says, so it
+// isn't in told while another model is: over 7 days such a model's 430K
+// was "Now", a Use moved every other model to the advice, and the card
+// still read 430K (hoobnn, 11-01). Those models are apart, each with
+// where it compacts. Only when every model of the range has one is told
+// the largest of theirs, and own the model it comes from: no Use moves
+// it. A window the user typed is not one of these: it gives way to a size
+// tune puts in Long conversations (CompactFor's rule).
+//
+// A model of magpie's catalog has the window it is listed with, one the
+// user typed or the vendor's, and is told the threshold the user set on
+// it, else Settings › Long conversations (provider.CompactFor, as
+// codexcat writes it). One whose window magpie doesn't know caps nothing
+// (window 0): the largest prompt it had been sent was taken for its
+// window, and a 1M model set to compact at 750K was offered no more than
+// 412K (zhemu on Discord). Codex's own models, outside magpie's catalog,
+// run to 272K or the largest prompt seen, as before.
+func codexWindow(calls []tune.Call, st settings.Settings, entries []provider.Entry, find func(string) (provider.Group, []provider.Member, bool)) (window, told int, own string, apart []tuneOwn) {
 	byID := make(map[string]provider.Entry, len(entries))
 	for _, e := range entries {
 		byID[strings.ToLower(e.ID)] = e
@@ -217,7 +286,7 @@ func codexWindow(calls []tune.Call, st settings.Settings, entries []provider.Ent
 	for _, c := range calls {
 		peak[c.Model] = max(peak[c.Model], c.Prompt)
 	}
-	unknown := false
+	unknown, moved, held := false, false, 0
 	for m, p := range peak {
 		e, ok := byID[strings.TrimPrefix(m, "magpie/")]
 		switch {
@@ -227,27 +296,33 @@ func codexWindow(calls []tune.Call, st settings.Settings, entries []provider.Ent
 			unknown = true
 		default:
 			window = max(window, e.Context, p)
+			if n := provider.CompactSetIn(st, e.ID, find); n > 0 {
+				at := min(e.Context, n)
+				apart = append(apart, tuneOwn{Model: e.ID, Value: at})
+				held = max(held, at)
+				continue
+			}
 			at := st.Working(e.Context)
 			if n := provider.CompactFor(st, e, find); n > 0 {
 				at = min(e.Context, n)
 			}
-			// past what Long conversations has it at, with a size of the
-			// user's in Long conversations: the model's own Compact at
-			// (with none, a window the user typed gives way to one tune
-			// puts in, CompactFor's rule)
-			mine := st.CompactAt > 0 && at > st.Working(e.Context)
-			if at > told || at == told && own != "" && (!mine || e.ID < own) {
-				told, own = at, ""
-				if mine {
-					own = e.ID
-				}
-			}
+			told, moved = max(told, at), true
 		}
+	}
+	// the same models, in the same order, in every read
+	slices.SortFunc(apart, func(a, b tuneOwn) int {
+		if a.Value != b.Value {
+			return b.Value - a.Value
+		}
+		return strings.Compare(a.Model, b.Model)
+	})
+	if !moved && len(apart) > 0 {
+		told, own, apart = held, apart[0].Model, nil
 	}
 	if unknown {
 		window = 0
 	}
-	return window, told, own
+	return window, told, own, apart
 }
 
 func tuneRoutes(mux *http.ServeMux) {
@@ -274,6 +349,21 @@ func tuneRoutes(mux *http.ServeMux) {
 		tuneForget()
 		s, _ := agent.TuneRead("", in.Agent, in.Knob, in.Model)
 		writeJSON(rw, s)
+	})
+	// Claude Code's prompt cache picked in its settings: "5m", "1h", or ""
+	// for Claude Code's own default (agent.ClaudeCacheSet)
+	mux.HandleFunc("POST /api/settings/claude-cache", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Knob, Value string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := agent.ClaudeCacheSet("", in.Knob, in.Value); err != nil {
+			fail(rw, err)
+			return
+		}
+		tuneForget()
+		writeJSON(rw, settingsState())
 	})
 	mux.HandleFunc("POST /api/tune/undo", func(rw http.ResponseWriter, r *http.Request) {
 		var in change
@@ -420,4 +510,25 @@ func tuneCallsSince(since time.Time) map[string][]tune.Call {
 		slices.SortStableFunc(cs, func(a, b tune.Call) int { return b.Time.Compare(a.Time) })
 	}
 	return by
+}
+
+// claudeCacheJSON is one of Claude Code's prompt-cache lifetimes: its
+// knob (agent.TuneCache, agent.TuneSubCache), the value it runs at ("" for
+// Claude Code's own default), and the variable that sets it, when one does.
+type claudeCacheJSON struct {
+	Knob   string `json:"knob"`
+	Value  string `json:"value,omitempty"`
+	Locked string `json:"locked,omitempty"`
+}
+
+func claudeCacheState() []claudeCacheJSON {
+	var out []claudeCacheJSON
+	for _, knob := range []string{agent.TuneCache, agent.TuneSubCache} {
+		s, err := agent.TuneRead("", "claude", knob, "")
+		if err != nil {
+			continue
+		}
+		out = append(out, claudeCacheJSON{Knob: knob, Value: s.Value, Locked: s.Locked})
+	}
+	return out
 }

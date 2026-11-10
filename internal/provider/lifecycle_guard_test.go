@@ -160,6 +160,8 @@ func TestCommitReadGuardDetectsIndirectCalls(t *testing.T) {
 	}{
 		{"All", func() { _ = All() }, nil},
 		{"held All", func() { _ = All() }, func() { _ = All() }},
+		{"sharedAll", func() { _ = sharedAll() }, nil},
+		{"held sharedAll", func() { _ = sharedAll() }, func() { _ = sharedAll() }},
 		{"held entries", func() { _ = providerEntries() }, func() { _ = heldEntries(func() []Entry { return []Entry{{ID: "relay/gpt-5"}} }) }},
 		{"Accounts", func() { _ = Accounts() }, nil},
 		{"Find", func() { _, _ = Find("relay") }, nil},

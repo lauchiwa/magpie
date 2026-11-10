@@ -35,6 +35,11 @@ var pricedRuns atomic.Uint64
 // PricedBy calls itself for a renamed id.
 func pricedOnce(at int, kind byte, providers []string, id string, find func() (Price, bool)) (Price, bool) {
 	var k strings.Builder
+	n := 2 + len(id)
+	for _, p := range providers {
+		n += len(p) + 1
+	}
+	k.Grow(n) // one allocation, not one a doubling: it is made for every price asked
 	k.WriteByte(kind)
 	for _, p := range providers {
 		k.WriteString(p)

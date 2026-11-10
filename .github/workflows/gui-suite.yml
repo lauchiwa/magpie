@@ -89,6 +89,7 @@ jobs:
         working-directory: src
         env:
           BROWSER: ${{ matrix.engine }}
+          ENGINE: ${{ matrix.engine }}
           SHARD: ${{ matrix.shard }}
           SIDE: ${{ matrix.side }}
           BASE: ${{ inputs.base }}
@@ -101,17 +102,25 @@ jobs:
             export BASE_REF="$BASE"
           fi
           mkdir -p "$RUNNER_TEMP/out" && touch "$RUNNER_TEMP/out/reds.txt"
+          export GUI_REPORT_PATH="$RUNNER_TEMP/out/report.json"
+          export TESTED_COMMIT="$(git rev-parse HEAD)"
+          node --input-type=module -e 'import fs from "node:fs"; fs.writeFileSync(process.env.RUNNER_TEMP + "/out/identity.json", JSON.stringify({ side: process.env.SIDE, engine: process.env.ENGINE, shard: Number(process.env.SHARD), commit: process.env.TESTED_COMMIT }));'
           set +e
           node --test --test-concurrency=2 --test-shard="$SHARD/8" \
             --test-reporter=spec --test-reporter-destination=stdout \
             --test-reporter="file://$GITHUB_WORKSPACE/ci/.github/gui-suite/reds.mjs" --test-reporter-destination="$RUNNER_TEMP/out/reds.txt" \
             'internal/gui/tests/*.test.cjs'
-          echo "exit $?" > "$RUNNER_TEMP/out/exit.txt"
+          result=$?
+          echo "exit $result" > "$RUNNER_TEMP/out/exit.txt"
           echo "$(wc -l < "$RUNNER_TEMP/out/reds.txt") red"
           # what earlyoom ended, if anything (its reds name the test); its
           # start-up lines say "sending SIGTERM when ..." and end nothing
           sudo journalctl -u earlyoom --no-pager | grep -E "sending SIG[A-Z]+ to process" | tee "$RUNNER_TEMP/out/oom.txt" || true
-      - uses: actions/upload-artifact@v4
+          # The comparison validates this exit against the final summary.
+          # A named failure shared by the baseline is expected; a crash is not.
+          if [ "$result" -ne 0 ]; then echo "::warning::test runner exited $result; see comparison"; fi
+      - if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: reds-${{ matrix.side }}-${{ matrix.engine }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/out
@@ -122,6 +131,12 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/gui-suite
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - uses: actions/download-artifact@v4
         with:
           pattern: reds-*
@@ -130,41 +145,7 @@ jobs:
         env:
           BASE: ${{ inputs.base }}
           REF: ${{ inputs.ref }}
-        run: |
-          export LC_ALL=C
-          shopt -s nullglob
-          # each shard's lines, as "engine<TAB>file<TAB>test name"
-          side() {
-            for d in reds/reds-$1-*; do
-              e=${d#reds/reds-$1-}; e=${e%-*}
-              if [ -f "$d/reds.txt" ]; then sed "s/^/$e\t/" "$d/reds.txt"; fi
-            done | sort -u
-          }
-          # shards that ran to the end, whatever their reds
-          ran() {
-            for d in reds/reds-$1-*; do if [ -f "$d/exit.txt" ]; then echo; fi; done | wc -l
-          }
-          side fork > fork.txt
-          s="## GUI suite: $REF"$'\n\n'"Fork: $(wc -l < fork.txt) red tests."
-          n=0
-          if [ -n "$BASE" ]; then
-            side upstream > upstream.txt
-            comm -23 fork.txt upstream.txt > new.txt
-            n=$(wc -l < new.txt)
-            s+=" Upstream $BASE: $(wc -l < upstream.txt). Red only on the fork: $n."
-            if [ "$n" -gt 0 ]; then s+=$'\n\n```\n'"$(head -200 new.txt)"$'\n```'; fi
-          fi
-          whole=yes
-          for x in fork ${BASE:+upstream}; do
-            got=$(ran "$x")
-            if [ "$got" -ne 16 ]; then whole=no; s+=$'\n\n'"**$x: $got of 16 shards ran to the end; the comparison is incomplete.**"; fi
-          done
-          for d in reds/reds-*; do
-            if [ -s "$d/oom.txt" ]; then s+=$'\n\n'"${d#reds/reds-}: earlyoom ended a browser ($(wc -l < "$d/oom.txt") times)."; fi
-          done
-          echo "$s" >> "$GITHUB_STEP_SUMMARY"
-          echo "$s"
-          [ "$n" -eq 0 ] && [ "$whole" = yes ]
+        run: node .github/gui-suite/compare.mjs reds
       - if: always()
         uses: actions/upload-artifact@v4
         with:

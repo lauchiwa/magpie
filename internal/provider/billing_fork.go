@@ -140,7 +140,8 @@ func (p Provider) ResolveBilling(s settings.Settings, m catalog.Model) (BillingD
 // without the fallback to the maker's price, so a caller can tell the two
 // apart. Only the dormant usage biller in internal/usage uses it.
 func (p Provider) PublishedPrice(model string) (catalog.Price, bool) {
-	return p.listPrice(model, false)
+	pr, ok, _ := p.listPrice(model, false)
+	return pr, ok
 }
 
 // checkBillingBatch validates the whole incoming batch before any write.

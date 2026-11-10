@@ -311,7 +311,7 @@ func (a *Agent) StaleCopies() []StaleCopy {
 	var out []StaleCopy
 	apps := map[string]int{}
 	for _, pat := range pats {
-		for _, p := range running(pat) {
+		for _, p := range runningLately(pat) {
 			if strings.Contains(p.cmd, others) && !strings.Contains(p.cmd, dir+"/") {
 				continue
 			}

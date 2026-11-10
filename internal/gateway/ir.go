@@ -178,6 +178,10 @@ type Request struct {
 	// leanPrompt has the Claude bridge give the caller's instructions as
 	// the run's system prompt, in place of Claude Code's (ClaudeLeanPrompt).
 	leanPrompt bool
+	// appendPrompt: the Claude bridge gives the caller's instructions
+	// after Claude Code's own system prompt (appendsPrompt), set as the
+	// run starts.
+	appendPrompt bool
 	// envElsewhere: the caller's instructions name a working directory the
 	// Claude bridge's run is not in (a client on another computer, or in
 	// Windows with Claude Code in WSL), so the run's own prompt describes
@@ -196,6 +200,35 @@ type Request struct {
 	envUnknown bool
 	// remoteCaller: the request came from another computer (not local).
 	remoteCaller bool
+	// instructionsKept is set on a request whose read kept the client's
+	// instruction roles in its messages (readResponsesFor, #2532): a
+	// Responses client's own system and developer items, which a relay
+	// may be checking them by. A translated request's system message
+	// (Claude Code's environment, envInTurns) has no such standing:
+	// buildResponses folds it into the instructions, as the Chat and
+	// Anthropic builds do (#4632).
+	instructionsKept bool
+	// branch, for the Claude bridge, is the session of the run whose
+	// reply made the calls this request answers after another request
+	// did: its run branches off it there (subscriptionBridge.branch).
+	branch *savedSession
+	// told, for the Claude bridge's interactive mode, is a run's being
+	// told the conversation whole, not given it as a transcript
+	// (replaySession), as after Claude Code couldn't go on from one
+	told bool
+	// replayed: the run started was given the conversation as a
+	// transcript (replaySession)
+	replayed bool
+	// interactive, for the Claude bridge, is that the run answering this
+	// request is Claude Code's interactive mode, not claude -p: what a
+	// refusal it ends in is told with (thirdPartyRefused, #4503)
+	interactive bool
+	// tuiRefused, for the Claude bridge, is a request whose agent's
+	// system prompt Anthropic refused in the interactive mode as a
+	// third-party app's (#4503): its run is claude -p, which is served
+	// such prompts, with the interactive mode on all the same
+	// (thirdPartyPrint)
+	tuiRefused bool
 	// hourMarks has the cache marks magpie adds on Anthropic's Messages
 	// (anthropicBody) last an hour: a Responses client's (Codex's), whose
 	// turns are often more than five minutes apart and whose own vendor
@@ -206,6 +239,11 @@ type Request struct {
 	// draws asks the model for images beside text: a drawing asked on
 	// Gemini's API of a model not named for images (drawCodeAssist).
 	draws bool
+
+	// strictSaid has a Chat request's tools say strict as each is set,
+	// false included, as OpenCode's own do: Zen's free tier
+	// (zenFreeTools).
+	strictSaid bool
 
 	Model      string
 	System     string
@@ -225,7 +263,12 @@ type Request struct {
 	ThinkOff  bool
 	Parallel  *bool // parallel tool calls allowed
 	WebSearch bool  // the client offered its provider's own web search
-	Fast      bool  // the client asked for priority processing: service_tier priority (Codex's Fast mode)
+	// WebAccess is the external_web_access of the client's web_search
+	// tool, as it sent it: Codex's web_search mode (false for "cached",
+	// true for "live"), which magpie's own search for a model that can't
+	// is made in (withWebAccess, #5018)
+	WebAccess json.RawMessage
+	Fast      bool // the client asked for priority processing: service_tier priority (Codex's Fast mode)
 	// Ultrafast is Codex's Ultrafast (service_tier "ultrafast"), which a
 	// ChatGPT account on a plan with it offers on its models; Fast is set
 	// with it, so where there is no Ultrafast the request goes fast
@@ -283,6 +326,15 @@ type Request struct {
 	// (buildCodeAssistSent). Left out, the picture came back at the
 	// model's default size (#3820). No other API is known to take it.
 	ImageConfig json.RawMessage
+	// GenConfig holds a Gemini client's generationConfig keys magpie
+	// doesn't read or write itself — topK, seed, the penalties, responseModalities, mediaResolution, speechConfig,
+	// responseFormat — which go on as they were sent when the request is
+	// built again for an upstream that speaks Gemini's own API (the Gemini
+	// one and Vertex AI, geminiRequest): left out, everything else the
+	// client asked was dropped (#3937). Code Assist's and Antigravity's
+	// envelope has no documented spelling of them, so they are not passed
+	// there.
+	GenConfig map[string]json.RawMessage
 	// Safeguards are the caller's safety context, opaque to the gateway.
 	Safeguards    json.RawMessage
 	SafeguardBeta string
@@ -393,6 +445,10 @@ type Event struct {
 	// StopDetails: Anthropic's stop_details, what its classifier said of
 	// a refusal (#1768), carried to the client as it came
 	StopDetails json.RawMessage
+	// Estimated: the vendor's estimated_tokens on an empty thinking_delta,
+	// its live progress beat during a long think (#5390); nil when the
+	// delta carried none
+	Estimated *int
 
 	// Wait: for KError, how long the vendor said to wait before asking
 	// again, when it said; sent on as Retry-After
@@ -427,6 +483,10 @@ type Usage struct {
 	// provider's own tool (searchTally), for the request log's Web search
 	// rows; told nowhere else
 	searches int
+	// restart: the usage of a request that goes on with a reply another
+	// began (after): its prompt counts are the reply's from now on, a
+	// zero too, as what the earlier one counted is the reply's Deferred
+	restart bool
 
 	Reasoning int `json:"reasoning"`
 	// Served: the model the vendor's reply says answered, when it named
@@ -489,6 +549,9 @@ func (u Usage) prompt() int {
 }
 
 func (u *Usage) add(v Usage) {
+	if v.restart {
+		u.Input, u.CacheRead, u.CacheWrite, u.CacheWrite1h = v.Input, v.CacheRead, v.CacheWrite, v.CacheWrite1h
+	}
 	if v.Input > 0 {
 		u.Input = v.Input
 	}
@@ -685,6 +748,9 @@ func (c *collector) add(ev Event) {
 	case KUsage:
 		c.res.Usage.add(ev.Usage)
 		c.res.Usage.add(Usage{RequestID: ev.RequestID})
+		if ev.Model != "" {
+			c.res.Model = ev.Model // another model went on with the reply
+		}
 	case KError:
 		c.err, c.errStatus, c.errCode, c.errSaid = ev.Text, ev.Status, ev.Code, ev.Said
 	case KSearch:
@@ -920,6 +986,10 @@ func budgetOf(effort string) int {
 	}
 	return 10000
 }
+
+// ThinkingBudget is the Anthropic thinking budget the gateway reads an
+// effort level as, for an agent's config that has to name one (ZCode's).
+func ThinkingBudget(effort string) int { return budgetOf(effortOf(effort)) }
 
 // effortOfBudget goes the other way, for Anthropic clients asking others.
 func effortOfBudget(n int) string {

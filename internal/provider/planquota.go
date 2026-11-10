@@ -2,7 +2,8 @@ package provider
 
 // A plan bought with an API key — Zhipu's GLM Coding Plan (and Z.ai's),
 // Kimi Code, OpenCode Go, a Command Code plan, MiniMax's Coding (Token)
-// Plan, Ollama Cloud's included allowance, StepFun's Step Plan, Volcengine Ark's Coding and Agent Plans and
+// Plan, Ollama Cloud's included allowance, a Le Chat plan's month of Mistral
+// Vibe, StepFun's Step Plan, Volcengine Ark's Coding and Agent Plans and
 // Tencent Cloud's Token Plan 企业版 — has windows of allowance like a
 // subscription's, which the vendor tells to the key (StepFun only to a
 // sign-in, stepfun_plan.go; Volcengine and Tencent Cloud only to the
@@ -68,6 +69,10 @@ func planQuotaSourceOf(p Provider) (planQuotaSource, bool) {
 			// Ollama Cloud's included allowance (#1888); a key with none
 			// gets no card
 			return planQuotaSource{ollamaBalanceURL, true, readOllamaPlan, false}, true
+		case "api.mistral.ai":
+			// a Le Chat plan's Vibe key is told its month of Vibe
+			// (mistral_plan.go); a key with no Vibe budget gets no card
+			return planQuotaSource{mistralBudgetURL, true, readMistralPlan, false}, true
 		}
 	}
 	return planQuotaSource{}, false
@@ -605,7 +610,7 @@ func planBody(ctx context.Context, src planQuotaSource, key string) ([]byte, err
 	// Go's usage is asked at its gateway, which routes nothing that names
 	// no session
 	OpenCodeSession(req.Header, src.url)
-	res, err := http.DefaultClient.Do(req)
+	res, err := Keyed(http.DefaultClient).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -698,6 +703,10 @@ func vendorSaid(b []byte, status string) string {
 func planKeyWindows(ctx context.Context, p Provider, src planQuotaSource, key string) (plan string, ws []QuotaWindow, team bool, err error) {
 	if hostOf(src.url) == "api.commandcode.ai" {
 		plan, ws, err = cmdKeyWindows(ctx, src, key)
+		return plan, ws, false, err
+	}
+	if src.url == mistralBudgetURL {
+		plan, ws, err = mistralKeyWindows(ctx, src, key)
 		return plan, ws, false, err
 	}
 	plan, ws, err = planWindows(ctx, src, key)
@@ -818,7 +827,9 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 					q.Resets = <-resets
 				}
 			}
-			q = keepReading(ctx, q, tag)
+			// read just now: the card says when (jiabubu: Kimi Code's
+			// said nothing while every other card did)
+			q = keepReading(ctx, readNow(q), tag)
 			got[i] = &q
 		}()
 	}
@@ -837,9 +848,12 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 			out = append(out, *q)
 		}
 	}
-	out = append(out, <-stepfun...)
-	out = append(out, <-volc...)
-	out = append(out, <-tencent...)
+	// StepFun's, Volcengine's and Tencent's, read just now too
+	for _, qs := range [][]SubscriptionQuota{<-stepfun, <-volc, <-tencent} {
+		for _, q := range qs {
+			out = append(out, readNow(q))
+		}
+	}
 	if ctx.Err() == nil {
 		noteQuotaHistory(out, time.Now())
 		c.Lock()
@@ -924,7 +938,7 @@ func zhipuKeyTeamAt(ctx context.Context, root, quotaURL, key string, team *Zhipu
 			req.Header.Set(k, v)
 		}
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := Keyed(http.DefaultClient).Do(req)
 	if err != nil {
 		return "", nil, err
 	}

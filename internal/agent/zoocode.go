@@ -58,7 +58,9 @@ const zooExtension = "zoocodeorganization.zoo-code"
 var noticeZoo = newNotice("Zoo Code reads magpie's profile when it starts — run Developer: Reload Window in VS Code to use this.")
 
 func zooCode(home, cfg string) *Agent {
-	return zooCodeAt(vscodeUserDir(vscodeStable, home, cfg), filepath.Join(home, ".vscode", "extensions"))
+	// VS Code's own User and extensions folders: a portable build's are
+	// both in its data folder
+	return zooCodeAt(vscodeDirs(vscodeStable, home, cfg))
 }
 
 // zooCodeImportPath is the file magpie has Zoo Code import, in the VS Code

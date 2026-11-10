@@ -1,9 +1,11 @@
 package usage
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -14,8 +16,8 @@ import (
 // and 140 of a row's 328 bytes were string ids most rows of a chunk repeat.
 // Packed and read back, every row is the row it was.
 func TestRowsOfOneSessionShareAShape(t *testing.T) {
-	if n := unsafe.Sizeof(packedRow{}); n > 152 {
-		t.Fatalf("a packed row is %d bytes, want 152 at most", n)
+	if n := unsafe.Sizeof(packedRow{}); n != 160 {
+		t.Fatalf("a packed row is %d bytes, want exactly 160 including Hold", n)
 	}
 	at := time.Date(2026, 10, 21, 12, 0, 0, 0, time.Local)
 	c := &rowChunk{}
@@ -88,5 +90,114 @@ func TestRowTokensAndZoneKept(t *testing.T) {
 		if z := c.row(1).Time; !z.IsZero() {
 			t.Fatalf("a zero time read back as %v", z)
 		}
+	}
+}
+
+func TestPackedHoldDoesNotAliasMessageOrZone(t *testing.T) {
+	zone := time.FixedZone("held", 9*3600)
+	at := time.Date(2026, 11, 7, 12, 0, 0, 123, zone)
+	c := &rowChunk{}
+	for i := range 100 {
+		r := Row{Record: Record{Time: at, Hold: fmt.Sprint("hold-", i), Input: i, ImageFiles: 3, UpBytes: 17, ImageFilesSaved: -4, Status: 200}}
+		c.add(r, fmt.Sprint("message-", i), 1<<40+int64(i), false)
+	}
+	if len(c.Shapes) != 1 {
+		t.Fatalf("unique holds duplicated shapes: %d", len(c.Shapes))
+	}
+	disk, err := readDiskEntry(diskEntry(nil, c.pack()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, chunk := range []*rowChunk{c, c.pack().unpack(), disk.unpack(), c.pack().writable()} {
+		for i := range 100 {
+			r := chunk.row(i)
+			if r.Hold != fmt.Sprint("hold-", i) || !r.Time.Equal(at) || r.Time.Location() != zone || r.ImageFiles != 3 || r.UpBytes != 17 || r.ImageFilesSaved != -4 {
+				t.Fatalf("hold/zone/counters did not round trip: %+v", r)
+			}
+			if msg := chunk.Strings[chunk.text(&chunk.Rows[i], rowMsg)]; msg != fmt.Sprint("message-", i) {
+				t.Fatalf("message and hold shared a slot: %s", msg)
+			}
+			if chunk.Rows[i].Order != 1<<40+int64(i) {
+				t.Fatal("Order narrowed")
+			}
+		}
+	}
+}
+
+// A row keeps what its request sent up and got back, and what DeepSeek's
+// image files saved it (below 0 when an upload cost more), as the row
+// was and packed and read back; a row from before has none. The totals
+// of a period sum them, from records and from rows.
+func TestRowBytesKept(t *testing.T) {
+	at := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	c := &rowChunk{}
+	c.add(Row{Record: Record{Time: at, UpBytes: 120_000, PlainBytes: 400_000, DownBytes: 3_000, ImageFilesSaved: -40}}, "", 0, false)
+	c.add(Row{Record: Record{Time: at, UpBytes: 5_000_000_000, DownBytes: 900, ImageFilesSaved: 72_000}}, "", 1, false)
+	c.add(Row{Record: Record{Time: at, Input: 1}}, "", 2, false)
+	for _, c := range []*rowChunk{c, c.pack().unpack()} {
+		a, b, old := c.row(0), c.row(1), c.row(2)
+		if a.UpBytes != 120_000 || a.DownBytes != 3_000 || a.ImageFilesSaved != -40 {
+			t.Fatalf("read back up %d, down %d, saved %d", a.UpBytes, a.DownBytes, a.ImageFilesSaved)
+		}
+		if b.UpBytes != math.MaxInt32 || b.DownBytes != 900 || b.ImageFilesSaved != 72_000 {
+			t.Fatalf("read back up %d, down %d, saved %d", b.UpBytes, b.DownBytes, b.ImageFilesSaved)
+		}
+		if old.UpBytes != 0 || old.DownBytes != 0 || old.ImageFilesSaved != 0 {
+			t.Fatalf("a row from before reads back %+v", old.Record)
+		}
+		var rows, sum Totals
+		rows.addRow(a)
+		rows.addRow(b)
+		rows.addRow(old)
+		sum.plus(&rows)
+		var recs Totals
+		recs.add(a.Record, nil)
+		recs.add(old.Record, nil)
+		for _, got := range []Totals{rows, sum} {
+			if got.UpBytes != 120_000+math.MaxInt32 || got.DownBytes != 3_900 || got.ImageFilesSaved != 71_960 {
+				t.Fatalf("totals up %d, down %d, saved %d", got.UpBytes, got.DownBytes, got.ImageFilesSaved)
+			}
+		}
+		if recs.UpBytes != 120_000 || recs.DownBytes != 3_000 || recs.ImageFilesSaved != -40 {
+			t.Fatalf("records' totals up %d, down %d, saved %d", recs.UpBytes, recs.DownBytes, recs.ImageFilesSaved)
+		}
+	}
+}
+
+// A row keeps how many images went by file beside what they saved
+// (matrix0487 on Discord: "10 MB（3 张）"), packed and read back, and in
+// usage.jsonl; one from before has none, and a count past what the
+// packed row holds is kept as its most. Hold has its own varied slot.
+func TestRowImageFilesKept(t *testing.T) {
+	at := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	c := &rowChunk{}
+	c.add(Row{Record: Record{Time: at, UpBytes: 50_000, ImageFilesSaved: 10_000_000, ImageFiles: 3, Tries: 2}}, "", 0, false)
+	c.add(Row{Record: Record{Time: at, ImageFilesSaved: 72_000, ImageFiles: 100_000, Tries: 100_000}}, "", 1, false)
+	c.add(Row{Record: Record{Time: at, Input: 1}}, "", 2, false)
+	for i, c := range []*rowChunk{c, c.pack().unpack()} {
+		a, b, old := c.row(0), c.row(1), c.row(2)
+		if a.ImageFiles != 3 || a.ImageFilesSaved != 10_000_000 || a.Tries != 2 {
+			t.Fatalf("%d: read back %d images, saved %d, %d tries", i, a.ImageFiles, a.ImageFilesSaved, a.Tries)
+		}
+		if b.ImageFiles != math.MaxInt16 || b.Tries != math.MaxInt16 {
+			t.Fatalf("%d: past the most read back %d images, %d tries", i, b.ImageFiles, b.Tries)
+		}
+		if old.ImageFiles != 0 {
+			t.Fatalf("%d: a row from before reads back %d images", i, old.ImageFiles)
+		}
+	}
+	line, err := json.Marshal(Record{Time: at, ImageFilesSaved: 10_000_000, ImageFiles: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Record
+	if err := json.Unmarshal(line, &back); err != nil || back.ImageFiles != 3 || !strings.Contains(string(line), `"image_files":3`) {
+		t.Fatalf("usage.jsonl's line %s read back %d images (%v)", line, back.ImageFiles, err)
+	}
+	if line, _ := json.Marshal(Record{Time: at}); strings.Contains(string(line), "image_files") {
+		t.Fatalf("a row with no image says one: %s", line)
+	}
+	if n := unsafe.Sizeof(packedRow{}); n != 160 {
+		t.Fatalf("a packed row is %d bytes, want exactly 160 including Hold", n)
 	}
 }
